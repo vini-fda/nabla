@@ -1,0 +1,10 @@
+[package]
+name = "ship2d_optimization"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+
+[features]
+# Compile every stored solution into the library (`registry` module), for tools like the viewer.
+registry = []

@@ -15,15 +15,33 @@ rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$root/target/release/ship2d_graphics" "$app/Contents/MacOS/ship2d_graphics"
 
-# Compile the icon: Assets.car (layered, Liquid Glass) plus a flat .icns fallback.
-partial="$(mktemp -d)"
-trap 'rm -rf "$partial"' EXIT
-xcrun actool "$here/nabla_macOS.icon" \
+# Compile the icon: Assets.car (layered, Liquid Glass) plus a flat .icns fallback. Xcode
+# versions before 26 cannot compile `.icon` files; then build a flat .icns from the PNG.
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+if xcrun actool "$here/nabla_macOS.icon" \
     --compile "$app/Contents/Resources" \
     --app-icon nabla_macOS \
     --platform macosx --target-device mac --minimum-deployment-target 11.0 \
     --enable-on-demand-resources NO --development-region en \
-    --output-partial-info-plist "$partial/icon.plist" >/dev/null
+    --output-partial-info-plist "$work/icon.plist" >"$work/actool.log" 2>&1 \
+    && [ -f "$app/Contents/Resources/Assets.car" ] && [ "${SHIP2D_FLAT_ICON:-0}" != 1 ]; then
+    icon_name="<key>CFBundleIconName</key>
+    <string>nabla_macOS</string>"
+else
+    echo "warning: no Liquid Glass icon (nabla_macOS.icon needs Xcode 26's actool); using a flat icon" >&2
+    rm -f "$app/Contents/Resources/Assets.car"
+    iconset="$work/nabla_macOS.iconset"
+    mkdir "$iconset"
+    for size in 16 32 128 256 512; do
+        sips -s format png -z "$size" "$size" "$here/../assets/app-icon-macos.png" \
+            --out "$iconset/icon_${size}x${size}.png" >/dev/null
+        sips -s format png -z "$((size * 2))" "$((size * 2))" "$here/../assets/app-icon-macos.png" \
+            --out "$iconset/icon_${size}x${size}@2x.png" >/dev/null
+    done
+    iconutil -c icns "$iconset" -o "$app/Contents/Resources/nabla_macOS.icns"
+    icon_name=""
+fi
 
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -46,8 +64,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
     <string>$version</string>
     <key>CFBundleIconFile</key>
     <string>nabla_macOS</string>
-    <key>CFBundleIconName</key>
-    <string>nabla_macOS</string>
+    $icon_name
     <key>LSMinimumSystemVersion</key>
     <string>11.0</string>
     <key>NSHighResolutionCapable</key>

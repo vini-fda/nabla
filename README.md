@@ -21,3 +21,17 @@ cargo run --release -p ship2d_graphics            # the viewer, natively
 ```
 
 `./check.sh` runs the same checks as CI, plus the web build. Every push to `main` deploys the web app.
+
+## Releasing
+
+Pushing a version tag `vX.Y.Z` builds the native viewer and publishes a [GitHub Release](https://github.com/vini-fda/ship2d_optimization/releases). The builds are for macOS on Apple silicon (an app bundle), Linux x86-64 and Windows 64-bit. Pushes to `main` only run CI and deploy the web app; they never release.
+
+1. Set the same `version` in `Cargo.toml` and `viewer/Cargo.toml`, and commit.
+2. Tag and push:
+
+   ```sh
+   git tag -a v0.2.0 -m "v0.2.0"
+   git push origin v0.2.0
+   ```
+
+`.github/workflows/release.yml` first checks that the tag matches both versions and reruns CI. It then builds each target on a native runner and publishes the release with checksums and the notes from `.github/release-notes.md`. Released viewers compile solution sources against the tagged version of this repository, so a version's tag must stay in place once released.

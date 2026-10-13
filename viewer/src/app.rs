@@ -56,6 +56,18 @@ const GOAL_RADIUS_PX: f32 = 10.0;
 const GOAL_LABEL_OFFSET_PX: f32 = 12.0;
 const START_RADIUS_PX: f32 = 5.0;
 
+/// Below this width (in points), e.g. on phones, the panels are shown one at a time.
+const COMPACT_WIDTH: f32 = 800.0;
+
+/// What the compact (narrow-screen) layout shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum CompactView {
+    #[default]
+    Canvas,
+    Controls,
+    Plots,
+}
+
 /// Fraction of the canvas left empty around the trajectory by "Fit view".
 const FIT_MARGIN: f32 = 0.15;
 
@@ -159,6 +171,8 @@ pub struct ViewerApp {
     last_watch_check: f64,
     #[serde(skip)]
     load_error: Option<String>,
+    #[serde(skip)]
+    compact_view: CompactView,
 }
 
 impl Default for ViewerApp {
@@ -187,6 +201,7 @@ impl Default for ViewerApp {
             rewind_pending: false,
             last_watch_check: 0.0,
             load_error: None,
+            compact_view: CompactView::default(),
         }
     }
 }
@@ -662,7 +677,7 @@ impl ViewerApp {
         };
         let (h, last) = (replay.h(), replay.last_frame());
         let playback = &mut self.playback;
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             if ui.button("⏮").on_hover_text("Start (Home)").clicked() {
                 playback.seek_start();
             }
@@ -941,6 +956,47 @@ impl ViewerApp {
     }
 }
 
+impl ViewerApp {
+    /// The left panel's content: source, case, current state and display options.
+    fn controls_ui(&mut self, ui: &mut egui::Ui) {
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            self.source_ui(ui);
+            ui.separator();
+            self.case_ui(ui);
+            self.case_info_ui(ui);
+            ui.separator();
+            self.frame_info_ui(ui);
+            ui.separator();
+            self.display_ui(ui);
+        });
+    }
+
+    /// Desktop layout: controls left, plots right, timeline below the canvas.
+    fn wide_layout(&mut self, ui: &mut egui::Ui) {
+        egui::Panel::left("config_panel").show_inside(ui, |ui| self.controls_ui(ui));
+        egui::Panel::bottom("timeline_panel").show_inside(ui, |ui| self.timeline_ui(ui));
+        egui::Panel::right("plots_panel")
+            .resizable(true)
+            .default_size(PLOT_PANEL_DEFAULT_WIDTH)
+            .min_size(PLOT_PANEL_MIN_WIDTH)
+            .show_inside(ui, |ui| self.plots_ui(ui));
+        egui::CentralPanel::default().show_inside(ui, |ui| self.canvas_ui(ui));
+    }
+
+    /// Narrow-screen layout: one full-size view at a time, chosen in the top bar; the
+    /// timeline stays available below the canvas and the plots.
+    fn compact_layout(&mut self, ui: &mut egui::Ui) {
+        if self.compact_view != CompactView::Controls {
+            egui::Panel::bottom("timeline_panel").show_inside(ui, |ui| self.timeline_ui(ui));
+        }
+        egui::CentralPanel::default().show_inside(ui, |ui| match self.compact_view {
+            CompactView::Canvas => self.canvas_ui(ui),
+            CompactView::Controls => self.controls_ui(ui),
+            CompactView::Plots => self.plots_ui(ui),
+        });
+    }
+}
+
 impl eframe::App for ViewerApp {
     /// Called by the framework to save state before shutdown.
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
@@ -967,6 +1023,7 @@ impl eframe::App for ViewerApp {
             ui.ctx().request_repaint();
         }
 
+        let compact = ui.available_width() < COMPACT_WIDTH;
         egui::Panel::top("top_panel").show_inside(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 let is_web = cfg!(target_arch = "wasm32");
@@ -978,33 +1035,25 @@ impl eframe::App for ViewerApp {
                     });
                     ui.add_space(16.0);
                 }
-
+                if compact {
+                    for (view, label) in [
+                        (CompactView::Canvas, "View"),
+                        (CompactView::Controls, "Controls"),
+                        (CompactView::Plots, "Plots"),
+                    ] {
+                        ui.selectable_value(&mut self.compact_view, view, label);
+                    }
+                    ui.separator();
+                }
                 egui::widgets::global_theme_preference_buttons(ui);
             });
         });
 
-        egui::Panel::left("config_panel").show_inside(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                self.source_ui(ui);
-                ui.separator();
-                self.case_ui(ui);
-                self.case_info_ui(ui);
-                ui.separator();
-                self.frame_info_ui(ui);
-                ui.separator();
-                self.display_ui(ui);
-            });
-        });
-
-        egui::Panel::bottom("timeline_panel").show_inside(ui, |ui| self.timeline_ui(ui));
-
-        egui::Panel::right("plots_panel")
-            .resizable(true)
-            .default_size(PLOT_PANEL_DEFAULT_WIDTH)
-            .min_size(PLOT_PANEL_MIN_WIDTH)
-            .show_inside(ui, |ui| self.plots_ui(ui));
-
-        egui::CentralPanel::default().show_inside(ui, |ui| self.canvas_ui(ui));
+        if compact {
+            self.compact_layout(ui);
+        } else {
+            self.wide_layout(ui);
+        }
 
         let ctx = ui.ctx().clone();
         self.code_window(&ctx);

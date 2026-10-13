@@ -34,7 +34,22 @@ impl GridStyle {
     }
 }
 
+/// Like `f32::clamp`, but returns `low` instead of panicking when `low > high`, which happens
+/// when the canvas is narrower than the label margins (e.g. on a phone).
+trait ClampOrLow {
+    fn clamp_or_low(self, low: f32, high: f32) -> f32;
+}
+
+impl ClampOrLow for f32 {
+    fn clamp_or_low(self, low: f32, high: f32) -> f32 {
+        self.min(high).max(low)
+    }
+}
+
 pub fn draw_grid(painter: &Painter, camera: &Camera, rect: Rect, style: &GridStyle) {
+    if !(rect.width() >= 1.0 && rect.height() >= 1.0) {
+        return;
+    }
     let bottom_left_world = camera.screen_to_world(rect.left_bottom(), rect);
     let top_right_world = camera.screen_to_world(rect.right_top(), rect);
     let world_min_x = bottom_left_world.x;
@@ -98,11 +113,11 @@ pub fn draw_grid(painter: &Painter, camera: &Camera, rect: Rect, style: &GridSty
     let x_label_screen_y = camera
         .world_to_screen(Vec2::ZERO, rect)
         .y
-        .clamp(rect.top() + 4.0, rect.bottom() - 14.0);
+        .clamp_or_low(rect.top() + 4.0, rect.bottom() - 14.0);
     let y_label_screen_x = camera
         .world_to_screen(Vec2::ZERO, rect)
         .x
-        .clamp(rect.left() + 4.0, rect.right() - 4.0);
+        .clamp_or_low(rect.left() + 4.0, rect.right() - 4.0);
 
     for &x in &major_ticks(world_min_x as f64, world_max_x as f64, major_step) {
         if x.abs() < major_step * 0.5 {
@@ -135,8 +150,8 @@ pub fn draw_grid(painter: &Painter, camera: &Camera, rect: Rect, style: &GridSty
     let o = camera.world_to_screen(Vec2::ZERO, rect);
     painter.text(
         Pos2::new(
-            o.x.clamp(rect.left() + 4.0, rect.right() - 4.0) + 3.0,
-            o.y.clamp(rect.top() + 4.0, rect.bottom() - 14.0) + 2.0,
+            o.x.clamp_or_low(rect.left() + 4.0, rect.right() - 4.0) + 3.0,
+            o.y.clamp_or_low(rect.top() + 4.0, rect.bottom() - 14.0) + 2.0,
         ),
         Align2::LEFT_TOP,
         "0",
@@ -185,6 +200,18 @@ pub(crate) fn format_tick(value: f64, step: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clamp_or_low_never_panics() {
+        assert_eq!(5.0_f32.clamp_or_low(0.0, 10.0), 5.0, "inside");
+        assert_eq!(15.0_f32.clamp_or_low(0.0, 10.0), 10.0, "above");
+        // The phone case: an empty canvas gives low > high.
+        assert_eq!(
+            304.0_f32.clamp_or_low(308.125, 300.125),
+            308.125,
+            "empty range"
+        );
+    }
 
     #[test]
     fn nice_step_ladder() {

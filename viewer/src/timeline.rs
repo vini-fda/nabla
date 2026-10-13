@@ -120,9 +120,9 @@ pub fn timeline_ui(
         *view = TimelineView::full(duration, h);
     }
     if let Some(pos) = response.hover_pos() {
-        let scroll = ui.input(|i| i.smooth_scroll_delta);
-        if scroll.y != 0.0 {
-            let factor = f64::from((scroll.y / 200.0).exp());
+        let (scroll, pinch) = ui.input(|i| (i.smooth_scroll_delta, i.zoom_delta()));
+        let factor = f64::from(pinch * (scroll.y / 200.0).exp());
+        if factor.is_finite() && factor > 0.0 && factor != 1.0 {
             view.zoom_at(factor, view.x_to_t(pos.x, rect), duration, h);
         }
         if scroll.x != 0.0 {
@@ -138,7 +138,7 @@ pub fn timeline_ui(
         .flatten()
         .map(|pos| view.x_to_t(pos.x, rect).clamp(0.0, duration));
     response.on_hover_text(
-        "Click/drag: seek   Scroll: zoom   Shift+scroll: pan   Double-click: whole run\n\
+        "Click/drag: seek   Scroll/pinch: zoom   Shift+scroll: pan   Double-click: whole run\n\
          Yellow marks: controller samples t = k·h",
     );
     seek

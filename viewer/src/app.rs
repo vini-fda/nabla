@@ -35,7 +35,7 @@ const TORQUE_COLOR: egui::Color32 = egui::Color32::from_rgb(60, 120, 210);
 const CURSOR_COLOR: egui::Color32 = egui::Color32::from_rgb(90, 90, 90);
 
 const DEFAULT_CIRCUMRADIUS: f32 = 1.0;
-const DEFAULT_ALPHA: f32 = std::f32::consts::FRAC_PI_4;
+const DEFAULT_ALPHA: f32 = 0.3;
 
 // HUD-style vector arrows: fixed pixel-per-magnitude scales so arrow length
 // stays readable regardless of camera zoom.
@@ -194,7 +194,7 @@ impl Default for ViewerApp {
 impl ViewerApp {
     /// Called once before the first frame. Opens `source` if given, else the last source.
     pub fn new(cc: &eframe::CreationContext<'_>, source: Option<PathBuf>) -> Self {
-        cc.egui_ctx.set_theme(egui::ThemePreference::Light);
+        cc.egui_ctx.set_theme(egui::ThemePreference::Dark);
 
         // Load previous app state (if any).
         // Note that you must enable the `persistence` feature for this to work.

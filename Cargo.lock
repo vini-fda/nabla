@@ -3079,7 +3079,7 @@ dependencies = [
 
 [[package]]
 name = "ship2d_graphics"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "eframe",
  "egui",
@@ -3096,7 +3096,7 @@ dependencies = [
 
 [[package]]
 name = "ship2d_optimization"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "shlex"

@@ -80,7 +80,7 @@ cargo run --release -- eval path/to/solution.rs          # compile, run, per-cas
 cargo run --release -- submit <name> path/to/solution.rs # store it if every case is solved
 cargo run --release -- leaderboard                       # stored solutions, best first
 cargo run --release -- verify                            # re-evaluate every stored solution
-cargo test --release                                     # model tests + one test per solution
+cargo test --workspace --release                         # model tests + one test per solution
 ```
 
 `eval` and `submit` compile the source in a separate cargo project under `target/candidates/` and

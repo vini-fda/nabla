@@ -11,13 +11,24 @@
       "src": "./assets/favicon-512x512.png",
       "sizes": "512x512",
       "type": "image/png",
-      "purpose": "any maskable"
+      "purpose": "any"
+    },
+    {
+      "src": "./assets/maskable-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "./assets/nabla-logo.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
     }
   ],
   "lang": "en-US",
   "id": "/index.html",
   "start_url": "./index.html",
   "display": "standalone",
-  "background_color": "white",
-  "theme_color": "white"
+  "background_color": "black",
+  "theme_color": "black"
 }

@@ -967,14 +967,14 @@ impl ViewerApp {
                     ),
                     time_plot(
                         ui,
-                        "Theta",
+                        "Heading angle",
                         &formula::THETA,
                         t,
                         &[("theta", &plots.theta, THETA_COLOR)],
                     ),
                     time_plot(
                         ui,
-                        "Omega",
+                        "Angular velocity",
                         &formula::OMEGA,
                         t,
                         &[("omega", &plots.omega, OMEGA_COLOR)],

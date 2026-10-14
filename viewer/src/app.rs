@@ -16,6 +16,7 @@ use crate::camera::Camera;
 use crate::grid::{GridStyle, draw_grid};
 use crate::replay::{MAX_SUBDIVISIONS, Playback, Replay, Series};
 use crate::source::{self, Runner, SolutionSource, Status};
+use crate::theme::{self, palette};
 use crate::timeline::{TimelineView, timeline_ui};
 
 const TRIANGLE_STROKE_WIDTH: f32 = 2.0;
@@ -23,16 +24,18 @@ const TRIANGLE_STROKE_WIDTH: f32 = 2.0;
 const PLOT_HEIGHT: f32 = 110.0;
 const PLOT_PANEL_DEFAULT_WIDTH: f32 = 300.0;
 const PLOT_PANEL_MIN_WIDTH: f32 = 220.0;
+/// Narrowest the controls panel can be dragged to; below this its rows would be cut off.
+const CONTROLS_PANEL_MIN_WIDTH: f32 = 320.0;
 
-const POS_X_COLOR: egui::Color32 = egui::Color32::from_rgb(220, 60, 60);
-const POS_Y_COLOR: egui::Color32 = egui::Color32::from_rgb(60, 110, 220);
-const VEL_X_COLOR: egui::Color32 = egui::Color32::from_rgb(230, 130, 50);
-const VEL_Y_COLOR: egui::Color32 = egui::Color32::from_rgb(50, 180, 180);
-const THETA_COLOR: egui::Color32 = egui::Color32::from_rgb(170, 80, 200);
-const OMEGA_COLOR: egui::Color32 = egui::Color32::from_rgb(200, 170, 50);
-const THRUST_COLOR: egui::Color32 = egui::Color32::from_rgb(220, 50, 50);
-const TORQUE_COLOR: egui::Color32 = egui::Color32::from_rgb(60, 120, 210);
-const CURSOR_COLOR: egui::Color32 = egui::Color32::from_rgb(90, 90, 90);
+const POS_X_COLOR: egui::Color32 = palette::RED;
+const POS_Y_COLOR: egui::Color32 = palette::BLUE;
+const VEL_X_COLOR: egui::Color32 = palette::PEACH;
+const VEL_Y_COLOR: egui::Color32 = palette::TEAL;
+const THETA_COLOR: egui::Color32 = palette::MAUVE;
+const OMEGA_COLOR: egui::Color32 = palette::YELLOW;
+const THRUST_COLOR: egui::Color32 = palette::RED;
+const TORQUE_COLOR: egui::Color32 = palette::SAPPHIRE;
+const CURSOR_COLOR: egui::Color32 = palette::OVERLAY1;
 
 const DEFAULT_CIRCUMRADIUS: f32 = 1.0;
 const DEFAULT_ALPHA: f32 = 0.3;
@@ -44,14 +47,14 @@ const ACCELERATION_ARROW_PX_PER_UPS2: f32 = 20.0;
 const ARROW_STROKE_WIDTH: f32 = 2.0;
 const ARROW_MIN_PIXELS: f32 = 4.0;
 
-const VELOCITY_COLOR: egui::Color32 = egui::Color32::from_rgb(0, 170, 60);
-const ACCELERATION_COLOR: egui::Color32 = egui::Color32::from_rgb(220, 50, 50);
+const VELOCITY_COLOR: egui::Color32 = palette::GREEN;
+const ACCELERATION_COLOR: egui::Color32 = palette::RED;
 
-const PATH_COLOR: egui::Color32 = egui::Color32::from_rgb(170, 170, 170);
-const TRAVELED_COLOR: egui::Color32 = egui::Color32::from_rgb(40, 90, 200);
+const PATH_COLOR: egui::Color32 = palette::OVERLAY0;
+const TRAVELED_COLOR: egui::Color32 = palette::BLUE;
 const PATH_MIN_SEGMENT_PX: f32 = 0.5;
 
-const GOAL_COLOR: egui::Color32 = egui::Color32::from_rgb(230, 180, 40);
+const GOAL_COLOR: egui::Color32 = palette::YELLOW;
 const GOAL_RADIUS_PX: f32 = 10.0;
 const GOAL_LABEL_OFFSET_PX: f32 = 12.0;
 const START_RADIUS_PX: f32 = 5.0;
@@ -75,7 +78,7 @@ const FIT_MARGIN: f32 = 0.15;
 const WATCH_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Case selected when nothing was persisted.
-const DEFAULT_CASE: &str = "rest_facing_away";
+const DEFAULT_CASE: &str = "agile";
 
 /// A test case and the suite it comes from.
 struct CaseEntry {
@@ -92,7 +95,12 @@ fn all_cases() -> Vec<CaseEntry> {
         suite: "holdout",
         case,
     });
-    standard.chain(holdout).collect()
+    let mut cases: Vec<CaseEntry> = standard.chain(holdout).collect();
+    // The default case goes first in the list.
+    if let Some(i) = cases.iter().position(|e| e.case.name == DEFAULT_CASE) {
+        cases[..=i].rotate_right(1);
+    }
+    cases
 }
 
 /// Plot series of the current replay, converted once.
@@ -171,6 +179,9 @@ pub struct ViewerApp {
     last_watch_check: f64,
     #[serde(skip)]
     load_error: Option<String>,
+    /// Wide layout: show the left (controls) and right (plots) side panels.
+    show_controls: bool,
+    show_plots: bool,
     #[serde(skip)]
     compact_view: CompactView,
 }
@@ -201,6 +212,8 @@ impl Default for ViewerApp {
             rewind_pending: false,
             last_watch_check: 0.0,
             load_error: None,
+            show_controls: true,
+            show_plots: true,
             compact_view: CompactView::default(),
         }
     }
@@ -209,7 +222,7 @@ impl Default for ViewerApp {
 impl ViewerApp {
     /// Called once before the first frame. Opens `source` if given, else the last source.
     pub fn new(cc: &eframe::CreationContext<'_>, source: Option<PathBuf>) -> Self {
-        cc.egui_ctx.set_theme(egui::ThemePreference::Dark);
+        theme::apply(&cc.egui_ctx);
 
         // Load previous app state (if any).
         // Note that you must enable the `persistence` feature for this to work.
@@ -374,14 +387,14 @@ impl ViewerApp {
         self.replay.as_ref().map_or(0, Replay::last_frame)
     }
 
-    /// Sample index `k`, offset `τ` into the step, and the exact state at the playhead.
+    /// Sample index `k`, offset `tau` into the step, and the exact state at the playhead.
     fn now(&self) -> Option<(usize, f64, State)> {
         let replay = self.replay.as_ref()?;
         let (k, offset) = self.playback.moment(replay.h());
         Some((k, offset, replay.state_at(k, offset)))
     }
 
-    /// Space: play/pause. Left/Right: one Δt. Shift+Left/Right: previous/next controller
+    /// Space: play/pause. Left/Right: one dt. Shift+Left/Right: previous/next controller
     /// sample. Home/End: start/end.
     fn handle_keys(&mut self, ui: &egui::Ui) {
         if ui.ctx().memory(|m| m.focused().is_some()) {
@@ -418,10 +431,10 @@ impl ViewerApp {
     }
 
     fn source_ui(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Solution source");
+        ui.heading("Control policy");
         ui.horizontal(|ui| {
             #[cfg(not(target_arch = "wasm32"))]
-            if ui.button("Open .rs…").clicked()
+            if ui.button("Open .rs...").clicked()
                 && let Some(path) = rfd::FileDialog::new()
                     .add_filter("Rust source", &["rs"])
                     .set_directory(ship2d_optimization::db::solutions_dir())
@@ -443,11 +456,14 @@ impl ViewerApp {
 
         let mut stored = None;
         egui::ComboBox::from_id_salt("database")
-            .selected_text("Open a stored solution…")
+            .selected_text("Open a stored control policy (rust code)...")
             .show_ui(ui, |ui| {
                 for (entry, solution, path) in &self.database {
                     let label = format!("{}.rs  (score {})", solution.name, entry.score);
-                    if ui.selectable_label(false, label).clicked() {
+                    if ui
+                        .selectable_label(false, egui::RichText::new(label).monospace())
+                        .clicked()
+                    {
                         stored = Some((*solution, path.clone()));
                     }
                 }
@@ -457,7 +473,11 @@ impl ViewerApp {
         }
 
         if let Some(source) = &self.source {
-            let label = ui.label(egui::RichText::new(format!("{}.rs", source.name)).strong());
+            let label = ui.label(
+                egui::RichText::new(format!("{}.rs", source.name))
+                    .monospace()
+                    .strong(),
+            );
             if let Some(path) = &source.path {
                 label.on_hover_text(path.display().to_string());
             }
@@ -480,13 +500,13 @@ impl ViewerApp {
             Status::Compiling => {
                 ui.horizontal(|ui| {
                     ui.spinner();
-                    ui.label("Compiling…");
+                    ui.label("Compiling...");
                 });
             }
             Status::Tracing => {
                 ui.horizontal(|ui| {
                     ui.spinner();
-                    ui.label("Running…");
+                    ui.label("Running...");
                 });
             }
             Status::Precompiled => {
@@ -517,14 +537,18 @@ impl ViewerApp {
         ui.heading("Case");
         let old_case = self.case.clone();
         egui::ComboBox::from_id_salt("case")
-            .selected_text(self.case.as_deref().unwrap_or("—"))
+            .selected_text(egui::RichText::new(self.case.as_deref().unwrap_or("-")).monospace())
             .height(400.0)
             .show_ui(ui, |ui| {
                 for suite_name in ["standard", "holdout"] {
-                    ui.label(egui::RichText::new(suite_name).strong());
+                    ui.label(egui::RichText::new(suite_name).monospace().strong());
                     for entry in self.cases.iter().filter(|e| e.suite == suite_name) {
                         let name = &entry.case.name;
-                        ui.selectable_value(&mut self.case, Some(name.clone()), name);
+                        ui.selectable_value(
+                            &mut self.case,
+                            Some(name.clone()),
+                            egui::RichText::new(name).monospace(),
+                        );
                     }
                 }
             });
@@ -539,7 +563,7 @@ impl ViewerApp {
             return;
         };
         let mut open = self.show_code;
-        egui::Window::new(format!("{}.rs", source.name))
+        egui::Window::new(egui::RichText::new(format!("{}.rs", source.name)).monospace())
             .id(egui::Id::new("source_code_window"))
             .open(&mut open)
             .default_size([640.0, 720.0])
@@ -583,20 +607,26 @@ impl ViewerApp {
         let s = &case.start;
         egui::Grid::new("case_info").num_columns(2).show(ui, |ui| {
             let mut row = |name: &str, value: String| {
-                ui.label(name);
+                ui.monospace(name);
                 ui.monospace(value);
                 ui.end_row();
             };
             row("m, I", format!("{:.3}, {:.3}", p.mass, p.inertia));
-            row("F_max, τ_max", format!("{:.3}, {:.3}", p.f_max, p.tau_max));
+            row(
+                "F_max, tau_max",
+                format!("{:.3}, {:.3}", p.f_max, p.tau_max),
+            );
             row("h", format!("{} s", p.h));
             row(
                 "goal B",
                 format!("({:.2}, {:.2})", task.goal.x, task.goal.y),
             );
-            row("start p", format!("({:.2}, {:.2})", s.x, s.y));
-            row("start v", format!("({:.2}, {:.2})", s.vx, s.vy));
-            row("start θ, ω", format!("{:.2}, {:.2}", s.theta, s.omega));
+            row("start position", format!("({:.2}, {:.2})", s.x, s.y));
+            row("start velocity", format!("({:.2}, {:.2})", s.vx, s.vy));
+            row(
+                "start theta, omega",
+                format!("{:.2}, {:.2}", s.theta, s.omega),
+            );
         });
         let Some(replay) = &self.replay else {
             return;
@@ -617,31 +647,28 @@ impl ViewerApp {
             return;
         };
         let goal = replay.case.task.goal;
-        ui.heading(format!("t = {:.4} s", replay.time(k) + offset));
-        ui.label(if self.playback.on_sample() {
-            format!("at controller sample k = {k}")
-        } else {
-            format!("sample k = {k} + {offset:.4} s")
-        });
+        ui.heading("Current state");
+        ui.label(format!("t = {:.4} s", replay.time(k) + offset));
+        ui.label(format!("sample k = {k} + {offset:.4} s"));
         egui::Grid::new("frame_info").num_columns(2).show(ui, |ui| {
             let mut row = |name: &str, value: String| {
-                ui.label(name);
+                ui.monospace(name);
                 ui.monospace(value);
                 ui.end_row();
             };
-            row("p", format!("({:.3}, {:.3})", s.x, s.y));
-            row("v", format!("({:.3}, {:.3})", s.vx, s.vy));
-            row("θ, ω", format!("{:.3}, {:.3}", s.theta, s.omega));
+            row("position", format!("({:.3}, {:.3})", s.x, s.y));
+            row("velocity", format!("({:.3}, {:.3})", s.vx, s.vy));
+            row("theta, omega", format!("{:.3}, {:.3}", s.theta, s.omega));
             row(
                 "dist. to B",
                 format!("{:.4}", (s.x - goal.x).hypot(s.y - goal.y)),
             );
             row("speed", format!("{:.4}", s.vx.hypot(s.vy)));
             let control = replay.control(k).map_or_else(
-                || "— (final state)".to_owned(),
+                || "- (final state)".to_owned(),
                 |u| format!("{:.3}, {:.3}", u.thrust, u.torque),
             );
-            row("u_k = (F, τ)", control);
+            row("u_k = (F, tau)", control);
         });
     }
 
@@ -652,7 +679,6 @@ impl ViewerApp {
                 .logarithmic(true)
                 .text("ship size (world units)"),
         );
-        ui.add(egui::Slider::new(&mut self.alpha, 0.0..=std::f32::consts::PI).text("ship shape α"));
         ui.checkbox(&mut self.show_path, "Path (grey: full, blue: so far)");
         ui.checkbox(&mut self.show_velocity, "Velocity (green)");
         ui.checkbox(&mut self.show_acceleration, "Acceleration (red)");
@@ -666,8 +692,8 @@ impl ViewerApp {
             }
         });
         ui.label("Drag: pan   Scroll: zoom");
-        ui.label("Space: play/pause   Left / Right: ±Δt");
-        ui.label("Shift+Left / Right: ±sample   Home / End");
+        ui.label("Space: play/pause   Left / Right: +/-dt");
+        ui.label("Shift+Left / Right: +/-sample   Home / End");
     }
 
     fn timeline_ui(&mut self, ui: &mut egui::Ui) {
@@ -678,17 +704,25 @@ impl ViewerApp {
         let (h, last) = (replay.h(), replay.last_frame());
         let playback = &mut self.playback;
         ui.horizontal_wrapped(|ui| {
-            if ui.button("⏮").on_hover_text("Start (Home)").clicked() {
+            if ui
+                .button("\u{23EE}")
+                .on_hover_text("Start (Home)")
+                .clicked()
+            {
                 playback.seek_start();
             }
             if ui
-                .button("|◀")
+                .button("|\u{25C0}")
                 .on_hover_text("Previous controller sample (Shift+Left)")
                 .clicked()
             {
                 playback.previous_sample(last);
             }
-            let play = if playback.playing { "⏸" } else { "▶" };
+            let play = if playback.playing {
+                "\u{23F8}"
+            } else {
+                "\u{25B6}"
+            };
             if ui
                 .button(play)
                 .on_hover_text("Play / pause (Space)")
@@ -697,20 +731,20 @@ impl ViewerApp {
                 playback.toggle(last);
             }
             if ui
-                .button("▶|")
+                .button("\u{25B6}|")
                 .on_hover_text("Next controller sample (Shift+Right)")
                 .clicked()
             {
                 playback.next_sample(last);
             }
-            if ui.button("⏭").on_hover_text("End (End)").clicked() {
+            if ui.button("\u{23ED}").on_hover_text("End (End)").clicked() {
                 playback.seek_end(last);
             }
             ui.separator();
             ui.add(
                 egui::Slider::new(&mut playback.speed, 0.1..=50.0)
                     .logarithmic(true)
-                    .text("× real time"),
+                    .text("x real time"),
             );
             ui.separator();
             let mut dt = playback.dt(h);
@@ -718,18 +752,21 @@ impl ViewerApp {
                 .add(
                     egui::Slider::new(&mut dt, h / f64::from(MAX_SUBDIVISIONS)..=h)
                         .logarithmic(true)
-                        .text(format!("Δt [s] = h/{}", playback.subdivisions())),
+                        .text(
+                            egui::RichText::new(format!("dt [s] = h/{}", playback.subdivisions()))
+                                .monospace(),
+                        ),
                 )
                 .on_hover_text(
-                    "Display sampling time: the playhead moves in steps of Δt (Left/Right).\n\
-                     Δt = h/n, so every controller sample lies on the grid.\n\
+                    "Display sampling time: the playhead moves in steps of dt (Left/Right).\n\
+                     dt = h/n, so every controller sample lies on the grid.\n\
                      States between samples are exact, not interpolated.",
                 );
             if response.changed() {
                 playback.set_subdivisions((h / dt).round() as u32);
             }
             ui.separator();
-            ui.label(format!(
+            ui.monospace(format!(
                 "{} on {}: t = {:.3} / {:.1} s",
                 replay.solution,
                 replay.case.name,
@@ -769,10 +806,10 @@ impl ViewerApp {
                             ("vy", &plots.vy, VEL_Y_COLOR),
                         ],
                     ),
-                    time_plot(ui, "θ", t, &[("θ", &plots.theta, THETA_COLOR)]),
-                    time_plot(ui, "ω", t, &[("ω", &plots.omega, OMEGA_COLOR)]),
+                    time_plot(ui, "theta", t, &[("theta", &plots.theta, THETA_COLOR)]),
+                    time_plot(ui, "omega", t, &[("omega", &plots.omega, OMEGA_COLOR)]),
                     time_plot(ui, "Thrust F", t, &[("F", &plots.thrust, THRUST_COLOR)]),
-                    time_plot(ui, "Torque τ", t, &[("τ", &plots.torque, TORQUE_COLOR)]),
+                    time_plot(ui, "Torque tau", t, &[("tau", &plots.torque, TORQUE_COLOR)]),
                 ]
                 .into_iter()
                 .flatten()
@@ -877,7 +914,7 @@ impl ViewerApp {
         painter.circle_stroke(goal, GOAL_RADIUS_PX, egui::Stroke::new(2.0_f32, color));
         painter.circle_filled(goal, 2.0, color);
 
-        // Position tolerance ε_p, drawn to scale once it is visible.
+        // Position tolerance eps_p, drawn to scale once it is visible.
         let tolerance_px = task.tolerance.position as f32 * self.camera.scale;
         if tolerance_px > 1.5 {
             painter.circle_stroke(goal, tolerance_px, egui::Stroke::new(1.0_f32, color));
@@ -916,8 +953,8 @@ impl ViewerApp {
 
         painter.add(egui::Shape::convex_polygon(
             vertices,
-            egui::Color32::LIGHT_BLUE,
-            egui::Stroke::new(TRIANGLE_STROKE_WIDTH, egui::Color32::BLACK),
+            palette::WHITE,
+            egui::Stroke::new(TRIANGLE_STROKE_WIDTH, palette::BLACK),
         ));
     }
 
@@ -959,7 +996,8 @@ impl ViewerApp {
 impl ViewerApp {
     /// The left panel's content: source, case, current state and display options.
     fn controls_ui(&mut self, ui: &mut egui::Ui) {
-        egui::ScrollArea::vertical().show(ui, |ui| {
+        // Scrolls sideways too, so rows are never cut off if the space is narrower than they are.
+        egui::ScrollArea::both().show(ui, |ui| {
             self.source_ui(ui);
             ui.separator();
             self.case_ui(ui);
@@ -973,14 +1011,57 @@ impl ViewerApp {
 
     /// Desktop layout: controls left, plots right, timeline below the canvas.
     fn wide_layout(&mut self, ui: &mut egui::Ui) {
-        egui::Panel::left("config_panel").show_inside(ui, |ui| self.controls_ui(ui));
+        if self.show_controls {
+            egui::Panel::left("config_panel")
+                .resizable(true)
+                .default_size(CONTROLS_PANEL_MIN_WIDTH)
+                .min_size(CONTROLS_PANEL_MIN_WIDTH)
+                .show_inside(ui, |ui| {
+                    if hide_button(ui, egui::Align::Max, "\u{25C0}", "Hide this panel") {
+                        self.show_controls = false;
+                    }
+                    self.controls_ui(ui);
+                });
+        }
         egui::Panel::bottom("timeline_panel").show_inside(ui, |ui| self.timeline_ui(ui));
-        egui::Panel::right("plots_panel")
-            .resizable(true)
-            .default_size(PLOT_PANEL_DEFAULT_WIDTH)
-            .min_size(PLOT_PANEL_MIN_WIDTH)
-            .show_inside(ui, |ui| self.plots_ui(ui));
+        if self.show_plots {
+            egui::Panel::right("plots_panel")
+                .resizable(true)
+                .default_size(PLOT_PANEL_DEFAULT_WIDTH)
+                .min_size(PLOT_PANEL_MIN_WIDTH)
+                .show_inside(ui, |ui| {
+                    if hide_button(ui, egui::Align::Min, "\u{25B6}", "Hide this panel") {
+                        self.show_plots = false;
+                    }
+                    self.plots_ui(ui);
+                });
+        }
         egui::CentralPanel::default().show_inside(ui, |ui| self.canvas_ui(ui));
+
+        // Buttons to bring back hidden panels, floating over the canvas corners.
+        let ctx = ui.ctx().clone();
+        if !self.show_controls
+            && show_button(
+                &ctx,
+                "show_controls",
+                egui::Align2::LEFT_TOP,
+                "\u{25B6}",
+                "Show controls",
+            )
+        {
+            self.show_controls = true;
+        }
+        if !self.show_plots
+            && show_button(
+                &ctx,
+                "show_plots",
+                egui::Align2::RIGHT_TOP,
+                "\u{25C0}",
+                "Show plots",
+            )
+        {
+            self.show_plots = true;
+        }
     }
 
     /// Narrow-screen layout: one full-size view at a time, chosen in the top bar; the
@@ -1024,18 +1105,10 @@ impl eframe::App for ViewerApp {
         }
 
         let compact = ui.available_width() < COMPACT_WIDTH;
-        egui::Panel::top("top_panel").show_inside(ui, |ui| {
-            egui::MenuBar::new().ui(ui, |ui| {
-                let is_web = cfg!(target_arch = "wasm32");
-                if !is_web {
-                    ui.menu_button("File", |ui| {
-                        if ui.button("Quit").clicked() {
-                            ui.send_viewport_cmd(egui::ViewportCommand::Close);
-                        }
-                    });
-                    ui.add_space(16.0);
-                }
-                if compact {
+        // The tab bar only exists in the compact layout; the wide layout shows everything.
+        if compact {
+            egui::Panel::top("top_panel").show_inside(ui, |ui| {
+                ui.horizontal(|ui| {
                     for (view, label) in [
                         (CompactView::Canvas, "View"),
                         (CompactView::Controls, "Controls"),
@@ -1043,11 +1116,9 @@ impl eframe::App for ViewerApp {
                     ] {
                         ui.selectable_value(&mut self.compact_view, view, label);
                     }
-                    ui.separator();
-                }
-                egui::widgets::global_theme_preference_buttons(ui);
+                });
             });
-        });
+        }
 
         if compact {
             self.compact_layout(ui);
@@ -1058,6 +1129,39 @@ impl eframe::App for ViewerApp {
         let ctx = ui.ctx().clone();
         self.code_window(&ctx);
     }
+}
+
+/// A small button at the top of a side panel that hides it, on side `align` of the panel.
+fn hide_button(ui: &mut egui::Ui, align: egui::Align, glyph: &str, hover: &str) -> bool {
+    ui.with_layout(egui::Layout::top_down(align), |ui| {
+        ui.small_button(glyph).on_hover_text(hover).clicked()
+    })
+    .inner
+}
+
+/// A small button floating in a top corner of the window that brings a hidden panel back.
+fn show_button(
+    ctx: &egui::Context,
+    id: &str,
+    corner: egui::Align2,
+    glyph: &str,
+    hover: &str,
+) -> bool {
+    let inset = egui::vec2(
+        if corner == egui::Align2::LEFT_TOP {
+            8.0
+        } else {
+            -8.0
+        },
+        8.0,
+    );
+    egui::Area::new(egui::Id::new(id))
+        .order(egui::Order::Foreground)
+        .anchor(corner, inset)
+        .show(ctx, |ui| {
+            ui.small_button(glyph).on_hover_text(hover).clicked()
+        })
+        .inner
 }
 
 fn world(x: f64, y: f64) -> egui::Vec2 {

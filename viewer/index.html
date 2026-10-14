@@ -6,16 +6,19 @@
     <!-- Disable zooming: -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     
-    <title>ship2d viewer</title>
+    <title>Nabla</title>
 
     <!-- config for our rust wasm binary. go to https://trunkrs.dev/assets/#rust for more customization -->
     <link data-trunk rel="rust" data-wasm-opt="2" />
     <!-- this is the base url relative to which other urls will be constructed. trunk will insert this from the public-url option -->
     <base data-trunk-public-url />
 
-    <link data-trunk rel="icon" href="assets/favicon.ico">
+    <!-- Transparent nabla; the SVG adapts to the browser's light/dark theme. The ICO (white, for
+         dark tab strips) is only the fallback for browsers without SVG favicons. -->
+    <link data-trunk rel="icon" href="assets/favicon.ico" sizes="48x48">
+    <link data-trunk rel="copy-file" href="assets/favicon.svg" data-target-path="assets"/>
+    <link rel="icon" type="image/svg+xml" href="assets/favicon.svg" sizes="any">
     <link data-trunk rel="copy-file" href="assets/nabla-logo.svg" data-target-path="assets"/>
-    <link rel="icon" type="image/svg+xml" href="assets/nabla-logo.svg">
 
 
     <link data-trunk rel="copy-file" href="assets/sw.js"/>
@@ -28,8 +31,7 @@
 
     <link rel="manifest" href="manifest.json">
     <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
-    <meta name="theme-color" media="(prefers-color-scheme: light)" content="white">
-    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#404040">
+    <meta name="theme-color" content="#000000">
 
     <style>
         html {
@@ -38,17 +40,8 @@
         }
 
         body {
-            /* Light mode background color for what is not covered by the egui canvas,
-            or where the egui canvas is translucent. */
-            background: #909090;
-        }
-
-        @media (prefers-color-scheme: dark) {
-            body {
-                /* Dark mode background color for what is not covered by the egui canvas,
-                or where the egui canvas is translucent. */
-                background: #404040;
-            }
+            /* Background for what is not covered by the egui canvas, or where it is translucent. */
+            background: #000000;
         }
 
         /* Allow canvas to fill entire web page: */
@@ -128,7 +121,7 @@
     <div class="centered" id="loading_text">
         <noscript>You need javascript to use this website</noscript>
         <p style="font-size:16px">
-            Loading…
+            Loading...
         </p>
         <div class="lds-dual-ring"></div>
     </div>

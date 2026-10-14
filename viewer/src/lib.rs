@@ -8,5 +8,6 @@ pub mod camera;
 pub mod grid;
 pub mod replay;
 pub mod source;
+pub mod theme;
 pub mod timeline;
 pub use app::ViewerApp;

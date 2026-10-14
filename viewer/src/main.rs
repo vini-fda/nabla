@@ -34,10 +34,12 @@ fn main() -> eframe::Result {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1400.0, 850.0])
             .with_min_inner_size([700.0, 450.0])
+            .with_title("Nabla")
             .with_icon(app_icon()),
         ..Default::default()
     };
     eframe::run_native(
+        // The app name keys the persisted settings, so it stays; the window title is "Nabla".
         "ship2d viewer",
         native_options,
         Box::new(|cc| Ok(Box::new(ship2d_graphics::ViewerApp::new(cc, source)))),

@@ -1,19 +1,35 @@
 #!/usr/bin/env bash
-# Builds `target/release/ship2d viewer.app`: the native viewer as a macOS app bundle, with the
+# Builds `target/release/Nabla.app`: the native viewer as a macOS app bundle, with the
 # layered Icon Composer icon (`nabla_macOS.icon`) that macOS 26 renders with Liquid Glass.
-# Needs Xcode (for `actool`). Open the result with `open "target/release/ship2d viewer.app"`.
+# Needs Xcode (for `actool`). Open the result with `open "target/release/Nabla.app"`.
+#
+# With `SHIP2D_BIN=<path to a built ship2d_graphics>` it skips `cargo build` and bundles that
+# binary next to itself instead (used by `run-bundled.sh`, the cargo runner on macOS).
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
-app="$root/target/release/ship2d viewer.app"
+bin="${SHIP2D_BIN:-$root/target/release/ship2d_graphics}"
+app="$(dirname "$bin")/Nabla.app"
 version="$(sed -n 's/^version = "\(.*\)"/\1/p' "$here/../Cargo.toml" | head -1)"
 
-cargo build --release -p ship2d_graphics --manifest-path "$root/Cargo.toml"
+# Fast path for repeated runs: the bundle is current, only the binary changed.
+if [ -n "${SHIP2D_BIN:-}" ] && [ -f "$app/Contents/Info.plist" ] \
+    && [ -z "$(find "$here/nabla_macOS.icon" "$here/bundle.sh" "$here/../Cargo.toml" \
+        -newer "$app/Contents/Info.plist" -print -quit)" ]; then
+    cp "$bin" "$app/Contents/MacOS/ship2d_graphics"
+    codesign --force --sign - "$app" >&2
+    echo "$app"
+    exit 0
+fi
+
+if [ -z "${SHIP2D_BIN:-}" ]; then
+    cargo build --release -p ship2d_graphics --manifest-path "$root/Cargo.toml"
+fi
 
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-cp "$root/target/release/ship2d_graphics" "$app/Contents/MacOS/ship2d_graphics"
+cp "$bin" "$app/Contents/MacOS/ship2d_graphics"
 
 # Compile the icon: Assets.car (layered, Liquid Glass) plus a flat .icns fallback. Xcode
 # versions before 26 cannot compile `.icon` files; then build a flat .icns from the PNG.
@@ -49,9 +65,9 @@ cat > "$app/Contents/Info.plist" <<PLIST
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>ship2d viewer</string>
+    <string>Nabla</string>
     <key>CFBundleDisplayName</key>
-    <string>ship2d viewer</string>
+    <string>Nabla</string>
     <key>CFBundleIdentifier</key>
     <string>io.github.vini-fda.ship2d-viewer</string>
     <key>CFBundleExecutable</key>
@@ -74,5 +90,5 @@ cat > "$app/Contents/Info.plist" <<PLIST
 PLIST
 
 # Ad-hoc signature, so the bundle runs on Apple Silicon.
-codesign --force --sign - "$app"
+codesign --force --sign - "$app" >&2
 echo "$app"

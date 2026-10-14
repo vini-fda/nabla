@@ -36,9 +36,9 @@ fn main() -> eframe::Result {
             .with_min_inner_size([700.0, 450.0])
             .with_title("Nabla")
             .with_icon(app_icon()),
-        // For the 3D ship view.
-        depth_buffer: 24,
-        multisampling: 4,
+        renderer: eframe::Renderer::Wgpu,
+        depth_buffer: ship2d_graphics::DEPTH_BUFFER,
+        multisampling: ship2d_graphics::MULTISAMPLING,
         ..Default::default()
     };
     eframe::run_native(
@@ -57,9 +57,9 @@ fn main() {
     eframe::WebLogger::init(log::LevelFilter::Debug).ok();
 
     let web_options = eframe::WebOptions {
-        renderer: eframe::Renderer::Glow,
-        // For the 3D ship view. (WebGL contexts come with a depth buffer anyway.)
-        depth_buffer: 24,
+        // WebGPU where the browser has it, else WebGL 2 (egui-wgpu's default setup).
+        renderer: eframe::Renderer::Wgpu,
+        depth_buffer: ship2d_graphics::DEPTH_BUFFER,
         ..Default::default()
     };
 

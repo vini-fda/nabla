@@ -13,7 +13,7 @@ targets = ["x86_64-unknown-linux-gnu", "wasm32-unknown-unknown"]
 [dependencies]
 egui = "0.36.2"
 egui_plot = "0.37.0"
-eframe = { version = "0.36.2", features = ["glow"] }
+eframe = { version = "0.36.2", features = ["wgpu"] }
 log = "0.4.34"
 ship2d_optimization = { path = "..", features = ["registry"] }
 gltf = { version = "1.4.1", default-features = false, features = ["utils"] }

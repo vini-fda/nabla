@@ -3,7 +3,6 @@
 //! next to plots of the state and control signals.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::Duration;
 
 use egui_plot::{Legend, Line, Plot, PlotPoint, VLine};
@@ -212,7 +211,7 @@ pub struct ViewerApp {
     compact_view: CompactView,
     view: CanvasView,
     /// Draws the 3D ship; `None` where OpenGL can't (then the canvas shows the debug view).
-    ship3d: Option<Arc<ShipRenderer>>,
+    ship3d: Option<ShipRenderer>,
     plume: Option<Plume>,
     /// Dropped files read by the browser.
     #[cfg(target_arch = "wasm32")]
@@ -274,17 +273,28 @@ impl ViewerApp {
     pub fn new(cc: &eframe::CreationContext<'_>, source: Option<PathBuf>) -> Self {
         theme::apply(&cc.egui_ctx);
 
-        let ship3d = cc.gl.as_ref().and_then(|gl| {
-            ShipModel::load(SHIP_GLB)
-                .and_then(|model| ShipRenderer::new(gl, &model))
-                .inspect_err(|e| log::warn!("No 3D view: {e}"))
-                .ok()
-        });
+        let ship3d = cc
+            .wgpu_render_state
+            .as_ref()
+            .ok_or_else(|| "not running on wgpu".to_owned())
+            .and_then(|render_state| {
+                let model = ShipModel::load(SHIP_GLB)?;
+                // egui's render pass, into which the ship is drawn: see `MULTISAMPLING`.
+                let samples = if cfg!(target_arch = "wasm32") {
+                    1
+                } else {
+                    u32::from(crate::MULTISAMPLING)
+                };
+                let depth = eframe::egui_wgpu::depth_format_from_bits(crate::DEPTH_BUFFER, 0);
+                Ok(ShipRenderer::new(render_state, &model, samples, depth))
+            })
+            .inspect_err(|e| log::warn!("No 3D view: {e}"))
+            .ok();
         let mut app = Self {
             runner: Runner::new(cc.egui_ctx.clone()),
             database: source::database(),
             cases: all_cases(),
-            ship3d: ship3d.map(Arc::new),
+            ship3d,
             plume: Some(Plume::new(&cc.egui_ctx)),
             ..Self::default()
         };
@@ -1168,12 +1178,6 @@ impl ViewerApp {
 }
 
 impl eframe::App for ViewerApp {
-    fn on_exit(&mut self, gl: Option<&eframe::glow::Context>) {
-        if let (Some(gl), Some(renderer)) = (gl, &self.ship3d) {
-            renderer.destroy(gl);
-        }
-    }
-
     /// Called each time the UI needs repainting, which may be many times per second.
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.poll_runner();

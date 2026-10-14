@@ -1,17 +1,14 @@
-//! The ship's textured 3D model, and an OpenGL renderer that draws it into the canvas,
-//! seen from straight above with an orthographic projection that matches the 2D
-//! [`Camera`], so the model lines up with everything the canvas paints around it.
+//! The ship's textured 3D model, and a wgpu renderer that draws it into the canvas (through
+//! egui's own render pass, with its depth buffer), seen from straight above with an
+//! orthographic projection that matches the 2D [`Camera`], so the model lines up with
+//! everything the canvas paints around it. The shader is `ship3d.wgsl`.
 //!
 //! The model is `assets/nabla_starship.glb`: one mesh with positions, normals and
 //! texture coordinates, a base color texture (2048 px JPEG) and a metallic-roughness
 //! texture (1024 px JPEG). In model space the ship's nose points along +y.
 
-#![expect(unsafe_code, reason = "OpenGL calls through glow are unsafe")]
-
-use std::sync::Arc;
-
-use eframe::glow::{self, HasContext as _};
-use eframe::{egui_glow, glow::Context};
+use eframe::egui_wgpu::{self, CallbackResources, CallbackTrait, ScreenDescriptor};
+use eframe::wgpu::{self, util::DeviceExt as _};
 
 use crate::camera::Camera;
 
@@ -27,6 +24,7 @@ pub const SHIP_GLB: &[u8] = include_bytes!("../assets/nabla_starship.glb");
 const MODEL_TOP: [f32; 3] = [0.0, 0.0, 1.0];
 
 /// An RGBA8 image.
+#[derive(Clone)]
 struct Image {
     width: u32,
     height: u32,
@@ -45,7 +43,7 @@ pub struct ShipModel {
 }
 
 /// Bytes per vertex in the vertex buffer: eight four-byte floats.
-const VERTEX_STRIDE: i32 = 8 * 4;
+const VERTEX_STRIDE: u64 = 8 * 4;
 
 impl ShipModel {
     /// Reads the first mesh primitive of a binary glTF file, and its material's textures.
@@ -107,188 +105,253 @@ impl ShipModel {
     }
 }
 
-const VERTEX_SHADER: &str = r"
-in vec3 a_position;
-in vec3 a_normal;
-in vec2 a_uv;
-uniform mat4 u_clip_from_model;
-uniform mat3 u_world_from_model;
-out vec3 v_normal;
-out vec2 v_uv;
-
-void main() {
-    gl_Position = u_clip_from_model * vec4(a_position, 1.0);
-    v_normal = u_world_from_model * a_normal;
-    v_uv = a_uv;
+/// The model's GPU resources, kept in egui-wgpu's callback resources.
+struct ShipResources {
+    pipeline: wgpu::RenderPipeline,
+    bind_group: wgpu::BindGroup,
+    uniforms: wgpu::Buffer,
+    vertices: wgpu::Buffer,
+    indices: wgpu::Buffer,
+    index_count: u32,
 }
-";
 
-/// Lit in linear color, written out gamma-encoded like the rest of egui. World axes: x right,
-/// y up the screen, z out of the screen toward the viewer.
-const FRAGMENT_SHADER: &str = r"
-#ifdef GL_ES
-precision highp float;
-#endif
-in vec3 v_normal;
-in vec2 v_uv;
-uniform sampler2D u_base_color;
-uniform sampler2D u_metallic_roughness;
-out vec4 out_color;
+/// Size of the uniform block in `ship3d.wgsl`: two 4x4 matrices and a vec4.
+const UNIFORMS_SIZE: u64 = (16 + 16 + 4) * 4;
 
-// Key light from the upper left of the screen and above it, and a dimmer fill light from
-// the lower right, so no side of the hull goes black.
-const vec3 KEY = vec3(-0.45, 0.55, 0.70);
-const vec3 FILL = vec3(0.6, -0.5, 0.6);
-const vec3 VIEW = vec3(0.0, 0.0, 1.0);
-
-vec3 to_linear(vec3 c) { return pow(c, vec3(2.2)); }
-vec3 to_gamma(vec3 c) { return pow(c, vec3(1.0 / 2.2)); }
-
-void main() {
-    vec3 n = normalize(gl_FrontFacing ? v_normal : -v_normal);
-    vec3 albedo = to_linear(texture(u_base_color, v_uv).rgb);
-    vec3 mr = texture(u_metallic_roughness, v_uv).rgb;
-    float roughness = clamp(mr.g, 0.05, 1.0);
-    float metallic = mr.b;
-
-    vec3 key = normalize(KEY);
-    float key_diffuse = max(dot(n, key), 0.0);
-    float fill_diffuse = max(dot(n, normalize(FILL)), 0.0);
-    // Sky above, darker ground below.
-    float ambient = mix(0.08, 0.25, 0.5 + 0.5 * n.z);
-
-    // Blinn-Phong highlight, sharper and brighter the smoother the surface.
-    float shininess = 2.0 / (roughness * roughness * roughness * roughness) - 2.0;
-    float highlight = pow(max(dot(n, normalize(key + VIEW)), 0.0), shininess)
-        * (shininess + 8.0) / 25.0 * key_diffuse;
-    vec3 f0 = mix(vec3(0.04), albedo, metallic);
-
-    vec3 diffuse = albedo * (1.0 - metallic) * (ambient + 1.1 * key_diffuse + 0.35 * fill_diffuse);
-    vec3 reflected = f0 * (ambient + highlight);
-    out_color = vec4(to_gamma(diffuse + reflected), 1.0);
-}
-";
-
-/// The model's GPU resources.
+/// Draws the model; its GPU resources live in the egui renderer's callback resources.
 pub struct ShipRenderer {
-    program: glow::Program,
-    vertex_array: glow::VertexArray,
-    vertex_buffer: glow::Buffer,
-    index_buffer: glow::Buffer,
-    index_count: i32,
-    base_color: glow::Texture,
-    metallic_roughness: glow::Texture,
     half_length: f32,
+    /// Gamma-encode the shader's output, for a target that is not sRGB.
+    gamma_output: bool,
 }
 
 impl ShipRenderer {
-    /// Uploads `model`. Fails where the GL lacks GLSL 1.40 / ES 3.00 shaders.
-    pub fn new(gl: &Context, model: &ShipModel) -> Result<Self, String> {
-        let version = egui_glow::ShaderVersion::get(gl);
-        if !version.is_new_shader_interface() {
-            return Err(format!("unsupported shader version {version:?}"));
-        }
-        // SAFETY: plain object creation and uploads on the current context.
-        unsafe {
-            let program = compile_program(gl, version.version_declaration())?;
+    /// Uploads `model`. `msaa_samples` and `depth_format` must be those of egui's render
+    /// pass, into which the ship is drawn.
+    pub fn new(
+        render_state: &egui_wgpu::RenderState,
+        model: &ShipModel,
+        msaa_samples: u32,
+        depth_format: Option<wgpu::TextureFormat>,
+    ) -> Self {
+        let device = &render_state.device;
+        let queue = &render_state.queue;
 
-            let vertex_array = gl.create_vertex_array()?;
-            gl.bind_vertex_array(Some(vertex_array));
-            let vertex_buffer = gl.create_buffer()?;
-            gl.bind_buffer(glow::ARRAY_BUFFER, Some(vertex_buffer));
-            gl.buffer_data_u8_slice(
-                glow::ARRAY_BUFFER,
-                &to_bytes(&model.vertices),
-                glow::STATIC_DRAW,
-            );
-            for (location, size, offset) in [(0, 3, 0), (1, 3, 3), (2, 2, 6)] {
-                gl.enable_vertex_attrib_array(location);
-                gl.vertex_attrib_pointer_f32(
-                    location,
-                    size,
-                    glow::FLOAT,
-                    false,
-                    VERTEX_STRIDE,
-                    4 * offset,
-                );
-            }
-            let index_buffer = gl.create_buffer()?;
-            gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(index_buffer));
-            gl.buffer_data_u8_slice(
-                glow::ELEMENT_ARRAY_BUFFER,
-                &model
-                    .indices
-                    .iter()
-                    .flat_map(|i| i.to_ne_bytes())
-                    .collect::<Vec<_>>(),
-                glow::STATIC_DRAW,
-            );
-            gl.bind_vertex_array(None);
-            gl.bind_buffer(glow::ARRAY_BUFFER, None);
-            gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, None);
+        let (pipeline, bind_group_layout) = create_pipeline(
+            device,
+            render_state.target_format,
+            msaa_samples,
+            depth_format,
+        );
 
-            Ok(Self {
-                program,
-                vertex_array,
-                vertex_buffer,
-                index_buffer,
-                index_count: i32::try_from(model.indices.len()).map_err(|e| e.to_string())?,
-                base_color: upload_texture(gl, &model.base_color)?,
-                metallic_roughness: upload_texture(gl, &model.metallic_roughness)?,
-                half_length: model.half_length,
+        let buffer = |label, contents: &[u8], usage| {
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(label),
+                contents,
+                usage,
             })
+        };
+        let vertices = buffer(
+            "ship3d vertices",
+            &to_bytes(&model.vertices),
+            wgpu::BufferUsages::VERTEX,
+        );
+        let index_bytes: Vec<u8> = model.indices.iter().flat_map(|i| i.to_ne_bytes()).collect();
+        let indices = buffer("ship3d indices", &index_bytes, wgpu::BufferUsages::INDEX);
+        let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("ship3d uniforms"),
+            size: UNIFORMS_SIZE,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let base_color = upload_texture(
+            device,
+            queue,
+            &model.base_color,
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+        );
+        let metallic_roughness = upload_texture(
+            device,
+            queue,
+            &model.metallic_roughness,
+            wgpu::TextureFormat::Rgba8Unorm,
+        );
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("ship3d"),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            ..Default::default()
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("ship3d"),
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniforms.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&base_color),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&metallic_roughness),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+        });
+
+        render_state
+            .renderer
+            .write()
+            .callback_resources
+            .insert(ShipResources {
+                pipeline,
+                bind_group,
+                uniforms,
+                vertices,
+                indices,
+                index_count: model.indices.len() as u32,
+            });
+        Self {
+            half_length: model.half_length,
+            gamma_output: !render_state.target_format.is_srgb(),
         }
     }
+}
 
-    pub fn destroy(&self, gl: &Context) {
-        // SAFETY: deletes only objects this renderer created.
-        unsafe {
-            gl.delete_program(self.program);
-            gl.delete_vertex_array(self.vertex_array);
-            gl.delete_buffer(self.vertex_buffer);
-            gl.delete_buffer(self.index_buffer);
-            gl.delete_texture(self.base_color);
-            gl.delete_texture(self.metallic_roughness);
+/// The render pipeline of `ship3d.wgsl` for egui's render pass (`target_format`,
+/// `msaa_samples` and `depth_format`), and the layout of its bind group.
+fn create_pipeline(
+    device: &wgpu::Device,
+    target_format: wgpu::TextureFormat,
+    msaa_samples: u32,
+    depth_format: Option<wgpu::TextureFormat>,
+) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout) {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("ship3d"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("ship3d.wgsl").into()),
+    });
+    let texture_entry = |binding| wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
+        },
+        count: None,
+    };
+    let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("ship3d"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(UNIFORMS_SIZE),
+                },
+                count: None,
+            },
+            texture_entry(1),
+            texture_entry(2),
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    });
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("ship3d"),
+        bind_group_layouts: &[Some(&bind_group_layout)],
+        ..Default::default()
+    });
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("ship3d"),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            buffers: &[Some(wgpu::VertexBufferLayout {
+                array_stride: VERTEX_STRIDE,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &wgpu::vertex_attr_array![
+                    0 => Float32x3, 1 => Float32x3, 2 => Float32x2
+                ],
+            })],
+        },
+        // The model is double-sided.
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: depth_format.map(|format| wgpu::DepthStencilState {
+            format,
+            depth_write_enabled: Some(true),
+            depth_compare: Some(wgpu::CompareFunction::Less),
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
+        multisample: wgpu::MultisampleState {
+            count: msaa_samples,
+            ..Default::default()
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[Some(target_format.into())],
+        }),
+        multiview_mask: None,
+        cache: None,
+    });
+    (pipeline, bind_group_layout)
+}
+
+/// One frame's drawing of the ship: the uniforms to upload before drawing.
+struct ShipCallback {
+    uniforms: Vec<u8>,
+}
+
+impl CallbackTrait for ShipCallback {
+    fn prepare(
+        &self,
+        _device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        _screen_descriptor: &ScreenDescriptor,
+        _egui_encoder: &mut wgpu::CommandEncoder,
+        resources: &mut CallbackResources,
+    ) -> Vec<wgpu::CommandBuffer> {
+        if let Some(ship) = resources.get::<ShipResources>() {
+            queue.write_buffer(&ship.uniforms, 0, &self.uniforms);
         }
+        Vec::new()
     }
 
-    fn paint(&self, gl: &Context, clip_from_model: &[f32; 16], world_from_model: &[f32; 9]) {
-        // SAFETY: draws with this renderer's objects; egui restores its own state afterwards.
-        unsafe {
-            gl.enable(glow::DEPTH_TEST);
-            gl.depth_func(glow::LESS);
-            gl.depth_mask(true);
-            gl.clear_depth_f32(1.0);
-            gl.clear(glow::DEPTH_BUFFER_BIT);
-            gl.disable(glow::BLEND);
-
-            gl.use_program(Some(self.program));
-            let uniform = |name| gl.get_uniform_location(self.program, name);
-            gl.uniform_matrix_4_f32_slice(
-                uniform("u_clip_from_model").as_ref(),
-                false,
-                clip_from_model,
-            );
-            gl.uniform_matrix_3_f32_slice(
-                uniform("u_world_from_model").as_ref(),
-                false,
-                world_from_model,
-            );
-            for (unit, name, texture) in [
-                (0, "u_base_color", self.base_color),
-                (1, "u_metallic_roughness", self.metallic_roughness),
-            ] {
-                gl.active_texture(glow::TEXTURE0 + unit);
-                gl.bind_texture(glow::TEXTURE_2D, Some(texture));
-                gl.uniform_1_i32(uniform(name).as_ref(), unit.cast_signed());
-            }
-
-            gl.bind_vertex_array(Some(self.vertex_array));
-            gl.draw_elements(glow::TRIANGLES, self.index_count, glow::UNSIGNED_INT, 0);
-            gl.bind_vertex_array(None);
-            gl.active_texture(glow::TEXTURE0);
-            gl.disable(glow::DEPTH_TEST);
-        }
+    fn paint(
+        &self,
+        _info: egui::PaintCallbackInfo,
+        render_pass: &mut wgpu::RenderPass<'static>,
+        resources: &CallbackResources,
+    ) {
+        let Some(ship) = resources.get::<ShipResources>() else {
+            return;
+        };
+        render_pass.set_pipeline(&ship.pipeline);
+        render_pass.set_bind_group(0, &ship.bind_group, &[]);
+        render_pass.set_vertex_buffer(0, ship.vertices.slice(..));
+        render_pass.set_index_buffer(ship.indices.slice(..), wgpu::IndexFormat::Uint32);
+        render_pass.draw_indexed(0..ship.index_count, 0, 0..1);
     }
 }
 
@@ -296,7 +359,7 @@ impl ShipRenderer {
 /// center) at `position`, heading `theta` radians counterclockwise from +x, into the canvas
 /// `canvas` seen through `camera`. Returns `None` when the ship is outside the canvas.
 pub fn paint_callback(
-    renderer: &Arc<ShipRenderer>,
+    renderer: &ShipRenderer,
     camera: &Camera,
     canvas: egui::Rect,
     position: egui::Vec2,
@@ -313,10 +376,10 @@ pub fn paint_callback(
     }
 
     let scale = half_length / renderer.half_length;
-    let world_from_model = rotation(theta);
+    let r = rotation(theta);
 
     // Clip coordinates of world point (x, y, z), x and y through the camera onto the screen,
-    // then into `rect`; z (toward the viewer) into depth, nearer being smaller.
+    // then into `rect`; z (toward the viewer) into depth (0 to 1), nearer being smaller.
     let k = camera.scale;
     let canvas_center = canvas.center();
     let (sx, sy) = (2.0 * k / rect.width(), 2.0 * k / rect.height());
@@ -327,24 +390,26 @@ pub fn paint_callback(
         [sx, 0.0, 0.0, 0.0],
         [0.0, sy, 0.0, 0.0],
         [0.0, 0.0, sz, 0.0],
-        [tx, ty, 0.0, 1.0],
+        [tx, ty, 0.5, 1.0],
     ];
-    let r = &world_from_model;
-    let world_from_model4 = [
+    let world_from_model = [
         [scale * r[0], scale * r[1], scale * r[2], 0.0],
         [scale * r[3], scale * r[4], scale * r[5], 0.0],
         [scale * r[6], scale * r[7], scale * r[8], 0.0],
         [position.x, position.y, 0.0, 1.0],
     ];
-    let clip_from_model = mul4(&clip_from_world, &world_from_model4);
+    let rotation4 = [
+        r[0], r[1], r[2], 0.0, r[3], r[4], r[5], 0.0, r[6], r[7], r[8], 0.0, 0.0, 0.0, 0.0, 1.0,
+    ];
+    let output = [f32::from(u8::from(renderer.gamma_output)), 0.0, 0.0, 0.0];
 
-    let renderer = Arc::clone(renderer);
-    Some(egui::PaintCallback {
+    let mut uniforms = to_bytes(&mul4(&clip_from_world, &world_from_model));
+    uniforms.extend(to_bytes(&rotation4));
+    uniforms.extend(to_bytes(&output));
+    Some(egui_wgpu::Callback::new_paint_callback(
         rect,
-        callback: Arc::new(egui_glow::CallbackFn::new(move |_info, painter| {
-            renderer.paint(painter.gl(), &clip_from_model, &world_from_model);
-        })),
-    })
+        ShipCallback { uniforms },
+    ))
 }
 
 /// The rotation (column-major 3x3) that turns the model's nose (+y) to heading `theta` in
@@ -391,73 +456,81 @@ fn to_bytes(floats: &[f32]) -> Vec<u8> {
     floats.iter().flat_map(|f| f.to_ne_bytes()).collect()
 }
 
-/// # Safety
-/// The caller must have `gl` current.
-unsafe fn compile_program(gl: &Context, version: &str) -> Result<glow::Program, String> {
-    // SAFETY: forwarded from the caller.
-    unsafe {
-        let program = gl.create_program()?;
-        let mut shaders = Vec::new();
-        for (kind, source) in [
-            (glow::VERTEX_SHADER, VERTEX_SHADER),
-            (glow::FRAGMENT_SHADER, FRAGMENT_SHADER),
-        ] {
-            let shader = gl.create_shader(kind)?;
-            gl.shader_source(shader, &format!("{version}{source}"));
-            gl.compile_shader(shader);
-            if !gl.get_shader_compile_status(shader) {
-                return Err(gl.get_shader_info_log(shader));
-            }
-            gl.attach_shader(program, shader);
-            shaders.push(shader);
-        }
-        for (location, name) in [(0, "a_position"), (1, "a_normal"), (2, "a_uv")] {
-            gl.bind_attrib_location(program, location, name);
-        }
-        gl.link_program(program);
-        if !gl.get_program_link_status(program) {
-            return Err(gl.get_program_info_log(program));
-        }
-        for shader in shaders {
-            gl.detach_shader(program, shader);
-            gl.delete_shader(shader);
-        }
-        Ok(program)
+/// Uploads `image` as a texture of `format` with a full chain of mipmaps (wgpu doesn't make
+/// them), and returns its view.
+fn upload_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    image: &Image,
+    format: wgpu::TextureFormat,
+) -> wgpu::TextureView {
+    let levels = mipmaps(image);
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("ship3d"),
+        size: wgpu::Extent3d {
+            width: image.width,
+            height: image.height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: levels.len() as u32,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    for (level, mip) in levels.iter().enumerate() {
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: level as u32,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &mip.pixels,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * mip.width),
+                rows_per_image: Some(mip.height),
+            },
+            wgpu::Extent3d {
+                width: mip.width,
+                height: mip.height,
+                depth_or_array_layers: 1,
+            },
+        );
     }
+    texture.create_view(&wgpu::TextureViewDescriptor::default())
 }
 
-/// # Safety
-/// The caller must have `gl` current.
-unsafe fn upload_texture(gl: &Context, image: &Image) -> Result<glow::Texture, String> {
-    // SAFETY: forwarded from the caller.
-    unsafe {
-        let texture = gl.create_texture()?;
-        gl.bind_texture(glow::TEXTURE_2D, Some(texture));
-        gl.tex_image_2d(
-            glow::TEXTURE_2D,
-            0,
-            glow::RGBA8.cast_signed(),
-            image.width.cast_signed(),
-            image.height.cast_signed(),
-            0,
-            glow::RGBA,
-            glow::UNSIGNED_BYTE,
-            glow::PixelUnpackData::Slice(Some(&image.pixels)),
-        );
-        gl.generate_mipmap(glow::TEXTURE_2D);
-        gl.tex_parameter_i32(
-            glow::TEXTURE_2D,
-            glow::TEXTURE_MIN_FILTER,
-            glow::LINEAR_MIPMAP_LINEAR.cast_signed(),
-        );
-        gl.tex_parameter_i32(
-            glow::TEXTURE_2D,
-            glow::TEXTURE_MAG_FILTER,
-            glow::LINEAR.cast_signed(),
-        );
-        gl.bind_texture(glow::TEXTURE_2D, None);
-        Ok(texture)
+/// `image` and its successive halvings down to 1x1, each pixel the average of the 2x2 above.
+fn mipmaps(image: &Image) -> Vec<Image> {
+    let mut levels = vec![image.clone()];
+    while let Some(last) = levels.last().filter(|i| i.width > 1 || i.height > 1) {
+        let (width, height) = ((last.width / 2).max(1), (last.height / 2).max(1));
+        let at = |x: u32, y: u32, c: usize| {
+            let (x, y) = (x.min(last.width - 1), y.min(last.height - 1));
+            u32::from(last.pixels[((y * last.width + x) * 4) as usize + c])
+        };
+        let mut pixels = Vec::with_capacity((width * height * 4) as usize);
+        for y in 0..height {
+            for x in 0..width {
+                for c in 0..4 {
+                    let sum = at(2 * x, 2 * y, c)
+                        + at(2 * x + 1, 2 * y, c)
+                        + at(2 * x, 2 * y + 1, c)
+                        + at(2 * x + 1, 2 * y + 1, c);
+                    pixels.push(((sum + 2) / 4) as u8);
+                }
+            }
+        }
+        levels.push(Image {
+            width,
+            height,
+            pixels,
+        });
     }
+    levels
 }
 
 #[cfg(test)]
@@ -495,5 +568,19 @@ mod tests {
         assert_eq!(model.indices.len() % 3, 0);
         assert!((model.half_length - 1.0).abs() < 0.01);
         assert_eq!(model.base_color.pixels.len(), 2048 * 2048 * 4);
+    }
+
+    #[test]
+    fn mipmaps_halve_down_to_one_pixel() {
+        let image = Image {
+            width: 4,
+            height: 2,
+            pixels: (0..4 * 2 * 4).map(|i| (i * 8) as u8).collect(),
+        };
+        let levels = mipmaps(&image);
+        let sizes: Vec<_> = levels.iter().map(|l| (l.width, l.height)).collect();
+        assert_eq!(sizes, [(4, 2), (2, 1), (1, 1)]);
+        // Red of the first 2x2 block: pixels 0, 1, 4 and 5, red values 0, 32, 128, 160.
+        assert_eq!(levels[1].pixels[0], 80);
     }
 }

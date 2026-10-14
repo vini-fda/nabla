@@ -8,12 +8,25 @@ on:
   # Also run as the first stage of a release (release.yml).
   workflow_call:
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
+  # Every cargo command uses the committed Cargo.lock as is, and fails if it is out of date.
+  CARGO_FLAGS: --locked
+  RUSTFLAGS: -D warnings
+  RUSTDOCFLAGS: -D warnings
+
+# A new push to a pull request cancels its still-running checks.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  check:
-    name: Format, lint, test
+  # Platform independent checks: run once.
+  lint:
+    name: Format, docs, lockfile
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -32,13 +45,116 @@ jobs:
       - name: Format
         run: cargo fmt --all -- --check
 
+      # Rustdoc warnings (broken intra-doc links, ...) are errors. Private items are included,
+      # since the numerical core is documented mostly there.
+      - name: Docs
+        run: cargo doc $CARGO_FLAGS --workspace --no-deps --document-private-items
+
+      - name: Cargo.lock is up to date
+        run: cargo metadata $CARGO_FLAGS --format-version 1 >/dev/null
+
+  # Lint, build and test the native viewer on every platform that gets a release build.
+  test:
+    name: Test (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            # The oldest supported Ubuntu, as in release.yml.
+            os: ubuntu-22.04
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the toolchain from rust-toolchain.toml
+        run: |
+          rustup toolchain install
+          rustup target add ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: System libraries for eframe
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libxkbcommon-dev libwayland-dev libssl-dev
+
+      # Platform specific code (`cfg(target_os)`) is only linted on its own platform.
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy $CARGO_FLAGS --workspace --all-targets --target ${{ matrix.target }}
 
-      - name: Web build compiles
-        run: cargo check -p ship2d_graphics --lib --target wasm32-unknown-unknown
-
-      # Includes the stored-solution tests (every solution still solves every case and
-      # matches its index entry) and a real compile of a solution source by the viewer.
+      # Release mode keeps the solution tests fast. Overflow checks and debug assertions stay
+      # on, so arithmetic bugs that release builds would hide still fail the tests.
+      # Includes the stored-solution tests (every solution still solves every case and matches
+      # its index entry), a real compile of a solution source by the viewer, and the ASCII lint
+      # for the viewer sources.
       - name: Test
-        run: cargo test --workspace --release
+        env:
+          CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS: "true"
+          CARGO_PROFILE_RELEASE_OVERFLOW_CHECKS: "true"
+        run: cargo test $CARGO_FLAGS --workspace --release --target ${{ matrix.target }}
+
+      # The viewer binary builds exactly as it is released.
+      - name: Build the viewer (release)
+        run: cargo build $CARGO_FLAGS --release -p ship2d_graphics --target ${{ matrix.target }}
+
+      # The Liquid Glass icon needs Xcode 26 (see release.yml).
+      - name: Select the newest Xcode
+        if: runner.os == 'macOS'
+        run: |
+          xcode="$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
+          sudo xcode-select -s "$xcode"
+          xcodebuild -version
+
+      - name: Build the macOS app bundle
+        if: runner.os == 'macOS'
+        run: |
+          viewer/macos/bundle.sh
+          test -f "target/release/Nabla.app/Contents/Resources/Assets.car"
+
+  # The web app: compile for wasm and run the exact trunk build that gets deployed.
+  web:
+    name: Web (wasm32 + trunk)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: wasm
+
+      - name: Clippy (wasm32)
+        run: cargo clippy $CARGO_FLAGS -p ship2d_graphics --lib --target wasm32-unknown-unknown
+
+      - name: Install trunk
+        run: |
+          wget -qO- https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-x86_64-unknown-linux-gnu.tar.gz \
+            | tar -xzf- -C "$HOME/.cargo/bin"
+          trunk --version
+
+      - name: Trunk build
+        working-directory: viewer
+        run: trunk build --release
+
+      - name: The build contains everything index.html refers to
+        run: |
+          for file in index.html manifest.json sw.js favicon.ico ship2d_graphics.js \
+              ship2d_graphics_bg.wasm assets/favicon.svg assets/nabla-logo.svg \
+              assets/favicon-192x192.png assets/favicon-512x512.png \
+              assets/maskable-512x512.png assets/apple-touch-icon.png; do
+            test -s "viewer/dist/$file" || { echo "::error::viewer/dist/$file is missing"; exit 1; }
+          done

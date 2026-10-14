@@ -854,7 +854,9 @@ impl ViewerApp {
         ui.label("Shift+Left / Right: +/-sample   Home / End");
     }
 
-    fn timeline_ui(&mut self, ui: &mut egui::Ui) {
+    /// The playback controls, on one row, and the timeline. `compact`, for narrow screens,
+    /// keeps only the transport buttons and a playback speed menu.
+    fn timeline_ui(&mut self, ui: &mut egui::Ui, compact: bool) {
         let Some(replay) = &self.replay else {
             ui.label("Select a solution and a case.");
             return;
@@ -899,6 +901,10 @@ impl ViewerApp {
                 playback.seek_end(last);
             }
             ui.separator();
+            if compact {
+                speed_menu(ui, &mut playback.speed);
+                return;
+            }
             ui.add(
                 egui::Slider::new(&mut playback.speed, 0.1..=50.0)
                     .logarithmic(true)
@@ -1238,7 +1244,7 @@ impl ViewerApp {
     fn wide_layout(&mut self, ui: &mut egui::Ui) {
         // The timeline first, across the whole window, so neither side panel (nor its
         // collapsed title bar, which slides back in when the pointer comes near) reaches it.
-        egui::Panel::bottom("timeline_panel").show(ui, |ui| self.timeline_ui(ui));
+        egui::Panel::bottom("timeline_panel").show(ui, |ui| self.timeline_ui(ui, false));
         let mut show_controls = self.show_controls;
         CONTROLS_PANEL.show(ui, &mut show_controls, |ui| self.controls_ui(ui));
         self.show_controls = show_controls;
@@ -1252,7 +1258,7 @@ impl ViewerApp {
     /// timeline stays available below the canvas and the plots.
     fn compact_layout(&mut self, ui: &mut egui::Ui) {
         if self.compact_view != CompactView::Controls {
-            egui::Panel::bottom("timeline_panel").show(ui, |ui| self.timeline_ui(ui));
+            egui::Panel::bottom("timeline_panel").show(ui, |ui| self.timeline_ui(ui, true));
         }
         egui::CentralPanel::default().show(ui, |ui| match self.compact_view {
             CompactView::Canvas => self.canvas_ui(ui),
@@ -1296,7 +1302,7 @@ impl eframe::App for ViewerApp {
                 ui.horizontal(|ui| {
                     for (view, label) in [
                         (CompactView::Canvas, "View"),
-                        (CompactView::Controls, "Controls"),
+                        (CompactView::Controls, CONTROLS_PANEL.title),
                         (CompactView::Plots, "Plots"),
                     ] {
                         ui.selectable_value(&mut self.compact_view, view, label);
@@ -1603,6 +1609,52 @@ fn make_plot(id: &str) -> Plot<'static> {
         .allow_drag(false)
         .allow_scroll(false)
         .allow_boxed_zoom(false)
+}
+
+/// Playback speeds offered by the compact layout's speed menu.
+const MENU_SPEEDS: [f64; 10] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 4.0, 10.0];
+
+/// A playback speed as the menu shows it: `1x`, `1.5x`, `0.25x`.
+fn speed_label(speed: f64) -> String {
+    format!("{}x", (speed * 100.0).round() / 100.0)
+}
+
+/// The compact layout's playback speed control, as in video players: a button with a gauge
+/// and the speed, opening a menu of speeds.
+fn speed_menu(ui: &mut egui::Ui, speed: &mut f64) {
+    let gauge = ui.id().with("speed_gauge");
+    let size = egui::Vec2::splat(ui.text_style_height(&egui::TextStyle::Button));
+    let button =
+        egui::Button::new((egui::Atom::custom(gauge, size), speed_label(*speed))).atom_ui(ui);
+    if let Some(rect) = button.rect(gauge) {
+        let color = ui.style().interact(&button.response).fg_stroke.color;
+        paint_gauge(ui.painter(), rect, color);
+    }
+    let response = button.response.on_hover_text("Playback speed");
+    egui::Popup::menu(&response).show(|ui| {
+        for option in MENU_SPEEDS {
+            let selected = (*speed - option).abs() < 1e-9;
+            if ui.selectable_label(selected, speed_label(option)).clicked() {
+                *speed = option;
+            }
+        }
+    });
+}
+
+/// A speedometer: an arc over the top of `rect` and a needle pointing up and to the right.
+fn paint_gauge(painter: &egui::Painter, rect: egui::Rect, color: egui::Color32) {
+    use std::f32::consts::PI;
+    let stroke = egui::Stroke::new(1.5, color);
+    let radius = 0.45 * rect.width();
+    let center = rect.center() + egui::vec2(0.0, 0.2 * radius);
+    let point = |angle: f32, r: f32| center + r * egui::vec2(angle.cos(), -angle.sin());
+    // From lower left (210 degrees) over the top to lower right (-30 degrees).
+    let arc = (0..=16)
+        .map(|i| point(PI * (7.0 / 6.0 - 4.0 / 3.0 * i as f32 / 16.0), radius))
+        .collect();
+    painter.add(egui::Shape::line(arc, stroke));
+    painter.line_segment([center, point(PI / 4.0, 0.75 * radius)], stroke);
+    painter.circle_filled(center, 1.5, color);
 }
 
 /// Plot `lines` against time with a cursor at `t`, titled "`title` `symbol`". Returns the

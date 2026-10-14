@@ -10,7 +10,7 @@ A ship moves in the plane with state `s = (x, y, vx, vy, θ, ω)`:
 ẋ = vx,  ẏ = vy,  v̇x = F/m cos θ,  v̇y = F/m sin θ,  θ̇ = ω,  ω̇ = τ/I
 ```
 
-Every `h = 0.1` s the controller reads the exact state and chooses a control `u = (F, τ)`, held
+Every `h = 0.02` s the controller reads the exact state and chooses a control `u = (F, τ)`, held
 constant until the next step. It must satisfy
 
 ```text
@@ -93,11 +93,11 @@ run it as a separate process. There is no sandbox, so only evaluate code you tru
 `cargo test` checks that every stored solution still solves every case, and that its index entry
 matches its current source and score. Do not edit stored files by hand; resubmit instead.
 
-| name | idea | score |
+| name | idea | score (suite v2) |
 |---|---|---|
-| `flip_and_burn` | two-layer feedback: braking-aware velocity setpoint, square-root heading law | 19805 |
-| `flip_and_burn_tuned` | same, constants tuned by coordinate descent | 12389 |
-| `tolerance_aware` | same, plus a coasting spin-down finisher and an `ε_v` deadband, retuned | 8058 |
+| `flip_and_burn` | two-layer feedback: braking-aware velocity setpoint, square-root heading law | 95489 |
+| `flip_and_burn_tuned` | same, constants tuned by coordinate descent | 58754 |
+| `tolerance_aware` | same, plus a coasting spin-down finisher and an `ε_v` deadband, retuned | 61911 |
 
 ## Ideas for doing better
 

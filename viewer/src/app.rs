@@ -111,8 +111,9 @@ const FIT_MARGIN: f32 = 0.15;
 /// How often to check the source file for changes.
 const WATCH_INTERVAL: Duration = Duration::from_millis(500);
 
-/// Smallest sampling period offered by the slider.
+/// Range of sampling periods offered by the slider (the suites use `suite::H`).
 const H_MIN: f64 = 0.01;
+const H_MAX: f64 = 0.1;
 
 /// Case selected at startup.
 const DEFAULT_CASE: &str = "agile";
@@ -642,7 +643,7 @@ impl ViewerApp {
             .horizontal(|ui| {
                 let font = egui::TextStyle::Body.resolve(ui.style());
                 formula::H.ui(ui, &font).on_hover_text("sampling period");
-                ui.add(egui::Slider::new(&mut self.h, H_MIN..=suite::H).suffix(" s"))
+                ui.add(egui::Slider::new(&mut self.h, H_MIN..=H_MAX).suffix(" s"))
             })
             .inner;
         if h.double_clicked() {

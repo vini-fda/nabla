@@ -36,8 +36,33 @@ pub mod palette {
     pub const SUBTEXT: Color32 = Color32::from_gray(185);
 }
 
-/// Install the theme and force dark mode regardless of the OS setting.
+const INTER: &[u8] = include_bytes!("../assets/fonts/Inter-Medium.ttf");
+const LILEX: &[u8] = include_bytes!("../assets/fonts/Lilex-Regular.ttf");
+
+/// Inter for the UI (as in Rerun) and Lilex for code (as in Zed). The fonts are embedded, so
+/// the look is the same on every platform. egui's default fonts stay as glyph fallbacks.
+fn install_fonts(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    for (name, bytes, family) in [
+        ("Inter", INTER, FontFamily::Proportional),
+        ("Lilex", LILEX, FontFamily::Monospace),
+    ] {
+        fonts.font_data.insert(
+            name.to_owned(),
+            std::sync::Arc::new(egui::FontData::from_static(bytes)),
+        );
+        fonts
+            .families
+            .entry(family)
+            .or_default()
+            .insert(0, name.to_owned());
+    }
+    ctx.set_fonts(fonts);
+}
+
+/// Install the theme and fonts, and force dark mode regardless of the OS setting.
 pub fn apply(ctx: &egui::Context) {
+    install_fonts(ctx);
     ctx.set_theme(egui::ThemePreference::Dark);
     ctx.style_mut_of(Theme::Dark, style);
 }

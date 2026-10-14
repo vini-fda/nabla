@@ -621,7 +621,7 @@ impl ViewerApp {
         ui.label(if self.playback.on_sample() {
             format!("at controller sample k = {k}")
         } else {
-            format!("sample k = {k} + {offset:.4} s (exact, between samples)")
+            format!("sample k = {k} + {offset:.4} s")
         });
         egui::Grid::new("frame_info").num_columns(2).show(ui, |ui| {
             let mut row = |name: &str, value: String| {

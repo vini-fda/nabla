@@ -1234,12 +1234,14 @@ impl ViewerApp {
         });
     }
 
-    /// Desktop layout: controls left, plots right, timeline below the canvas.
+    /// Desktop layout: the timeline along the bottom, controls left and plots right above it.
     fn wide_layout(&mut self, ui: &mut egui::Ui) {
+        // The timeline first, across the whole window, so neither side panel (nor its
+        // collapsed title bar, which slides back in when the pointer comes near) reaches it.
+        egui::Panel::bottom("timeline_panel").show(ui, |ui| self.timeline_ui(ui));
         let mut show_controls = self.show_controls;
         CONTROLS_PANEL.show(ui, &mut show_controls, |ui| self.controls_ui(ui));
         self.show_controls = show_controls;
-        egui::Panel::bottom("timeline_panel").show(ui, |ui| self.timeline_ui(ui));
         let mut show_plots = self.show_plots;
         PLOTS_PANEL.show(ui, &mut show_plots, |ui| self.plots_ui(ui));
         self.show_plots = show_plots;

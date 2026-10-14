@@ -100,11 +100,15 @@ fn work_dir(dir: &Path) -> PathBuf {
         .join("ship2d_optimization")
 }
 
-/// FNV-1a hash of a source text, as 16 hex digits.
+/// FNV-1a hash of a source text, as 16 hex digits. Carriage returns are skipped, so a file
+/// checked out with CRLF line endings (Windows) has the same hash as its LF original.
 pub fn source_hash(src: &str) -> String {
-    let hash = src.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
-        (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
-    });
+    let hash = src
+        .bytes()
+        .filter(|&b| b != b'\r')
+        .fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+            (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
+        });
     format!("{hash:016x}")
 }
 
@@ -233,6 +237,12 @@ pub fn evaluate_source(src: &str) -> Result<Report, HarnessError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_hash_ignores_line_ending_style() {
+        assert_eq!(source_hash("a\nb\n"), source_hash("a\r\nb\r\n"));
+        assert_ne!(source_hash("a\nb\n"), source_hash("a\nc\n"));
+    }
 
     #[test]
     fn candidates_use_the_source_tree_when_present() {

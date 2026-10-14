@@ -11,7 +11,3 @@ target_wasm
 
 # https://github.com/lycheeverse/lychee
 .lycheecache
-
-# A 26 MB export of the ship model with 4096 px textures, kept out of the repository; the
-# viewer's model is assets/nabla_starship_slim.glb.
-assets/nabla_starship.glb

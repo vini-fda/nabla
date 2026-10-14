@@ -2,7 +2,7 @@
 //! seen from straight above with an orthographic projection that matches the 2D
 //! [`Camera`], so the model lines up with everything the canvas paints around it.
 //!
-//! The model is `assets/nabla_starship_slim.glb`: one mesh with positions, normals and
+//! The model is `assets/nabla_starship.glb`: one mesh with positions, normals and
 //! texture coordinates, a base color texture (2048 px JPEG) and a metallic-roughness
 //! texture (1024 px JPEG). In model space the ship's nose points along +y.
 
@@ -20,7 +20,7 @@ use crate::camera::Camera;
     clippy::large_include_file,
     reason = "the ship model, about 1.9 MB, textures included"
 )]
-pub const SHIP_GLB: &[u8] = include_bytes!("../assets/nabla_starship_slim.glb");
+pub const SHIP_GLB: &[u8] = include_bytes!("../assets/nabla_starship.glb");
 
 /// Which way of the model faces the camera (up, out of the screen): +z is the side with
 /// both bays open onto the machinery inside. The nose is +y.

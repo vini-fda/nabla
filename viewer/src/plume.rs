@@ -11,10 +11,12 @@
 //! The plumes are particle systems without state: each frame recomputes the particles
 //! emitted during the last moments from the trajectory itself, so they stay consistent with
 //! the timeline when the replay is paused, scrubbed or sped up. Each particle leaves its
-//! nozzle at its emission time with the ship's velocity then plus the exhaust velocity, so
-//! a jet bends as the ship turns. A divergence-free swirl field (the curl of a few drifting
-//! waves) carries the particles more the older they get, which breaks the jets up into
-//! coherent eddies like a gas, while they expand, cool and fade.
+//! nozzle at its emission time with the nozzle's velocity then (the ship's velocity, plus
+//! the spin's `omega x r` at the nozzle) plus the exhaust velocity, so a turning ship sweeps
+//! its jets around like a garden hose. The jets also flap and bunch up by an amount that
+//! depends on when their gas left the nozzle, growing with its age: each wiggle travels
+//! downstream with the gas that carries it, like the eddies of a real jet, while the gas
+//! expands, cools and fades.
 //!
 //! Particles are soft sprites added onto the canvas (egui colors with zero alpha add up),
 //! so where many overlap, near a nozzle, they saturate toward white.
@@ -39,10 +41,10 @@ struct Jet {
     nozzle_radius: f32,
     /// Half angle of the jet's cone, radians.
     spread: f32,
-    /// How far the swirl field carries a particle by the end of its life, in `L`.
+    /// How far the jet flaps sideways by the end of a particle's life, in `L`.
     turbulence: f32,
-    /// Size of the swirls, in `L`.
-    eddy_size: f32,
+    /// How often the jet flaps, per second of emission.
+    flap_rate: f64,
     /// Brightness of one fresh particle at full strength (0 to 1).
     gain: f32,
     /// How much longer than wide a fresh particle is, smeared along its flight.
@@ -60,8 +62,8 @@ const MAIN: Jet = Jet {
     speed: 9.0,
     nozzle_radius: 0.12,
     spread: 0.16,
-    turbulence: 0.55,
-    eddy_size: 0.9,
+    turbulence: 0.45,
+    flap_rate: 2.5,
     gain: 0.12,
     streak: 2.0,
     size: (0.07, 0.5),
@@ -79,8 +81,8 @@ const RCS: Jet = Jet {
     speed: 5.0,
     nozzle_radius: 0.015,
     spread: 0.3,
-    turbulence: 0.12,
-    eddy_size: 0.4,
+    turbulence: 0.1,
+    flap_rate: 6.0,
     gain: 0.2,
     streak: 2.5,
     size: (0.025, 0.22),
@@ -106,9 +108,6 @@ const RCS_NOZZLES: [(f32, f32, bool); 6] = [
     (0.329, -0.96, true),
     (-0.329, -0.96, true),
 ];
-
-/// How fast the swirls drift and change, per second.
-const EDDY_SPEED: f32 = 1.7;
 
 /// A nozzle at an instant: where it is (world), and which way its exhaust goes.
 #[derive(Clone, Copy)]
@@ -307,7 +306,6 @@ impl View<'_> {
             let age = (t - emitted) as f32;
             let life = age / jet.lifetime as f32;
             let s = replay.state_at_time(emitted);
-            let ship_velocity = Vec2::new(s.vx as f32, s.vy as f32);
 
             for (j, nozzle) in nozzles(&s, signed).into_iter().enumerate() {
                 let [gate, lateral, angle, speed, size] =
@@ -322,9 +320,12 @@ impl View<'_> {
                 let direction =
                     rotate(nozzle.direction, jet.spread * (0.6 * angle + 0.4 * lateral));
                 let exhaust = jet.speed * l * (0.55 + 0.45 * power) * (1.0 + 0.15 * speed);
-                let mut p = start + (ship_velocity + direction * exhaust) * age;
-                let eddies = swirl(p / (jet.eddy_size * l), t as f32 * EDDY_SPEED);
-                p += eddies * jet.turbulence * l * life.powf(1.5);
+                let mut p = start + (velocity_at(&s, start) + direction * exhaust) * age;
+                // Flapping across the jet, and bunching along it, half as much.
+                let seed = (salt << 8) + 2 * j as u64;
+                let growth = jet.turbulence * l * life.powf(1.5);
+                p += across * flap(emitted, jet.flap_rate, seed) * growth;
+                p += nozzle.direction * flap(emitted, jet.flap_rate, seed + 1) * 0.5 * growth;
 
                 let fade = (1.0 - life).powi(2) * (life * 12.0).min(1.0);
                 let color = additive(
@@ -426,24 +427,28 @@ fn rotate(v: Vec2, angle: f32) -> Vec2 {
     Vec2::new(cos * v.x - sin * v.y, sin * v.x + cos * v.y)
 }
 
-/// A divergence-free 2D flow at `p` and time `t`: the curl `(dpsi/dy, -dpsi/dx)` of a
-/// stream function `psi`, a sum of waves drifting at different speeds. Being the curl of
-/// something, it only swirls, neither gathering nor scattering the particles, like an
-/// incompressible fluid. Its magnitude is about 1.
-fn swirl(p: Vec2, t: f32) -> Vec2 {
-    // Wave vector, drift speed, phase, amplitude.
-    const WAVES: [(f32, f32, f32, f32, f32); 4] = [
-        (1.0, 0.6, 1.3, 0.0, 0.45),
-        (-0.7, 1.1, -0.9, 2.1, 0.35),
-        (1.9, -1.3, 1.7, 4.2, 0.2),
-        (-2.3, -2.1, -2.2, 0.7, 0.15),
-    ];
-    WAVES
+/// Velocity of the ship's point `point` (world) in state `s`: the ship's velocity plus
+/// `omega x r` of its spin, `r` from the ship's center to the point.
+fn velocity_at(s: &State, point: Vec2) -> Vec2 {
+    let r = point - position(s);
+    Vec2::new(s.vx as f32, s.vy as f32) + Vec2::new(-r.y, r.x) * s.omega as f32
+}
+
+/// A smooth wiggle (about -1 to 1) of the time `emitted` the gas left the nozzle, about
+/// `rate` times a second, different for each `seed`. All the gas from one instant moves
+/// alike, so each wiggle is carried downstream with the gas, as eddies are in a jet.
+fn flap(emitted: f64, rate: f64, seed: u64) -> f32 {
+    // Relative frequencies (not multiples of each other) and amplitudes.
+    const PARTS: [(f64, f32); 3] = [(1.0, 0.55), (2.31, 0.3), (5.17, 0.15)];
+    let [_, a, b, c, _] = random(seed.wrapping_mul(0x5851_F42D_4C95_7F2D));
+    PARTS
         .iter()
-        .fold(Vec2::ZERO, |sum, &(kx, ky, speed, phase, amplitude)| {
-            let c = amplitude * (kx * p.x + ky * p.y + speed * t + phase).cos();
-            sum + Vec2::new(ky * c, -kx * c)
+        .zip([a, b, c])
+        .map(|(&(frequency, amplitude), phase)| {
+            let angle = std::f64::consts::TAU * frequency * rate * emitted;
+            amplitude * (angle + std::f64::consts::PI * f64::from(phase)).sin() as f32
         })
+        .sum()
 }
 
 /// Five numbers for particle `i`: the first in [0, 1), the others in [-1, 1).
@@ -466,13 +471,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn swirl_has_no_divergence() {
-        let e = 1e-3;
-        for &(x, y, t) in &[(0.0, 0.0, 0.0), (1.3, -0.4, 2.0), (-3.0, 5.5, 7.1)] {
-            let p = Vec2::new(x, y);
-            let dx = (swirl(p + Vec2::X * e, t) - swirl(p - Vec2::X * e, t)).x / (2.0 * e);
-            let dy = (swirl(p + Vec2::Y * e, t) - swirl(p - Vec2::Y * e, t)).y / (2.0 * e);
-            assert!((dx + dy).abs() < 1e-2, "divergence {} at {p:?}", dx + dy);
+    fn a_spinning_ship_sweeps_its_tail_sideways() {
+        // Pointing along +x, spinning counterclockwise at 2 rad/s, not moving.
+        let s = State {
+            omega: 2.0,
+            ..State::default()
+        };
+        let tail = Vec2::new(-1.0, 0.0);
+        let v = velocity_at(&s, tail);
+        // Counterclockwise, the tail (behind the center) swings toward -y.
+        assert!((v - Vec2::new(0.0, -2.0)).length() < 1e-6, "{v:?}");
+        assert_eq!(velocity_at(&s, position(&s)), Vec2::ZERO);
+    }
+
+    #[test]
+    fn flapping_is_smooth_and_bounded() {
+        for seed in 0..10 {
+            for k in 0..1000 {
+                let t = f64::from(k) * 0.01;
+                let now = flap(t, 3.0, seed);
+                assert!(now.abs() <= 1.0, "{now}");
+                // Changes little over a thousandth of a second.
+                assert!((flap(t + 0.001, 3.0, seed) - now).abs() < 0.05);
+            }
         }
     }
 

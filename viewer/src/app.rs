@@ -687,17 +687,25 @@ impl ViewerApp {
         let (h, last) = (replay.h(), replay.last_frame());
         let playback = &mut self.playback;
         ui.horizontal_wrapped(|ui| {
-            if ui.button("|<<").on_hover_text("Start (Home)").clicked() {
+            if ui
+                .button("\u{23EE}")
+                .on_hover_text("Start (Home)")
+                .clicked()
+            {
                 playback.seek_start();
             }
             if ui
-                .button("|<")
+                .button("|\u{25C0}")
                 .on_hover_text("Previous controller sample (Shift+Left)")
                 .clicked()
             {
                 playback.previous_sample(last);
             }
-            let play = if playback.playing { "Pause" } else { "Play" };
+            let play = if playback.playing {
+                "\u{23F8}"
+            } else {
+                "\u{25B6}"
+            };
             if ui
                 .button(play)
                 .on_hover_text("Play / pause (Space)")
@@ -706,13 +714,13 @@ impl ViewerApp {
                 playback.toggle(last);
             }
             if ui
-                .button(">|")
+                .button("\u{25B6}|")
                 .on_hover_text("Next controller sample (Shift+Right)")
                 .clicked()
             {
                 playback.next_sample(last);
             }
-            if ui.button(">>|").on_hover_text("End (End)").clicked() {
+            if ui.button("\u{23ED}").on_hover_text("End (End)").clicked() {
                 playback.seek_end(last);
             }
             ui.separator();
@@ -1033,9 +1041,10 @@ impl eframe::App for ViewerApp {
         }
 
         let compact = ui.available_width() < COMPACT_WIDTH;
-        egui::Panel::top("top_panel").show_inside(ui, |ui| {
-            egui::MenuBar::new().ui(ui, |ui| {
-                if compact {
+        // The tab bar only exists in the compact layout; the wide layout shows everything.
+        if compact {
+            egui::Panel::top("top_panel").show_inside(ui, |ui| {
+                ui.horizontal(|ui| {
                     for (view, label) in [
                         (CompactView::Canvas, "View"),
                         (CompactView::Controls, "Controls"),
@@ -1043,10 +1052,9 @@ impl eframe::App for ViewerApp {
                     ] {
                         ui.selectable_value(&mut self.compact_view, view, label);
                     }
-                    ui.separator();
-                }
+                });
             });
-        });
+        }
 
         if compact {
             self.compact_layout(ui);

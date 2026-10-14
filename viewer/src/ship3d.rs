@@ -2,9 +2,9 @@
 //! seen from straight above with an orthographic projection that matches the 2D
 //! [`Camera`], so the model lines up with everything the canvas paints around it.
 //!
-//! The model is `assets/nabla_starship_slim.glb` (see `slim_model.py`): one mesh with
-//! positions, normals and texture coordinates, a base color texture and a
-//! metallic-roughness texture. In model space the ship's nose points along +y.
+//! The model is `assets/nabla_starship_slim.glb`: one mesh with positions, normals and
+//! texture coordinates, a base color texture (2048 px JPEG) and a metallic-roughness
+//! texture (1024 px JPEG). In model space the ship's nose points along +y.
 
 #![expect(unsafe_code, reason = "OpenGL calls through glow are unsafe")]
 
@@ -18,7 +18,7 @@ use crate::camera::Camera;
 /// The model, embedded in the binary.
 #[expect(
     clippy::large_include_file,
-    reason = "the slimmed model, about 1.9 MB; see slim_model.py"
+    reason = "the ship model, about 1.9 MB, textures included"
 )]
 pub const SHIP_GLB: &[u8] = include_bytes!("../assets/nabla_starship_slim.glb");
 

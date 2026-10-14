@@ -4238,7 +4238,7 @@ dependencies = [
 
 [[package]]
 name = "ship2d_graphics"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "cpal",
  "eframe",
@@ -4261,7 +4261,7 @@ dependencies = [
 
 [[package]]
 name = "ship2d_optimization"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "shlex"

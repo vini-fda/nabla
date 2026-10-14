@@ -22,7 +22,7 @@ use crate::theme::palette;
 const HEARTBEAT_TIMEOUT: f32 = 0.25;
 
 /// Default knob positions: master, ion thruster, reaction control thrusters.
-const DEFAULT_VOLUMES: [f32; 3] = [0.7, 0.8, 0.6];
+const DEFAULT_VOLUMES: [f32; 3] = [0.7, 0.8, 0.25];
 
 /// Sound settings, and the audio output once opened.
 pub struct Sound {

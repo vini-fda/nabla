@@ -448,7 +448,10 @@ impl ViewerApp {
             .show_ui(ui, |ui| {
                 for (entry, solution, path) in &self.database {
                     let label = format!("{}.rs  (score {})", solution.name, entry.score);
-                    if ui.selectable_label(false, label).clicked() {
+                    if ui
+                        .selectable_label(false, egui::RichText::new(label).monospace())
+                        .clicked()
+                    {
                         stored = Some((*solution, path.clone()));
                     }
                 }
@@ -458,7 +461,11 @@ impl ViewerApp {
         }
 
         if let Some(source) = &self.source {
-            let label = ui.label(egui::RichText::new(format!("{}.rs", source.name)).strong());
+            let label = ui.label(
+                egui::RichText::new(format!("{}.rs", source.name))
+                    .monospace()
+                    .strong(),
+            );
             if let Some(path) = &source.path {
                 label.on_hover_text(path.display().to_string());
             }
@@ -518,14 +525,18 @@ impl ViewerApp {
         ui.heading("Case");
         let old_case = self.case.clone();
         egui::ComboBox::from_id_salt("case")
-            .selected_text(self.case.as_deref().unwrap_or("-"))
+            .selected_text(egui::RichText::new(self.case.as_deref().unwrap_or("-")).monospace())
             .height(400.0)
             .show_ui(ui, |ui| {
                 for suite_name in ["standard", "holdout"] {
-                    ui.label(egui::RichText::new(suite_name).strong());
+                    ui.label(egui::RichText::new(suite_name).monospace().strong());
                     for entry in self.cases.iter().filter(|e| e.suite == suite_name) {
                         let name = &entry.case.name;
-                        ui.selectable_value(&mut self.case, Some(name.clone()), name);
+                        ui.selectable_value(
+                            &mut self.case,
+                            Some(name.clone()),
+                            egui::RichText::new(name).monospace(),
+                        );
                     }
                 }
             });
@@ -540,7 +551,7 @@ impl ViewerApp {
             return;
         };
         let mut open = self.show_code;
-        egui::Window::new(format!("{}.rs", source.name))
+        egui::Window::new(egui::RichText::new(format!("{}.rs", source.name)).monospace())
             .id(egui::Id::new("source_code_window"))
             .open(&mut open)
             .default_size([640.0, 720.0])
@@ -584,7 +595,7 @@ impl ViewerApp {
         let s = &case.start;
         egui::Grid::new("case_info").num_columns(2).show(ui, |ui| {
             let mut row = |name: &str, value: String| {
-                ui.label(name);
+                ui.monospace(name);
                 ui.monospace(value);
                 ui.end_row();
             };
@@ -624,7 +635,11 @@ impl ViewerApp {
             return;
         };
         let goal = replay.case.task.goal;
-        ui.heading(format!("t = {:.4} s", replay.time(k) + offset));
+        ui.label(
+            egui::RichText::new(format!("t = {:.4} s", replay.time(k) + offset))
+                .monospace()
+                .size(20.0),
+        );
         ui.label(if self.playback.on_sample() {
             format!("at controller sample k = {k}")
         } else {
@@ -632,7 +647,7 @@ impl ViewerApp {
         });
         egui::Grid::new("frame_info").num_columns(2).show(ui, |ui| {
             let mut row = |name: &str, value: String| {
-                ui.label(name);
+                ui.monospace(name);
                 ui.monospace(value);
                 ui.end_row();
             };
@@ -735,7 +750,10 @@ impl ViewerApp {
                 .add(
                     egui::Slider::new(&mut dt, h / f64::from(MAX_SUBDIVISIONS)..=h)
                         .logarithmic(true)
-                        .text(format!("dt [s] = h/{}", playback.subdivisions())),
+                        .text(
+                            egui::RichText::new(format!("dt [s] = h/{}", playback.subdivisions()))
+                                .monospace(),
+                        ),
                 )
                 .on_hover_text(
                     "Display sampling time: the playhead moves in steps of dt (Left/Right).\n\
@@ -746,7 +764,7 @@ impl ViewerApp {
                 playback.set_subdivisions((h / dt).round() as u32);
             }
             ui.separator();
-            ui.label(format!(
+            ui.monospace(format!(
                 "{} on {}: t = {:.3} / {:.1} s",
                 replay.solution,
                 replay.case.name,

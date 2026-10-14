@@ -6,6 +6,7 @@
 mod app;
 pub mod camera;
 pub mod grid;
+mod highlight;
 pub mod replay;
 pub mod source;
 pub mod theme;

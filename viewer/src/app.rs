@@ -626,8 +626,6 @@ impl ViewerApp {
                     );
                     ui.separator();
                 }
-                let theme =
-                    egui_extras::syntax_highlighting::CodeTheme::from_memory(ui.ctx(), ui.style());
                 egui::ScrollArea::both().auto_shrink(false).show(ui, |ui| {
                     ui.horizontal_top(|ui| {
                         let lines = source.text.lines().count().max(1);
@@ -636,12 +634,7 @@ impl ViewerApp {
                             .monospace()
                             .color(ui.visuals().weak_text_color());
                         ui.add(egui::Label::new(numbers).selectable(false));
-                        egui_extras::syntax_highlighting::code_view_ui(
-                            ui,
-                            &theme,
-                            &source.text,
-                            "rs",
-                        );
+                        crate::highlight::code_view_ui(ui, &source.text);
                     });
                 });
             });

@@ -24,6 +24,8 @@ const TRIANGLE_STROKE_WIDTH: f32 = 2.0;
 const PLOT_HEIGHT: f32 = 110.0;
 const PLOT_PANEL_DEFAULT_WIDTH: f32 = 300.0;
 const PLOT_PANEL_MIN_WIDTH: f32 = 220.0;
+/// Narrowest the controls panel can be dragged to; below this its rows would be cut off.
+const CONTROLS_PANEL_MIN_WIDTH: f32 = 320.0;
 
 const POS_X_COLOR: egui::Color32 = palette::RED;
 const POS_Y_COLOR: egui::Color32 = palette::BLUE;
@@ -989,7 +991,8 @@ impl ViewerApp {
 impl ViewerApp {
     /// The left panel's content: source, case, current state and display options.
     fn controls_ui(&mut self, ui: &mut egui::Ui) {
-        egui::ScrollArea::vertical().show(ui, |ui| {
+        // Scrolls sideways too, so rows are never cut off if the space is narrower than they are.
+        egui::ScrollArea::both().show(ui, |ui| {
             self.source_ui(ui);
             ui.separator();
             self.case_ui(ui);
@@ -1004,12 +1007,16 @@ impl ViewerApp {
     /// Desktop layout: controls left, plots right, timeline below the canvas.
     fn wide_layout(&mut self, ui: &mut egui::Ui) {
         if self.show_controls {
-            egui::Panel::left("config_panel").show_inside(ui, |ui| {
-                if hide_button(ui, egui::Align::Max, "\u{25C0}", "Hide this panel") {
-                    self.show_controls = false;
-                }
-                self.controls_ui(ui);
-            });
+            egui::Panel::left("config_panel")
+                .resizable(true)
+                .default_size(CONTROLS_PANEL_MIN_WIDTH)
+                .min_size(CONTROLS_PANEL_MIN_WIDTH)
+                .show_inside(ui, |ui| {
+                    if hide_button(ui, egui::Align::Max, "\u{25C0}", "Hide this panel") {
+                        self.show_controls = false;
+                    }
+                    self.controls_ui(ui);
+                });
         }
         egui::Panel::bottom("timeline_panel").show_inside(ui, |ui| self.timeline_ui(ui));
         if self.show_plots {

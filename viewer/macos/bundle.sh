@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Builds `target/release/ship2d viewer.app`: the native viewer as a macOS app bundle, with the
+# Builds `target/release/Nabla.app`: the native viewer as a macOS app bundle, with the
 # layered Icon Composer icon (`nabla_macOS.icon`) that macOS 26 renders with Liquid Glass.
-# Needs Xcode (for `actool`). Open the result with `open "target/release/ship2d viewer.app"`.
+# Needs Xcode (for `actool`). Open the result with `open "target/release/Nabla.app"`.
 #
 # With `SHIP2D_BIN=<path to a built ship2d_graphics>` it skips `cargo build` and bundles that
 # binary next to itself instead (used by `run-bundled.sh`, the cargo runner on macOS).
@@ -10,7 +10,7 @@ set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
 bin="${SHIP2D_BIN:-$root/target/release/ship2d_graphics}"
-app="$(dirname "$bin")/ship2d viewer.app"
+app="$(dirname "$bin")/Nabla.app"
 version="$(sed -n 's/^version = "\(.*\)"/\1/p' "$here/../Cargo.toml" | head -1)"
 
 # Fast path for repeated runs: the bundle is current, only the binary changed.
@@ -65,9 +65,9 @@ cat > "$app/Contents/Info.plist" <<PLIST
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>ship2d viewer</string>
+    <string>Nabla</string>
     <key>CFBundleDisplayName</key>
-    <string>ship2d viewer</string>
+    <string>Nabla</string>
     <key>CFBundleIdentifier</key>
     <string>io.github.vini-fda.ship2d-viewer</string>
     <key>CFBundleExecutable</key>

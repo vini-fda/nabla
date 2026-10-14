@@ -84,7 +84,7 @@ jobs:
         run: |
           viewer/macos/bundle.sh
           mkdir -p dist
-          ditto -c -k --keepParent "target/release/ship2d viewer.app" "dist/$NAME.zip"
+          ditto -c -k --keepParent "target/release/Nabla.app" "dist/$NAME.zip"
 
       - name: Build and package (Linux)
         if: runner.os == 'Linux'

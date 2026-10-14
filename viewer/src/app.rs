@@ -27,7 +27,7 @@ const PLOT_HEIGHT: f32 = 110.0;
 const CONTROLS_PANEL: SidePanel = SidePanel {
     dock: Dock::Left,
     id: "config_panel",
-    title: "Control policy",
+    title: "Settings",
     // Narrowest the contents can be dragged to; below this their rows would be cut off.
     min_width: 320.0,
     default_width: 320.0,
@@ -35,7 +35,7 @@ const CONTROLS_PANEL: SidePanel = SidePanel {
 const PLOTS_PANEL: SidePanel = SidePanel {
     dock: Dock::Right,
     id: "plots_panel",
-    title: "State",
+    title: "State plots",
     min_width: 220.0,
     default_width: 300.0,
 };
@@ -509,6 +509,7 @@ impl ViewerApp {
     }
 
     fn source_ui(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Control policy input");
         ui.horizontal(|ui| {
             #[cfg(not(target_arch = "wasm32"))]
             if ui.button("Open .rs...").clicked()
@@ -611,40 +612,39 @@ impl ViewerApp {
     }
 
     fn case_ui(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Case");
+        ui.heading("Problem input");
         let old_case = self.case.clone();
-        egui::ComboBox::from_id_salt("case")
-            .selected_text(egui::RichText::new(self.case.as_deref().unwrap_or("-")).monospace())
-            .height(400.0)
-            .show_ui(ui, |ui| {
-                for suite_name in ["standard", "holdout"] {
-                    ui.label(egui::RichText::new(suite_name).monospace().strong());
-                    for entry in self.cases.iter().filter(|e| e.suite == suite_name) {
-                        let name = &entry.case.name;
-                        ui.selectable_value(
-                            &mut self.case,
-                            Some(name.clone()),
-                            egui::RichText::new(name).monospace(),
-                        );
+        ui.horizontal(|ui| {
+            ui.label("Case:");
+            egui::ComboBox::from_id_salt("case")
+                .selected_text(egui::RichText::new(self.case.as_deref().unwrap_or("-")).monospace())
+                .height(400.0)
+                .show_ui(ui, |ui| {
+                    for suite_name in ["standard", "holdout"] {
+                        ui.label(egui::RichText::new(suite_name).monospace().strong());
+                        for entry in self.cases.iter().filter(|e| e.suite == suite_name) {
+                            let name = &entry.case.name;
+                            ui.selectable_value(
+                                &mut self.case,
+                                Some(name.clone()),
+                                egui::RichText::new(name).monospace(),
+                            );
+                        }
                     }
-                }
-            });
+                });
+        });
         if self.case != old_case {
             self.run(true);
         }
         let h = ui.add(
             egui::Slider::new(&mut self.h, H_MIN..=suite::H)
-                .text("h (sampling period)")
+                .text("h")
                 .suffix(" s"),
         );
         if h.double_clicked() {
             self.h = suite::H;
         }
-        h.on_hover_text(format!(
-            "Seconds between controller samples. The suites use {} s, so step counts at other \
-             values are not scores. Double-click to reset.",
-            suite::H
-        ));
+        h.on_hover_text("Sampling period. Double-click to reset.");
         if self.replay.as_ref().is_some_and(|r| r.h() != self.h) && !self.runner.busy() {
             // Keep the playhead time.
             self.run(false);
@@ -698,27 +698,26 @@ impl ViewerApp {
                 ui.monospace(value);
                 ui.end_row();
             };
-            row("m, I", format!("{:.3}, {:.3}", p.mass, p.inertia));
+            row("mass", format!("{:.3}", p.mass));
+            row("inertia", format!("{:.3}", p.inertia));
             row(
                 "F_max, tau_max",
                 format!("{:.3}, {:.3}", p.f_max, p.tau_max),
             );
+            row("initial position", format!("({:.2}, {:.2})", s.x, s.y));
+            row("initial velocity", format!("({:.2}, {:.2})", s.vx, s.vy));
+            row("initial theta", format!("{:.2}", s.theta));
+            row("initial omega", format!("{:.2}", s.omega));
             row(
-                "goal B",
+                "goal (B)",
                 format!("({:.2}, {:.2})", task.goal.x, task.goal.y),
-            );
-            row("start position", format!("({:.2}, {:.2})", s.x, s.y));
-            row("start velocity", format!("({:.2}, {:.2})", s.vx, s.vy));
-            row(
-                "start theta, omega",
-                format!("{:.2}, {:.2}", s.theta, s.omega),
             );
         });
         let Some(replay) = &self.replay else {
             return;
         };
         let outcome = match replay.outcome() {
-            Outcome::Reached(n) => format!("Reached in {n} steps ({:.1} s)", replay.time(*n)),
+            Outcome::Reached(n) => format!("Reached goal in {n} steps ({:.1} s)", replay.time(*n)),
             Outcome::Timeout => "Failed: step budget exhausted".to_owned(),
             Outcome::Inadmissible { step, .. } => {
                 format!("Failed: inadmissible control at step {step}")
@@ -744,9 +743,10 @@ impl ViewerApp {
             };
             row("position", format!("({:.3}, {:.3})", s.x, s.y));
             row("velocity", format!("({:.3}, {:.3})", s.vx, s.vy));
-            row("theta, omega", format!("{:.3}, {:.3}", s.theta, s.omega));
+            row("theta", format!("{:.3}", s.theta));
+            row("omega", format!("{:.3}", s.omega));
             row(
-                "dist. to B",
+                "distance to B",
                 format!("{:.4}", (s.x - goal.x).hypot(s.y - goal.y)),
             );
             row("speed", format!("{:.4}", s.vx.hypot(s.vy)));
@@ -759,7 +759,7 @@ impl ViewerApp {
     }
 
     fn display_ui(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Display");
+        ui.heading("Display options");
         ui.add_enabled_ui(self.ship3d.is_some(), |ui| {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.view, CanvasView::Ship3d, "3D");
@@ -790,6 +790,10 @@ impl ViewerApp {
                 self.camera = Camera::default();
             }
         });
+    }
+
+    fn user_inputs_ui(ui: &mut egui::Ui) {
+        ui.heading("User inputs");
         ui.label("Drag: pan   Scroll: zoom");
         ui.label("Space: play/pause   Left / Right: +/-dt");
         ui.label("Shift+Left / Right: +/-sample   Home / End");
@@ -843,7 +847,7 @@ impl ViewerApp {
             ui.add(
                 egui::Slider::new(&mut playback.speed, 0.1..=50.0)
                     .logarithmic(true)
-                    .text("x real time"),
+                    .text("playback speed"),
             );
             ui.separator();
             let mut dt = playback.dt(h);
@@ -1142,6 +1146,8 @@ impl ViewerApp {
             self.frame_info_ui(ui);
             ui.separator();
             self.display_ui(ui);
+            ui.separator();
+            Self::user_inputs_ui(ui);
         });
     }
 

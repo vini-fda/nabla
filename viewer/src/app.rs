@@ -172,6 +172,9 @@ pub struct ViewerApp {
     last_watch_check: f64,
     #[serde(skip)]
     load_error: Option<String>,
+    /// Wide layout: show the left (controls) and right (plots) side panels.
+    show_controls: bool,
+    show_plots: bool,
     #[serde(skip)]
     compact_view: CompactView,
 }
@@ -202,6 +205,8 @@ impl Default for ViewerApp {
             rewind_pending: false,
             last_watch_check: 0.0,
             load_error: None,
+            show_controls: true,
+            show_plots: true,
             compact_view: CompactView::default(),
         }
     }
@@ -419,7 +424,7 @@ impl ViewerApp {
     }
 
     fn source_ui(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Solution source");
+        ui.heading("Control policy");
         ui.horizontal(|ui| {
             #[cfg(not(target_arch = "wasm32"))]
             if ui.button("Open .rs...").clicked()
@@ -444,7 +449,7 @@ impl ViewerApp {
 
         let mut stored = None;
         egui::ComboBox::from_id_salt("database")
-            .selected_text("Open a stored solution...")
+            .selected_text("Open a stored control policy (rust code)...")
             .show_ui(ui, |ui| {
                 for (entry, solution, path) in &self.database {
                     let label = format!("{}.rs  (score {})", solution.name, entry.score);
@@ -609,8 +614,8 @@ impl ViewerApp {
                 "goal B",
                 format!("({:.2}, {:.2})", task.goal.x, task.goal.y),
             );
-            row("start p", format!("({:.2}, {:.2})", s.x, s.y));
-            row("start v", format!("({:.2}, {:.2})", s.vx, s.vy));
+            row("start position", format!("({:.2}, {:.2})", s.x, s.y));
+            row("start velocity", format!("({:.2}, {:.2})", s.vx, s.vy));
             row(
                 "start theta, omega",
                 format!("{:.2}, {:.2}", s.theta, s.omega),
@@ -635,24 +640,17 @@ impl ViewerApp {
             return;
         };
         let goal = replay.case.task.goal;
-        ui.label(
-            egui::RichText::new(format!("t = {:.4} s", replay.time(k) + offset))
-                .monospace()
-                .size(20.0),
-        );
-        ui.label(if self.playback.on_sample() {
-            format!("at controller sample k = {k}")
-        } else {
-            format!("sample k = {k} + {offset:.4} s")
-        });
+        ui.heading("Current state");
+        ui.label(format!("t = {:.4} s", replay.time(k) + offset));
+        ui.label(format!("sample k = {k} + {offset:.4} s"));
         egui::Grid::new("frame_info").num_columns(2).show(ui, |ui| {
             let mut row = |name: &str, value: String| {
                 ui.monospace(name);
                 ui.monospace(value);
                 ui.end_row();
             };
-            row("p", format!("({:.3}, {:.3})", s.x, s.y));
-            row("v", format!("({:.3}, {:.3})", s.vx, s.vy));
+            row("position", format!("({:.3}, {:.3})", s.x, s.y));
+            row("velocity", format!("({:.3}, {:.3})", s.vx, s.vy));
             row("theta, omega", format!("{:.3}, {:.3}", s.theta, s.omega));
             row(
                 "dist. to B",
@@ -673,9 +671,6 @@ impl ViewerApp {
             egui::Slider::new(&mut self.circumradius, 0.05..=10.0)
                 .logarithmic(true)
                 .text("ship size (world units)"),
-        );
-        ui.add(
-            egui::Slider::new(&mut self.alpha, 0.0..=std::f32::consts::PI).text("ship shape alpha"),
         );
         ui.checkbox(&mut self.show_path, "Path (grey: full, blue: so far)");
         ui.checkbox(&mut self.show_velocity, "Velocity (green)");
@@ -1008,14 +1003,53 @@ impl ViewerApp {
 
     /// Desktop layout: controls left, plots right, timeline below the canvas.
     fn wide_layout(&mut self, ui: &mut egui::Ui) {
-        egui::Panel::left("config_panel").show_inside(ui, |ui| self.controls_ui(ui));
+        if self.show_controls {
+            egui::Panel::left("config_panel").show_inside(ui, |ui| {
+                if hide_button(ui, egui::Align::Max, "\u{25C0}", "Hide this panel") {
+                    self.show_controls = false;
+                }
+                self.controls_ui(ui);
+            });
+        }
         egui::Panel::bottom("timeline_panel").show_inside(ui, |ui| self.timeline_ui(ui));
-        egui::Panel::right("plots_panel")
-            .resizable(true)
-            .default_size(PLOT_PANEL_DEFAULT_WIDTH)
-            .min_size(PLOT_PANEL_MIN_WIDTH)
-            .show_inside(ui, |ui| self.plots_ui(ui));
+        if self.show_plots {
+            egui::Panel::right("plots_panel")
+                .resizable(true)
+                .default_size(PLOT_PANEL_DEFAULT_WIDTH)
+                .min_size(PLOT_PANEL_MIN_WIDTH)
+                .show_inside(ui, |ui| {
+                    if hide_button(ui, egui::Align::Min, "\u{25B6}", "Hide this panel") {
+                        self.show_plots = false;
+                    }
+                    self.plots_ui(ui);
+                });
+        }
         egui::CentralPanel::default().show_inside(ui, |ui| self.canvas_ui(ui));
+
+        // Buttons to bring back hidden panels, floating over the canvas corners.
+        let ctx = ui.ctx().clone();
+        if !self.show_controls
+            && show_button(
+                &ctx,
+                "show_controls",
+                egui::Align2::LEFT_TOP,
+                "\u{25B6}",
+                "Show controls",
+            )
+        {
+            self.show_controls = true;
+        }
+        if !self.show_plots
+            && show_button(
+                &ctx,
+                "show_plots",
+                egui::Align2::RIGHT_TOP,
+                "\u{25C0}",
+                "Show plots",
+            )
+        {
+            self.show_plots = true;
+        }
     }
 
     /// Narrow-screen layout: one full-size view at a time, chosen in the top bar; the
@@ -1083,6 +1117,39 @@ impl eframe::App for ViewerApp {
         let ctx = ui.ctx().clone();
         self.code_window(&ctx);
     }
+}
+
+/// A small button at the top of a side panel that hides it, on side `align` of the panel.
+fn hide_button(ui: &mut egui::Ui, align: egui::Align, glyph: &str, hover: &str) -> bool {
+    ui.with_layout(egui::Layout::top_down(align), |ui| {
+        ui.small_button(glyph).on_hover_text(hover).clicked()
+    })
+    .inner
+}
+
+/// A small button floating in a top corner of the window that brings a hidden panel back.
+fn show_button(
+    ctx: &egui::Context,
+    id: &str,
+    corner: egui::Align2,
+    glyph: &str,
+    hover: &str,
+) -> bool {
+    let inset = egui::vec2(
+        if corner == egui::Align2::LEFT_TOP {
+            8.0
+        } else {
+            -8.0
+        },
+        8.0,
+    );
+    egui::Area::new(egui::Id::new(id))
+        .order(egui::Order::Foreground)
+        .anchor(corner, inset)
+        .show(ctx, |ui| {
+            ui.small_button(glyph).on_hover_text(hover).clicked()
+        })
+        .inner
 }
 
 fn world(x: f64, y: f64) -> egui::Vec2 {

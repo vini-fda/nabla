@@ -13,6 +13,7 @@ use ship2d_optimization::registry::StoredSolution;
 use ship2d_optimization::suite;
 
 use crate::camera::Camera;
+use crate::formula::{self, Formula};
 use crate::grid::{GridStyle, draw_grid};
 use crate::plume::Plume;
 use crate::replay::{MAX_SUBDIVISIONS, Playback, Replay, Series};
@@ -272,6 +273,7 @@ impl ViewerApp {
     /// Called once before the first frame. Opens `source` if given, else the best stored one.
     pub fn new(cc: &eframe::CreationContext<'_>, source: Option<PathBuf>) -> Self {
         theme::apply(&cc.egui_ctx);
+        egui_extras::install_image_loaders(&cc.egui_ctx);
 
         let ship3d = cc
             .wgpu_render_state
@@ -636,11 +638,13 @@ impl ViewerApp {
         if self.case != old_case {
             self.run(true);
         }
-        let h = ui.add(
-            egui::Slider::new(&mut self.h, H_MIN..=suite::H)
-                .text("h")
-                .suffix(" s"),
-        );
+        let h = ui
+            .horizontal(|ui| {
+                let font = egui::TextStyle::Body.resolve(ui.style());
+                formula::H.ui(ui, &font).on_hover_text("sampling period");
+                ui.add(egui::Slider::new(&mut self.h, H_MIN..=suite::H).suffix(" s"))
+            })
+            .inner;
         if h.double_clicked() {
             self.h = suite::H;
         }
@@ -693,23 +697,46 @@ impl ViewerApp {
         let p = &task.params;
         let s = &case.start;
         egui::Grid::new("case_info").num_columns(2).show(ui, |ui| {
-            let mut row = |name: &str, value: String| {
-                ui.monospace(name);
+            let font = egui::TextStyle::Monospace.resolve(ui.style());
+            let mut row = |formula: &Formula, name: &str, value: String| {
+                formula.ui(ui, &font).on_hover_text(name);
                 ui.monospace(value);
                 ui.end_row();
             };
-            row("mass", format!("{:.3}", p.mass));
-            row("inertia", format!("{:.3}", p.inertia));
+            row(&formula::MASS, "mass", format!("{:.3}", p.mass));
             row(
-                "F_max, tau_max",
+                &formula::INERTIA,
+                "moment of inertia",
+                format!("{:.3}", p.inertia),
+            );
+            row(
+                &formula::LIMITS,
+                "maximum thrust and torque",
                 format!("{:.3}, {:.3}", p.f_max, p.tau_max),
             );
-            row("initial position", format!("({:.2}, {:.2})", s.x, s.y));
-            row("initial velocity", format!("({:.2}, {:.2})", s.vx, s.vy));
-            row("initial theta", format!("{:.2}", s.theta));
-            row("initial omega", format!("{:.2}", s.omega));
             row(
-                "goal (B)",
+                &formula::INITIAL_POSITION,
+                "initial position",
+                format!("({:.2}, {:.2})", s.x, s.y),
+            );
+            row(
+                &formula::INITIAL_VELOCITY,
+                "initial velocity",
+                format!("({:.2}, {:.2})", s.vx, s.vy),
+            );
+            row(
+                &formula::INITIAL_THETA,
+                "initial heading angle",
+                format!("{:.2}", s.theta),
+            );
+            row(
+                &formula::INITIAL_OMEGA,
+                "initial angular velocity",
+                format!("{:.2}", s.omega),
+            );
+            row(
+                &formula::GOAL,
+                "goal",
                 format!("({:.2}, {:.2})", task.goal.x, task.goal.y),
             );
         });
@@ -733,28 +760,52 @@ impl ViewerApp {
         };
         let goal = replay.case.task.goal;
         ui.heading("Current state");
-        ui.label(format!("t = {:.4} s", replay.time(k) + offset));
-        ui.label(format!("sample k = {k} + {offset:.4} s"));
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            formula::T.ui(ui, &font).on_hover_text("time");
+            ui.label(format!(" = {:.4} s", replay.time(k) + offset));
+        });
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            ui.label("sample ");
+            formula::K.ui(ui, &font).on_hover_text("sample index");
+            ui.label(format!(" = {k} + {offset:.4} s"));
+        });
         egui::Grid::new("frame_info").num_columns(2).show(ui, |ui| {
-            let mut row = |name: &str, value: String| {
-                ui.monospace(name);
+            let font = egui::TextStyle::Monospace.resolve(ui.style());
+            let mut row = |formula: &Formula, name: &str, value: String| {
+                formula.ui(ui, &font).on_hover_text(name);
                 ui.monospace(value);
                 ui.end_row();
             };
-            row("position", format!("({:.3}, {:.3})", s.x, s.y));
-            row("velocity", format!("({:.3}, {:.3})", s.vx, s.vy));
-            row("theta", format!("{:.3}", s.theta));
-            row("omega", format!("{:.3}", s.omega));
             row(
-                "distance to B",
+                &formula::POSITION,
+                "position",
+                format!("({:.3}, {:.3})", s.x, s.y),
+            );
+            row(
+                &formula::VELOCITY,
+                "velocity",
+                format!("({:.3}, {:.3})", s.vx, s.vy),
+            );
+            row(&formula::THETA, "heading angle", format!("{:.3}", s.theta));
+            row(
+                &formula::OMEGA,
+                "angular velocity",
+                format!("{:.3}", s.omega),
+            );
+            row(
+                &formula::DISTANCE,
+                "distance to the goal B",
                 format!("{:.4}", (s.x - goal.x).hypot(s.y - goal.y)),
             );
-            row("speed", format!("{:.4}", s.vx.hypot(s.vy)));
+            row(&formula::SPEED, "speed", format!("{:.4}", s.vx.hypot(s.vy)));
             let control = replay.control(k).map_or_else(
                 || "- (final state)".to_owned(),
                 |u| format!("{:.3}, {:.3}", u.thrust, u.torque),
             );
-            row("u_k = (F, tau)", control);
+            row(&formula::CONTROL, "control: thrust and torque", control);
         });
     }
 
@@ -896,22 +947,48 @@ impl ViewerApp {
                     time_plot(
                         ui,
                         "Position",
+                        &formula::POSITION,
                         t,
                         &[("x", &plots.x, POS_X_COLOR), ("y", &plots.y, POS_Y_COLOR)],
                     ),
                     time_plot(
                         ui,
                         "Velocity",
+                        &formula::VELOCITY,
                         t,
                         &[
                             ("vx", &plots.vx, VEL_X_COLOR),
                             ("vy", &plots.vy, VEL_Y_COLOR),
                         ],
                     ),
-                    time_plot(ui, "theta", t, &[("theta", &plots.theta, THETA_COLOR)]),
-                    time_plot(ui, "omega", t, &[("omega", &plots.omega, OMEGA_COLOR)]),
-                    time_plot(ui, "Thrust F", t, &[("F", &plots.thrust, THRUST_COLOR)]),
-                    time_plot(ui, "Torque tau", t, &[("tau", &plots.torque, TORQUE_COLOR)]),
+                    time_plot(
+                        ui,
+                        "Theta",
+                        &formula::THETA,
+                        t,
+                        &[("theta", &plots.theta, THETA_COLOR)],
+                    ),
+                    time_plot(
+                        ui,
+                        "Omega",
+                        &formula::OMEGA,
+                        t,
+                        &[("omega", &plots.omega, OMEGA_COLOR)],
+                    ),
+                    time_plot(
+                        ui,
+                        "Thrust",
+                        &formula::THRUST,
+                        t,
+                        &[("F", &plots.thrust, THRUST_COLOR)],
+                    ),
+                    time_plot(
+                        ui,
+                        "Torque",
+                        &formula::TORQUE,
+                        t,
+                        &[("tau", &plots.torque, TORQUE_COLOR)],
+                    ),
                 ]
                 .into_iter()
                 .flatten()
@@ -1509,14 +1586,20 @@ fn make_plot(id: &str) -> Plot<'static> {
         .allow_boxed_zoom(false)
 }
 
-/// Plot `lines` against time with a cursor at `t`. Returns the clicked time, if any.
+/// Plot `lines` against time with a cursor at `t`, titled "`title` `symbol`". Returns the
+/// clicked time, if any.
 fn time_plot(
     ui: &mut egui::Ui,
     title: &str,
+    symbol: &Formula,
     t: f64,
     lines: &[(&str, &Vec<PlotPoint>, egui::Color32)],
 ) -> Option<f64> {
-    ui.label(title);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        ui.label(format!("{title} "));
+        symbol.ui(ui, &egui::TextStyle::Body.resolve(ui.style()));
+    });
     make_plot(title)
         .show(ui, |plot_ui| {
             for &(name, series, color) in lines {

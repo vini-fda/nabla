@@ -5,6 +5,7 @@
 
 mod app;
 pub mod camera;
+mod formula;
 pub mod grid;
 mod highlight;
 mod plume;

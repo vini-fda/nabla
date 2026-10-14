@@ -18,6 +18,7 @@ log = "0.4.34"
 ship2d_optimization = { path = "..", features = ["registry"] }
 gltf = { version = "1.4.1", default-features = false, features = ["utils"] }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
+egui_extras = { version = "0.36.2", default-features = false, features = ["svg"] }
 
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -31,3 +32,9 @@ web-sys = "0.3.106"             # to access the DOM (to hide the loading text)
 
 [lints]
 workspace = true
+
+[build-dependencies]
+typst = "0.15.1"
+typst-assets = { version = "0.15.1", features = ["fonts"] }
+typst-layout = "0.15.1"
+typst-svg = "0.15.1"

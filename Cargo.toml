@@ -23,6 +23,32 @@ strip = true
 [profile.dev.package."*"]
 opt-level = 2
 
+# ...except Typst, which only runs in the viewer's build script, on a few tiny formulas. Its
+# slowest crates to compile (from `cargo build --timings`) are built unoptimized, which cuts
+# a cold build of Typst by about a third. Only crates the viewer itself doesn't use: the
+# shared ones (image, skrifa, usvg, ...) stay optimized for the app.
+[profile.dev.package]
+biblatex = { opt-level = 0, debug = false }
+citationberg = { opt-level = 0, debug = false }
+hayagriva = { opt-level = 0, debug = false }
+hayro-interpret = { opt-level = 0, debug = false }
+hayro-jbig2 = { opt-level = 0, debug = false }
+hayro-jpeg2000 = { opt-level = 0, debug = false }
+hayro-syntax = { opt-level = 0, debug = false }
+icu_collator = { opt-level = 0, debug = false }
+palette = { opt-level = 0, debug = false }
+pic-scale = { opt-level = 0, debug = false }
+rustybuzz = { opt-level = 0, debug = false }
+syntect = { opt-level = 0, debug = false }
+typst-eval = { opt-level = 0, debug = false }
+typst-html = { opt-level = 0, debug = false }
+typst-layout = { opt-level = 0, debug = false }
+typst-library = { opt-level = 0, debug = false }
+typst-svg = { opt-level = 0, debug = false }
+typst-syntax = { opt-level = 0, debug = false }
+wasmi = { opt-level = 0, debug = false }
+wasmparser = { opt-level = 0, debug = false }
+
 # ----------------------------------------------------------------------------------------
 # Lints, opted into by the viewer (`[lints] workspace = true`).
 

@@ -14,7 +14,9 @@ use ship2d_optimization::suite;
 
 use crate::camera::Camera;
 use crate::grid::{GridStyle, draw_grid};
+use crate::plume::Plume;
 use crate::replay::{MAX_SUBDIVISIONS, Playback, Replay, Series};
+use crate::ship3d::{self, SHIP_GLB, ShipModel, ShipRenderer};
 use crate::source::{self, Runner, SolutionSource, Status};
 use crate::theme::{self, palette};
 use crate::timeline::{TimelineView, timeline_ui};
@@ -22,10 +24,31 @@ use crate::timeline::{TimelineView, timeline_ui};
 const TRIANGLE_STROKE_WIDTH: f32 = 2.0;
 
 const PLOT_HEIGHT: f32 = 110.0;
-const PLOT_PANEL_DEFAULT_WIDTH: f32 = 300.0;
-const PLOT_PANEL_MIN_WIDTH: f32 = 220.0;
-/// Narrowest the controls panel can be dragged to; below this its rows would be cut off.
-const CONTROLS_PANEL_MIN_WIDTH: f32 = 320.0;
+const CONTROLS_PANEL: SidePanel = SidePanel {
+    dock: Dock::Left,
+    id: "config_panel",
+    title: "Control policy",
+    // Narrowest the contents can be dragged to; below this their rows would be cut off.
+    min_width: 320.0,
+    default_width: 320.0,
+};
+const PLOTS_PANEL: SidePanel = SidePanel {
+    dock: Dock::Right,
+    id: "plots_panel",
+    title: "State",
+    min_width: 220.0,
+    default_width: 300.0,
+};
+/// Width of the vertical title bar along a side panel's window edge: all that is left of the
+/// panel when it is collapsed.
+const TITLE_BAR_WIDTH: f32 = 30.0;
+/// Seconds the pointer must stay away from a collapsed panel's title bar before the bar
+/// slides out of the window, leaving only its triangle.
+const TITLE_BAR_HIDE_DELAY: f64 = 0.5;
+/// How close (in points) the pointer must come to a hidden title bar to bring it back.
+const TITLE_BAR_REVEAL_MARGIN: f32 = 16.0;
+/// Seconds the title bar takes to slide out of or back into the window.
+const TITLE_BAR_SLIDE_TIME: f32 = 0.3;
 
 const POS_X_COLOR: egui::Color32 = palette::RED;
 const POS_Y_COLOR: egui::Color32 = palette::BLUE;
@@ -61,6 +84,16 @@ const START_RADIUS_PX: f32 = 5.0;
 
 /// Below this width (in points), e.g. on phones, the panels are shown one at a time.
 const COMPACT_WIDTH: f32 = 800.0;
+
+/// How the canvas shows the ship.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum CanvasView {
+    /// The textured 3D model seen from above, with the path, goal and a faint grid.
+    #[default]
+    Ship3d,
+    /// A flat triangle with velocity and acceleration arrows, on a labeled grid.
+    Debug,
+}
 
 /// What the compact (narrow-screen) layout shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -144,6 +177,10 @@ pub struct ViewerApp {
     show_velocity: bool,
     show_acceleration: bool,
     show_path: bool,
+    /// Draw the background grid.
+    show_grid: bool,
+    /// Show the thrusters' plumes in the 3D view.
+    show_plume: bool,
     follow_ship: bool,
     playback: Playback,
     /// Name of the selected test case.
@@ -172,6 +209,10 @@ pub struct ViewerApp {
     show_controls: bool,
     show_plots: bool,
     compact_view: CompactView,
+    view: CanvasView,
+    /// Draws the 3D ship; `None` where OpenGL can't (then the canvas shows the debug view).
+    ship3d: Option<ShipRenderer>,
+    plume: Option<Plume>,
     /// Dropped files read by the browser.
     #[cfg(target_arch = "wasm32")]
     dropped_tx: std::sync::mpsc::Sender<DroppedFile>,
@@ -194,6 +235,8 @@ impl Default for ViewerApp {
             show_velocity: true,
             show_acceleration: true,
             show_path: true,
+            show_grid: true,
+            show_plume: true,
             follow_ship: false,
             playback: Playback::default(),
             case: Some(DEFAULT_CASE.to_owned()),
@@ -214,6 +257,9 @@ impl Default for ViewerApp {
             show_controls: true,
             show_plots: true,
             compact_view: CompactView::default(),
+            view: CanvasView::default(),
+            ship3d: None,
+            plume: None,
             #[cfg(target_arch = "wasm32")]
             dropped_tx,
             #[cfg(target_arch = "wasm32")]
@@ -227,10 +273,29 @@ impl ViewerApp {
     pub fn new(cc: &eframe::CreationContext<'_>, source: Option<PathBuf>) -> Self {
         theme::apply(&cc.egui_ctx);
 
+        let ship3d = cc
+            .wgpu_render_state
+            .as_ref()
+            .ok_or_else(|| "not running on wgpu".to_owned())
+            .and_then(|render_state| {
+                let model = ShipModel::load(SHIP_GLB)?;
+                // egui's render pass, into which the ship is drawn: see `MULTISAMPLING`.
+                let samples = if cfg!(target_arch = "wasm32") {
+                    1
+                } else {
+                    u32::from(crate::MULTISAMPLING)
+                };
+                let depth = eframe::egui_wgpu::depth_format_from_bits(crate::DEPTH_BUFFER, 0);
+                Ok(ShipRenderer::new(render_state, &model, samples, depth))
+            })
+            .inspect_err(|e| log::warn!("No 3D view: {e}"))
+            .ok();
         let mut app = Self {
             runner: Runner::new(cc.egui_ctx.clone()),
             database: source::database(),
             cases: all_cases(),
+            ship3d,
+            plume: Some(Plume::new(&cc.egui_ctx)),
             ..Self::default()
         };
         match source.filter(|p| p.is_file()) {
@@ -444,7 +509,6 @@ impl ViewerApp {
     }
 
     fn source_ui(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Control policy");
         ui.horizontal(|ui| {
             #[cfg(not(target_arch = "wasm32"))]
             if ui.button("Open .rs...").clicked()
@@ -606,8 +670,6 @@ impl ViewerApp {
                     );
                     ui.separator();
                 }
-                let theme =
-                    egui_extras::syntax_highlighting::CodeTheme::from_memory(ui.ctx(), ui.style());
                 egui::ScrollArea::both().auto_shrink(false).show(ui, |ui| {
                     ui.horizontal_top(|ui| {
                         let lines = source.text.lines().count().max(1);
@@ -616,12 +678,7 @@ impl ViewerApp {
                             .monospace()
                             .color(ui.visuals().weak_text_color());
                         ui.add(egui::Label::new(numbers).selectable(false));
-                        egui_extras::syntax_highlighting::code_view_ui(
-                            ui,
-                            &theme,
-                            &source.text,
-                            "rs",
-                        );
+                        crate::highlight::code_view_ui(ui, &source.text);
                     });
                 });
             });
@@ -703,14 +760,27 @@ impl ViewerApp {
 
     fn display_ui(&mut self, ui: &mut egui::Ui) {
         ui.heading("Display");
+        ui.add_enabled_ui(self.ship3d.is_some(), |ui| {
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.view, CanvasView::Ship3d, "3D");
+                ui.selectable_value(&mut self.view, CanvasView::Debug, "Debug")
+                    .on_hover_text("Flat ship with velocity and acceleration arrows");
+            });
+        });
         ui.add(
             egui::Slider::new(&mut self.circumradius, 0.05..=10.0)
                 .logarithmic(true)
                 .text("ship size (world units)"),
         );
+        ui.checkbox(&mut self.show_grid, "Grid");
         ui.checkbox(&mut self.show_path, "Path (grey: full, blue: so far)");
-        ui.checkbox(&mut self.show_velocity, "Velocity (green)");
-        ui.checkbox(&mut self.show_acceleration, "Acceleration (red)");
+        ui.add_enabled_ui(!self.debug_view(), |ui| {
+            ui.checkbox(&mut self.show_plume, "Thruster plumes");
+        });
+        ui.add_enabled_ui(self.debug_view(), |ui| {
+            ui.checkbox(&mut self.show_velocity, "Velocity (green)");
+            ui.checkbox(&mut self.show_acceleration, "Acceleration (red)");
+        });
         ui.checkbox(&mut self.follow_ship, "Follow ship");
         ui.horizontal(|ui| {
             if ui.button("Fit view").clicked() {
@@ -815,7 +885,6 @@ impl ViewerApp {
             return;
         };
         let t = self.playback.time(replay.h());
-        ui.heading("State");
         ui.label("Click a plot to jump to that time.");
         let seek = egui::ScrollArea::vertical()
             .show(ui, |ui| {
@@ -880,9 +949,16 @@ impl ViewerApp {
         }
 
         let painter = ui.painter_at(rect);
-        let style = GridStyle::from_visuals(ui.visuals());
+        let debug = self.debug_view();
+        let style = if debug {
+            GridStyle::from_visuals(ui.visuals())
+        } else {
+            GridStyle::faint(ui.visuals())
+        };
         let (Some(replay), Some((k, _, state))) = (&self.replay, self.now()) else {
-            draw_grid(&painter, &self.camera, rect, &style);
+            if self.show_grid {
+                draw_grid(&painter, &self.camera, rect, &style);
+            }
             return;
         };
 
@@ -892,13 +968,44 @@ impl ViewerApp {
             self.camera.center = world(state.x, state.y);
         }
 
-        draw_grid(&painter, &self.camera, rect, &style);
+        if self.show_grid {
+            draw_grid(&painter, &self.camera, rect, &style);
+        }
         if self.show_path {
             self.draw_path(&painter, rect, replay, k, &state);
         }
         self.draw_goal(&painter, rect, replay, &state);
-        self.draw_ship(&painter, rect, &state);
-        self.draw_arrows(&painter, rect, replay, k, &state);
+        match &self.ship3d {
+            Some(renderer) if !debug => {
+                let t = self.playback.time(replay.h());
+                let plume = self.plume.as_ref().filter(|_| self.show_plume);
+                if let Some(plume) = plume {
+                    plume.paint_jets(&painter, &self.camera, rect, replay, t, self.circumradius);
+                }
+                if let Some(callback) = ship3d::paint_callback(
+                    renderer,
+                    &self.camera,
+                    rect,
+                    world(state.x, state.y),
+                    state.theta as f32,
+                    self.circumradius,
+                ) {
+                    painter.add(callback);
+                }
+                if let Some(plume) = plume {
+                    plume.paint_nozzles(&painter, &self.camera, rect, replay, t, self.circumradius);
+                }
+            }
+            _ => {
+                self.draw_ship(&painter, rect, &state);
+                self.draw_arrows(&painter, rect, replay, k, &state);
+            }
+        }
+    }
+
+    /// Whether the canvas shows the debug view: when chosen, or when there is no 3D view.
+    fn debug_view(&self) -> bool {
+        self.view == CanvasView::Debug || self.ship3d.is_none()
     }
 
     /// Full path, and the path up to the ship's current (possibly between-samples) position.
@@ -1040,57 +1147,14 @@ impl ViewerApp {
 
     /// Desktop layout: controls left, plots right, timeline below the canvas.
     fn wide_layout(&mut self, ui: &mut egui::Ui) {
-        if self.show_controls {
-            egui::Panel::left("config_panel")
-                .resizable(true)
-                .default_size(CONTROLS_PANEL_MIN_WIDTH)
-                .min_size(CONTROLS_PANEL_MIN_WIDTH)
-                .show(ui, |ui| {
-                    if hide_button(ui, egui::Align::Max, "\u{25C0}", "Hide this panel") {
-                        self.show_controls = false;
-                    }
-                    self.controls_ui(ui);
-                });
-        }
+        let mut show_controls = self.show_controls;
+        CONTROLS_PANEL.show(ui, &mut show_controls, |ui| self.controls_ui(ui));
+        self.show_controls = show_controls;
         egui::Panel::bottom("timeline_panel").show(ui, |ui| self.timeline_ui(ui));
-        if self.show_plots {
-            egui::Panel::right("plots_panel")
-                .resizable(true)
-                .default_size(PLOT_PANEL_DEFAULT_WIDTH)
-                .min_size(PLOT_PANEL_MIN_WIDTH)
-                .show(ui, |ui| {
-                    if hide_button(ui, egui::Align::Min, "\u{25B6}", "Hide this panel") {
-                        self.show_plots = false;
-                    }
-                    self.plots_ui(ui);
-                });
-        }
+        let mut show_plots = self.show_plots;
+        PLOTS_PANEL.show(ui, &mut show_plots, |ui| self.plots_ui(ui));
+        self.show_plots = show_plots;
         egui::CentralPanel::default().show(ui, |ui| self.canvas_ui(ui));
-
-        // Buttons to bring back hidden panels, floating over the canvas corners.
-        let ctx = ui.ctx().clone();
-        if !self.show_controls
-            && show_button(
-                &ctx,
-                "show_controls",
-                egui::Align2::LEFT_TOP,
-                "\u{25B6}",
-                "Show controls",
-            )
-        {
-            self.show_controls = true;
-        }
-        if !self.show_plots
-            && show_button(
-                &ctx,
-                "show_plots",
-                egui::Align2::RIGHT_TOP,
-                "\u{25C0}",
-                "Show plots",
-            )
-        {
-            self.show_plots = true;
-        }
     }
 
     /// Narrow-screen layout: one full-size view at a time, chosen in the top bar; the
@@ -1101,8 +1165,14 @@ impl ViewerApp {
         }
         egui::CentralPanel::default().show(ui, |ui| match self.compact_view {
             CompactView::Canvas => self.canvas_ui(ui),
-            CompactView::Controls => self.controls_ui(ui),
-            CompactView::Plots => self.plots_ui(ui),
+            CompactView::Controls => {
+                ui.heading(CONTROLS_PANEL.title);
+                self.controls_ui(ui);
+            }
+            CompactView::Plots => {
+                ui.heading(PLOTS_PANEL.title);
+                self.plots_ui(ui);
+            }
         });
     }
 }
@@ -1155,37 +1225,235 @@ impl eframe::App for ViewerApp {
     }
 }
 
-/// A small button at the top of a side panel that hides it, on side `align` of the panel.
-fn hide_button(ui: &mut egui::Ui, align: egui::Align, glyph: &str, hover: &str) -> bool {
-    ui.with_layout(egui::Layout::top_down(align), |ui| {
-        ui.small_button(glyph).on_hover_text(hover).clicked()
-    })
-    .inner
+/// The window edge a collapsible side panel is docked to.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Dock {
+    Left,
+    Right,
 }
 
-/// A small button floating in a top corner of the window that brings a hidden panel back.
-fn show_button(
-    ctx: &egui::Context,
-    id: &str,
-    corner: egui::Align2,
-    glyph: &str,
-    hover: &str,
+/// A side panel with a vertical title bar along its window edge: an egui window's title bar
+/// turned on its side, with the collapse triangle and the panel's title. Clicking the bar
+/// (or dragging the panel's edge past its minimum width) slides the panel away until only
+/// the title bar is left, the way an egui window collapses to its title bar.
+struct SidePanel {
+    dock: Dock,
+    id: &'static str,
+    title: &'static str,
+    /// The contents' widths, not counting the title bar.
+    min_width: f32,
+    default_width: f32,
+}
+
+impl SidePanel {
+    fn show(
+        &self,
+        ui: &mut egui::Ui,
+        expanded: &mut bool,
+        add_contents: impl FnOnce(&mut egui::Ui),
+    ) {
+        let Self {
+            dock,
+            id,
+            title,
+            min_width,
+            default_width,
+        } = *self;
+        let id = egui::Id::new(id);
+        let ctx = ui.ctx().clone();
+        let openness = ctx.animate_bool(id.with("openness"), *expanded);
+
+        // Where the title bar is when it is in the window, and where its triangle is: there
+        // also while the collapsed bar has slid out, so it stays visible and clickable.
+        let area = ui.available_rect_before_wrap();
+        let bar = match dock {
+            Dock::Left => area.with_max_x(area.left() + TITLE_BAR_WIDTH),
+            Dock::Right => area.with_min_x(area.right() - TITLE_BAR_WIDTH),
+        };
+        let icon_center = egui::pos2(bar.center().x, title_bar_icon_y(ui, bar));
+
+        let reveal = title_bar_reveal(ui, id, bar, *expanded);
+
+        let mut toggled = false;
+        if !*expanded {
+            toggled |= egui::Area::new(id.with("collapsed_icon"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(icon_center - egui::vec2(TITLE_BAR_WIDTH, TITLE_BAR_WIDTH) / 2.0)
+                .show(&ctx, |ui| {
+                    let (rect, response) = ui.allocate_exact_size(
+                        egui::Vec2::splat(TITLE_BAR_WIDTH),
+                        egui::Sense::click(),
+                    );
+                    paint_collapse_icon(ui, &response, rect.center(), dock, openness);
+                    response.on_hover_text("Show this panel").clicked()
+                })
+                .inner;
+        }
+
+        // Fully collapsed with the bar slid out: nothing left of the panel but that triangle.
+        if *expanded || openness > 0.0 || reveal > 0.0 {
+            let side = |id: egui::Id| match dock {
+                Dock::Left => egui::Panel::left(id),
+                Dock::Right => egui::Panel::right(id),
+            };
+            // No margin, so the title bar runs flush along the panel; the contents get the
+            // usual one.
+            let frame = egui::Frame::side_top_panel(ui.style()).inner_margin(0);
+            let collapsed_panel = side(id.with("collapsed"))
+                .frame(frame)
+                .exact_size(TITLE_BAR_WIDTH * reveal);
+            let expanded_panel = side(id)
+                .frame(frame)
+                .min_size(min_width + TITLE_BAR_WIDTH)
+                .default_size(default_width + TITLE_BAR_WIDTH);
+            let icon_in_bar = *expanded;
+
+            toggled |= egui::Panel::show_switched(
+                ui,
+                expanded,
+                collapsed_panel,
+                expanded_panel,
+                |ui, show_contents| {
+                    let rect = ui.available_rect_before_wrap();
+                    // The bar keeps its width as the collapsed panel narrows, so it slides out
+                    // past the window edge instead of being squeezed.
+                    let bar_rect = if (dock == Dock::Left) == show_contents {
+                        rect.with_max_x(rect.left() + TITLE_BAR_WIDTH)
+                    } else {
+                        rect.with_min_x(rect.right() - TITLE_BAR_WIDTH)
+                    };
+                    let icon = icon_in_bar.then_some(openness);
+                    let toggled = title_bar(ui, bar_rect, dock, title, icon, show_contents);
+                    if show_contents {
+                        let (x, content_rect) = match dock {
+                            Dock::Left => (bar_rect.right(), rect.with_min_x(bar_rect.right())),
+                            Dock::Right => (bar_rect.left(), rect.with_max_x(bar_rect.left())),
+                        };
+                        let stroke = ui.visuals().widgets.noninteractive.bg_stroke;
+                        ui.painter().vline(x, rect.y_range(), stroke);
+                        let mut content =
+                            ui.new_child(egui::UiBuilder::new().max_rect(content_rect));
+                        egui::Frame::new()
+                            .inner_margin(egui::Margin::symmetric(8, 2))
+                            .show(&mut content, add_contents);
+                    }
+                    ui.advance_cursor_after_rect(rect);
+                    toggled
+                },
+            )
+            .inner;
+        }
+        if toggled {
+            *expanded = !*expanded;
+        }
+    }
+}
+
+/// How far a side panel's title bar is in the window, from 0 (slid out) to 1. Once the
+/// panel is collapsed, the bar slides out after the pointer has kept away from `bar` (where
+/// the bar is when in the window) for a while, and slides back in as soon as the pointer
+/// comes near.
+fn title_bar_reveal(ui: &egui::Ui, id: egui::Id, bar: egui::Rect, expanded: bool) -> f32 {
+    let ctx = ui.ctx();
+    let now = ui.input(|i| i.time);
+    let near = ui
+        .input(|i| i.pointer.hover_pos())
+        .is_some_and(|p| bar.expand(TITLE_BAR_REVEAL_MARGIN).contains(p));
+    let last_near_id = id.with("last_near");
+    if expanded || near {
+        ctx.data_mut(|d| d.insert_temp(last_near_id, now));
+    }
+    let away = now - ctx.data_mut(|d| *d.get_temp_mut_or(last_near_id, now));
+    let tucked = !expanded && away > TITLE_BAR_HIDE_DELAY;
+    if !expanded && !tucked {
+        ctx.request_repaint_after_secs((TITLE_BAR_HIDE_DELAY - away) as f32);
+    }
+    ctx.animate_bool_with_time_and_easing(
+        id.with("reveal"),
+        !tucked,
+        TITLE_BAR_SLIDE_TIME,
+        egui::emath::easing::cubic_in_out,
+    )
+}
+
+/// Height of a title bar's triangle in `bar`: level with the panel contents' first row.
+fn title_bar_icon_y(ui: &egui::Ui, bar: egui::Rect) -> f32 {
+    bar.top() + 2.0 + ui.spacing().interact_size.y / 2.0
+}
+
+/// Paints a side panel's vertical title bar in `rect`: the collapse triangle at the top
+/// (when `icon` gives its openness), then the title, reading away from the triangle toward
+/// the bottom on the right and toward the top on the left, so the letters always stand on
+/// the panel's contents. Returns whether the bar was clicked.
+fn title_bar(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    dock: Dock,
+    title: &str,
+    icon: Option<f32>,
+    expanded: bool,
 ) -> bool {
-    let inset = egui::vec2(
-        if corner == egui::Align2::LEFT_TOP {
-            8.0
+    use std::f32::consts::TAU;
+
+    let response = ui
+        .interact(rect, ui.id().with("title_bar"), egui::Sense::click())
+        .on_hover_text(if expanded {
+            "Hide this panel"
         } else {
-            -8.0
-        },
-        8.0,
-    );
-    egui::Area::new(egui::Id::new(id))
-        .order(egui::Order::Foreground)
-        .anchor(corner, inset)
-        .show(ctx, |ui| {
-            ui.small_button(glyph).on_hover_text(hover).clicked()
-        })
-        .inner
+            "Show this panel"
+        });
+    let icon_center = egui::pos2(rect.center().x, title_bar_icon_y(ui, rect));
+    if let Some(openness) = icon {
+        paint_collapse_icon(ui, &response, icon_center, dock, openness);
+    }
+
+    let color = ui.style().interact(&response).fg_stroke.color;
+    let font = egui::TextStyle::Heading.resolve(ui.style());
+    let galley = ui.painter().layout_no_wrap(title.to_owned(), font, color);
+    let size = galley.size();
+    let top = icon_center.y + ui.spacing().icon_width / 2.0 + ui.spacing().item_spacing.y;
+    let (pos, angle) = match dock {
+        Dock::Left => (
+            egui::pos2(rect.center().x - size.y / 2.0, top + size.x),
+            -TAU / 4.0,
+        ),
+        Dock::Right => (egui::pos2(rect.center().x + size.y / 2.0, top), TAU / 4.0),
+    };
+    ui.painter()
+        .add(egui::epaint::TextShape::new(pos, galley, color).with_angle(angle));
+
+    response.clicked()
+}
+
+/// The collapse triangle of a side panel's title bar, centered on `center`, in the colors
+/// of `response`. As in `egui::collapsing_header::paint_default_icon`: a triangle pointing
+/// down, turned with the openness. Here it turns half a turn instead of a quarter, from
+/// pointing into the window (collapsed) to pointing at the window edge (expanded).
+fn paint_collapse_icon(
+    ui: &egui::Ui,
+    response: &egui::Response,
+    center: egui::Pos2,
+    dock: Dock,
+    openness: f32,
+) {
+    use std::f32::consts::TAU;
+
+    let visuals = ui.style().interact(response);
+    let r = egui::Rect::from_center_size(center, egui::Vec2::splat(ui.spacing().icon_width * 0.75))
+        .expand(visuals.expansion);
+    let (closed, open) = match dock {
+        Dock::Left => (-TAU / 4.0, TAU / 4.0),
+        Dock::Right => (TAU / 4.0, -TAU / 4.0),
+    };
+    let rotation = egui::emath::Rot2::from_angle(egui::remap(openness, 0.0..=1.0, closed..=open));
+    let points = [r.left_top(), r.right_top(), r.center_bottom()]
+        .map(|p| r.center() + rotation * (p - r.center()))
+        .to_vec();
+    ui.painter().add(egui::Shape::convex_polygon(
+        points,
+        visuals.fg_stroke.color,
+        egui::Stroke::NONE,
+    ));
 }
 
 fn world(x: f64, y: f64) -> egui::Vec2 {

@@ -15,6 +15,8 @@ pub struct GridStyle {
     pub axis_color: Color32,
     pub label_color: Color32,
     pub label_font: FontId,
+    /// Label the major lines with their coordinates.
+    pub labels: bool,
     /// Target screen-pixel spacing between adjacent major lines.
     pub target_major_spacing_px: f32,
 }
@@ -29,7 +31,20 @@ impl GridStyle {
             axis_color: text.gamma_multiply(0.65),
             label_color: text,
             label_font: FontId::monospace(11.0),
+            labels: true,
             target_major_spacing_px: 80.0,
+        }
+    }
+
+    /// A fainter grid without labels, a backdrop that stays out of the way.
+    pub fn faint(v: &egui::Visuals) -> Self {
+        let text = v.text_color();
+        Self {
+            minor_color: text.gamma_multiply(0.05),
+            major_color: text.gamma_multiply(0.12),
+            axis_color: text.gamma_multiply(0.25),
+            labels: false,
+            ..Self::from_visuals(v)
         }
     }
 }
@@ -107,6 +122,18 @@ pub fn draw_grid(painter: &Painter, camera: &Camera, rect: Rect, style: &GridSty
             Stroke::new(1.5_f32, style.axis_color),
         );
     }
+
+    if style.labels {
+        draw_labels(painter, camera, rect, style, major_step);
+    }
+}
+
+/// Coordinates of the major lines that are `major_step` apart.
+fn draw_labels(painter: &Painter, camera: &Camera, rect: Rect, style: &GridStyle, major_step: f64) {
+    let bottom_left_world = camera.screen_to_world(rect.left_bottom(), rect);
+    let top_right_world = camera.screen_to_world(rect.right_top(), rect);
+    let (world_min_x, world_max_x) = (bottom_left_world.x, top_right_world.x);
+    let (world_min_y, world_max_y) = (bottom_left_world.y, top_right_world.y);
 
     // Labels along the visible x-axis (or pinned to bottom edge if y=0 is offscreen)
     // and y-axis (or left edge).

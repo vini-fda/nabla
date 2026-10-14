@@ -19,6 +19,7 @@ pub mod palette {
     pub const YELLOW: Color32 = Color32::from_rgb(0xf9, 0xe2, 0xaf);
     pub const GREEN: Color32 = Color32::from_rgb(0xa6, 0xe3, 0xa1);
     pub const TEAL: Color32 = Color32::from_rgb(0x94, 0xe2, 0xd5);
+    pub const SKY: Color32 = Color32::from_rgb(0x89, 0xdc, 0xeb);
     pub const SAPPHIRE: Color32 = Color32::from_rgb(0x74, 0xc7, 0xec);
     pub const BLUE: Color32 = Color32::from_rgb(0x89, 0xb4, 0xfa);
     pub const LAVENDER: Color32 = Color32::from_rgb(0xb4, 0xbe, 0xfe);

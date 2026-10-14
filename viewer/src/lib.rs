@@ -7,6 +7,7 @@ mod app;
 pub mod camera;
 pub mod grid;
 mod highlight;
+mod plume;
 pub mod replay;
 mod ship3d;
 pub mod source;

@@ -15,6 +15,7 @@ use ship2d_optimization::suite;
 
 use crate::camera::Camera;
 use crate::grid::{GridStyle, draw_grid};
+use crate::plume::Plume;
 use crate::replay::{MAX_SUBDIVISIONS, Playback, Replay, Series};
 use crate::ship3d::{self, SHIP_GLB, ShipModel, ShipRenderer};
 use crate::source::{self, Runner, SolutionSource, Status};
@@ -177,6 +178,8 @@ pub struct ViewerApp {
     show_velocity: bool,
     show_acceleration: bool,
     show_path: bool,
+    /// Show the thruster's plume in the 3D view.
+    show_plume: bool,
     follow_ship: bool,
     playback: Playback,
     /// Name of the selected test case.
@@ -208,6 +211,7 @@ pub struct ViewerApp {
     view: CanvasView,
     /// Draws the 3D ship; `None` where OpenGL can't (then the canvas shows the debug view).
     ship3d: Option<Arc<ShipRenderer>>,
+    plume: Option<Plume>,
     /// Dropped files read by the browser.
     #[cfg(target_arch = "wasm32")]
     dropped_tx: std::sync::mpsc::Sender<DroppedFile>,
@@ -230,6 +234,7 @@ impl Default for ViewerApp {
             show_velocity: true,
             show_acceleration: true,
             show_path: true,
+            show_plume: true,
             follow_ship: false,
             playback: Playback::default(),
             case: Some(DEFAULT_CASE.to_owned()),
@@ -252,6 +257,7 @@ impl Default for ViewerApp {
             compact_view: CompactView::default(),
             view: CanvasView::default(),
             ship3d: None,
+            plume: None,
             #[cfg(target_arch = "wasm32")]
             dropped_tx,
             #[cfg(target_arch = "wasm32")]
@@ -276,6 +282,7 @@ impl ViewerApp {
             database: source::database(),
             cases: all_cases(),
             ship3d: ship3d.map(Arc::new),
+            plume: Some(Plume::new(&cc.egui_ctx)),
             ..Self::default()
         };
         match source.filter(|p| p.is_file()) {
@@ -753,6 +760,9 @@ impl ViewerApp {
                 .text("ship size (world units)"),
         );
         ui.checkbox(&mut self.show_path, "Path (grey: full, blue: so far)");
+        ui.add_enabled_ui(!self.debug_view(), |ui| {
+            ui.checkbox(&mut self.show_plume, "Thruster plume");
+        });
         ui.add_enabled_ui(self.debug_view(), |ui| {
             ui.checkbox(&mut self.show_velocity, "Velocity (green)");
             ui.checkbox(&mut self.show_acceleration, "Acceleration (red)");
@@ -949,6 +959,11 @@ impl ViewerApp {
         self.draw_goal(&painter, rect, replay, &state);
         match &self.ship3d {
             Some(renderer) if !debug => {
+                let t = self.playback.time(replay.h());
+                let plume = self.plume.as_ref().filter(|_| self.show_plume);
+                if let Some(plume) = plume {
+                    plume.paint_jet(&painter, &self.camera, rect, replay, t, self.circumradius);
+                }
                 if let Some(callback) = ship3d::paint_callback(
                     renderer,
                     &self.camera,
@@ -958,6 +973,9 @@ impl ViewerApp {
                     self.circumradius,
                 ) {
                     painter.add(callback);
+                }
+                if let Some(plume) = plume {
+                    plume.paint_nozzle(&painter, &self.camera, rect, replay, t, self.circumradius);
                 }
             }
             _ => {

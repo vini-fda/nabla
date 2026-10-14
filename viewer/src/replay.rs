@@ -2,11 +2,11 @@
 //!
 //! The run is computed once, by the exact sampled-data model of `ship2d_optimization`: `s_k` is
 //! the state at `t_k = k h`, and `u_k` is the control held during `[t_k, t_{k+1})`. Because the
-//! control is constant between samples, the state at any `t = t_k + τ`, `0 ≤ τ < h`, is exactly
-//! one `step` of length `τ` from `s_k` under `u_k`, so playback can show the true continuous
-//! motion at any display sampling time `Δt`, not only at the controller samples.
+//! control is constant between samples, the state at any `t = t_k + tau`, `0 <= tau < h`, is exactly
+//! one `step` of length `tau` from `s_k` under `u_k`, so playback can show the true continuous
+//! motion at any display sampling time `dt`, not only at the controller samples.
 //!
-//! Playback positions are integer counts of `Δt = h / subdivisions`, so the controller samples
+//! Playback positions are integer counts of `dt = h / subdivisions`, so the controller samples
 //! fall exactly on the display grid.
 
 use ship2d_optimization::problem::{Case, Outcome, Trajectory};
@@ -57,7 +57,7 @@ impl Replay {
         &self.trajectory.states[frame.min(self.last_frame())]
     }
 
-    /// Exact state at `t_k + offset`, for `0 ≤ offset < h`: one partial step from `s_k` under
+    /// Exact state at `t_k + offset`, for `0 <= offset < h`: one partial step from `s_k` under
     /// `u_k`. At or after the last sample this is `s_N`.
     pub fn state_at(&self, frame: usize, offset: f64) -> State {
         match self.trajectory.controls.get(frame) {
@@ -77,7 +77,7 @@ impl Replay {
         self.trajectory.controls.get(frame)
     }
 
-    /// Linear acceleration `F/m (cos θ, sin θ)` of `state` under the control held at sample `k`.
+    /// Linear acceleration `F/m (cos theta, sin theta)` of `state` under the control held at sample `k`.
     pub fn acceleration(&self, frame: usize, state: &State) -> [f64; 2] {
         let thrust = self.control(frame).map_or(0.0, |u| u.thrust);
         let a = thrust / self.case.task.params.mass;
@@ -126,7 +126,7 @@ pub const MAX_SUBDIVISIONS: u32 = 1000;
 
 /// Playback position, display sampling time and speed.
 ///
-/// The position is an integer number of ticks of `Δt = h / subdivisions`.
+/// The position is an integer number of ticks of `dt = h / subdivisions`.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(default)]
 pub struct Playback {
@@ -136,7 +136,7 @@ pub struct Playback {
     pub playing: bool,
     /// Simulated seconds per real second.
     pub speed: f64,
-    /// Display samples per controller sample: `Δt = h / subdivisions`.
+    /// Display samples per controller sample: `dt = h / subdivisions`.
     subdivisions: u32,
     /// Fraction of a tick accumulated but not yet shown.
     #[serde(skip)]
@@ -164,12 +164,12 @@ impl Playback {
         u64::from(self.subdivisions())
     }
 
-    /// Display sampling time `Δt`.
+    /// Display sampling time `dt`.
     pub fn dt(&self, h: f64) -> f64 {
         h / f64::from(self.subdivisions())
     }
 
-    /// Change `Δt = h / subdivisions`, keeping the playhead at the nearest tick of the new grid.
+    /// Change `dt = h / subdivisions`, keeping the playhead at the nearest tick of the new grid.
     pub fn set_subdivisions(&mut self, subdivisions: u32) {
         let old = self.n();
         self.subdivisions = subdivisions.clamp(1, MAX_SUBDIVISIONS);
@@ -182,7 +182,7 @@ impl Playback {
         last_frame as u64 * self.n()
     }
 
-    /// The playhead as `(k, τ)` with `t = k h + τ` and `0 ≤ τ < h`.
+    /// The playhead as `(k, tau)` with `t = k h + tau` and `0 <= tau < h`.
     pub fn moment(&self, h: f64) -> (usize, f64) {
         let n = self.n();
         (
@@ -227,7 +227,7 @@ impl Playback {
         self.seek_tick(self.last_tick(last_frame), last_frame);
     }
 
-    /// Move by `delta` ticks of `Δt` and pause.
+    /// Move by `delta` ticks of `dt` and pause.
     pub fn step_ticks(&mut self, delta: i64, last_frame: usize) {
         self.playing = false;
         self.seek_tick(self.tick.saturating_add_signed(delta), last_frame);
@@ -411,7 +411,7 @@ mod tests {
         p.seek_time(-1.0, H, 100);
         assert_eq!(p.moment(H), (0, 0.0), "clamped below");
         p.seek_time(0.26, H, 100);
-        assert_eq!(p.moment(H), (3, 0.0), "rounded to the Δt grid");
+        assert_eq!(p.moment(H), (3, 0.0), "rounded to the dt grid");
         p.seek_time(1e9, H, 100);
         assert_eq!(p.moment(H), (100, 0.0), "clamped above");
     }
@@ -449,7 +449,7 @@ mod tests {
             "previous sample from between samples"
         );
         p.step_ticks(-1, 100);
-        assert!((p.time(H) - 0.39).abs() < 1e-12, "one Δt back");
+        assert!((p.time(H) - 0.39).abs() < 1e-12, "one dt back");
     }
 
     #[test]
@@ -458,7 +458,7 @@ mod tests {
             speed: 2.0,
             ..Playback::default()
         };
-        p.set_subdivisions(10); // Δt = 0.01
+        p.set_subdivisions(10); // dt = 0.01
         p.play(10);
         p.advance(0.0125, H, 10); // 2.5 ticks
         assert!((p.time(H) - 0.02).abs() < 1e-12, "whole ticks shown");

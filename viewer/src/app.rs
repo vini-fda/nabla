@@ -16,6 +16,7 @@ use crate::camera::Camera;
 use crate::grid::{GridStyle, draw_grid};
 use crate::replay::{MAX_SUBDIVISIONS, Playback, Replay, Series};
 use crate::source::{self, Runner, SolutionSource, Status};
+use crate::theme::{self, palette};
 use crate::timeline::{TimelineView, timeline_ui};
 
 const TRIANGLE_STROKE_WIDTH: f32 = 2.0;
@@ -24,15 +25,15 @@ const PLOT_HEIGHT: f32 = 110.0;
 const PLOT_PANEL_DEFAULT_WIDTH: f32 = 300.0;
 const PLOT_PANEL_MIN_WIDTH: f32 = 220.0;
 
-const POS_X_COLOR: egui::Color32 = egui::Color32::from_rgb(220, 60, 60);
-const POS_Y_COLOR: egui::Color32 = egui::Color32::from_rgb(60, 110, 220);
-const VEL_X_COLOR: egui::Color32 = egui::Color32::from_rgb(230, 130, 50);
-const VEL_Y_COLOR: egui::Color32 = egui::Color32::from_rgb(50, 180, 180);
-const THETA_COLOR: egui::Color32 = egui::Color32::from_rgb(170, 80, 200);
-const OMEGA_COLOR: egui::Color32 = egui::Color32::from_rgb(200, 170, 50);
-const THRUST_COLOR: egui::Color32 = egui::Color32::from_rgb(220, 50, 50);
-const TORQUE_COLOR: egui::Color32 = egui::Color32::from_rgb(60, 120, 210);
-const CURSOR_COLOR: egui::Color32 = egui::Color32::from_rgb(90, 90, 90);
+const POS_X_COLOR: egui::Color32 = palette::RED;
+const POS_Y_COLOR: egui::Color32 = palette::BLUE;
+const VEL_X_COLOR: egui::Color32 = palette::PEACH;
+const VEL_Y_COLOR: egui::Color32 = palette::TEAL;
+const THETA_COLOR: egui::Color32 = palette::MAUVE;
+const OMEGA_COLOR: egui::Color32 = palette::YELLOW;
+const THRUST_COLOR: egui::Color32 = palette::RED;
+const TORQUE_COLOR: egui::Color32 = palette::SAPPHIRE;
+const CURSOR_COLOR: egui::Color32 = palette::OVERLAY1;
 
 const DEFAULT_CIRCUMRADIUS: f32 = 1.0;
 const DEFAULT_ALPHA: f32 = 0.3;
@@ -44,14 +45,14 @@ const ACCELERATION_ARROW_PX_PER_UPS2: f32 = 20.0;
 const ARROW_STROKE_WIDTH: f32 = 2.0;
 const ARROW_MIN_PIXELS: f32 = 4.0;
 
-const VELOCITY_COLOR: egui::Color32 = egui::Color32::from_rgb(0, 170, 60);
-const ACCELERATION_COLOR: egui::Color32 = egui::Color32::from_rgb(220, 50, 50);
+const VELOCITY_COLOR: egui::Color32 = palette::GREEN;
+const ACCELERATION_COLOR: egui::Color32 = palette::RED;
 
-const PATH_COLOR: egui::Color32 = egui::Color32::from_rgb(170, 170, 170);
-const TRAVELED_COLOR: egui::Color32 = egui::Color32::from_rgb(40, 90, 200);
+const PATH_COLOR: egui::Color32 = palette::OVERLAY0;
+const TRAVELED_COLOR: egui::Color32 = palette::BLUE;
 const PATH_MIN_SEGMENT_PX: f32 = 0.5;
 
-const GOAL_COLOR: egui::Color32 = egui::Color32::from_rgb(230, 180, 40);
+const GOAL_COLOR: egui::Color32 = palette::YELLOW;
 const GOAL_RADIUS_PX: f32 = 10.0;
 const GOAL_LABEL_OFFSET_PX: f32 = 12.0;
 const START_RADIUS_PX: f32 = 5.0;
@@ -209,7 +210,7 @@ impl Default for ViewerApp {
 impl ViewerApp {
     /// Called once before the first frame. Opens `source` if given, else the last source.
     pub fn new(cc: &eframe::CreationContext<'_>, source: Option<PathBuf>) -> Self {
-        cc.egui_ctx.set_theme(egui::ThemePreference::Dark);
+        theme::apply(&cc.egui_ctx);
 
         // Load previous app state (if any).
         // Note that you must enable the `persistence` feature for this to work.
@@ -374,14 +375,14 @@ impl ViewerApp {
         self.replay.as_ref().map_or(0, Replay::last_frame)
     }
 
-    /// Sample index `k`, offset `τ` into the step, and the exact state at the playhead.
+    /// Sample index `k`, offset `tau` into the step, and the exact state at the playhead.
     fn now(&self) -> Option<(usize, f64, State)> {
         let replay = self.replay.as_ref()?;
         let (k, offset) = self.playback.moment(replay.h());
         Some((k, offset, replay.state_at(k, offset)))
     }
 
-    /// Space: play/pause. Left/Right: one Δt. Shift+Left/Right: previous/next controller
+    /// Space: play/pause. Left/Right: one dt. Shift+Left/Right: previous/next controller
     /// sample. Home/End: start/end.
     fn handle_keys(&mut self, ui: &egui::Ui) {
         if ui.ctx().memory(|m| m.focused().is_some()) {
@@ -421,7 +422,7 @@ impl ViewerApp {
         ui.heading("Solution source");
         ui.horizontal(|ui| {
             #[cfg(not(target_arch = "wasm32"))]
-            if ui.button("Open .rs…").clicked()
+            if ui.button("Open .rs...").clicked()
                 && let Some(path) = rfd::FileDialog::new()
                     .add_filter("Rust source", &["rs"])
                     .set_directory(ship2d_optimization::db::solutions_dir())
@@ -443,7 +444,7 @@ impl ViewerApp {
 
         let mut stored = None;
         egui::ComboBox::from_id_salt("database")
-            .selected_text("Open a stored solution…")
+            .selected_text("Open a stored solution...")
             .show_ui(ui, |ui| {
                 for (entry, solution, path) in &self.database {
                     let label = format!("{}.rs  (score {})", solution.name, entry.score);
@@ -480,13 +481,13 @@ impl ViewerApp {
             Status::Compiling => {
                 ui.horizontal(|ui| {
                     ui.spinner();
-                    ui.label("Compiling…");
+                    ui.label("Compiling...");
                 });
             }
             Status::Tracing => {
                 ui.horizontal(|ui| {
                     ui.spinner();
-                    ui.label("Running…");
+                    ui.label("Running...");
                 });
             }
             Status::Precompiled => {
@@ -517,7 +518,7 @@ impl ViewerApp {
         ui.heading("Case");
         let old_case = self.case.clone();
         egui::ComboBox::from_id_salt("case")
-            .selected_text(self.case.as_deref().unwrap_or("—"))
+            .selected_text(self.case.as_deref().unwrap_or("-"))
             .height(400.0)
             .show_ui(ui, |ui| {
                 for suite_name in ["standard", "holdout"] {
@@ -588,7 +589,10 @@ impl ViewerApp {
                 ui.end_row();
             };
             row("m, I", format!("{:.3}, {:.3}", p.mass, p.inertia));
-            row("F_max, τ_max", format!("{:.3}, {:.3}", p.f_max, p.tau_max));
+            row(
+                "F_max, tau_max",
+                format!("{:.3}, {:.3}", p.f_max, p.tau_max),
+            );
             row("h", format!("{} s", p.h));
             row(
                 "goal B",
@@ -596,7 +600,10 @@ impl ViewerApp {
             );
             row("start p", format!("({:.2}, {:.2})", s.x, s.y));
             row("start v", format!("({:.2}, {:.2})", s.vx, s.vy));
-            row("start θ, ω", format!("{:.2}, {:.2}", s.theta, s.omega));
+            row(
+                "start theta, omega",
+                format!("{:.2}, {:.2}", s.theta, s.omega),
+            );
         });
         let Some(replay) = &self.replay else {
             return;
@@ -631,17 +638,17 @@ impl ViewerApp {
             };
             row("p", format!("({:.3}, {:.3})", s.x, s.y));
             row("v", format!("({:.3}, {:.3})", s.vx, s.vy));
-            row("θ, ω", format!("{:.3}, {:.3}", s.theta, s.omega));
+            row("theta, omega", format!("{:.3}, {:.3}", s.theta, s.omega));
             row(
                 "dist. to B",
                 format!("{:.4}", (s.x - goal.x).hypot(s.y - goal.y)),
             );
             row("speed", format!("{:.4}", s.vx.hypot(s.vy)));
             let control = replay.control(k).map_or_else(
-                || "— (final state)".to_owned(),
+                || "- (final state)".to_owned(),
                 |u| format!("{:.3}, {:.3}", u.thrust, u.torque),
             );
-            row("u_k = (F, τ)", control);
+            row("u_k = (F, tau)", control);
         });
     }
 
@@ -652,7 +659,9 @@ impl ViewerApp {
                 .logarithmic(true)
                 .text("ship size (world units)"),
         );
-        ui.add(egui::Slider::new(&mut self.alpha, 0.0..=std::f32::consts::PI).text("ship shape α"));
+        ui.add(
+            egui::Slider::new(&mut self.alpha, 0.0..=std::f32::consts::PI).text("ship shape alpha"),
+        );
         ui.checkbox(&mut self.show_path, "Path (grey: full, blue: so far)");
         ui.checkbox(&mut self.show_velocity, "Velocity (green)");
         ui.checkbox(&mut self.show_acceleration, "Acceleration (red)");
@@ -666,8 +675,8 @@ impl ViewerApp {
             }
         });
         ui.label("Drag: pan   Scroll: zoom");
-        ui.label("Space: play/pause   Left / Right: ±Δt");
-        ui.label("Shift+Left / Right: ±sample   Home / End");
+        ui.label("Space: play/pause   Left / Right: +/-dt");
+        ui.label("Shift+Left / Right: +/-sample   Home / End");
     }
 
     fn timeline_ui(&mut self, ui: &mut egui::Ui) {
@@ -678,17 +687,17 @@ impl ViewerApp {
         let (h, last) = (replay.h(), replay.last_frame());
         let playback = &mut self.playback;
         ui.horizontal_wrapped(|ui| {
-            if ui.button("⏮").on_hover_text("Start (Home)").clicked() {
+            if ui.button("|<<").on_hover_text("Start (Home)").clicked() {
                 playback.seek_start();
             }
             if ui
-                .button("|◀")
+                .button("|<")
                 .on_hover_text("Previous controller sample (Shift+Left)")
                 .clicked()
             {
                 playback.previous_sample(last);
             }
-            let play = if playback.playing { "⏸" } else { "▶" };
+            let play = if playback.playing { "Pause" } else { "Play" };
             if ui
                 .button(play)
                 .on_hover_text("Play / pause (Space)")
@@ -697,20 +706,20 @@ impl ViewerApp {
                 playback.toggle(last);
             }
             if ui
-                .button("▶|")
+                .button(">|")
                 .on_hover_text("Next controller sample (Shift+Right)")
                 .clicked()
             {
                 playback.next_sample(last);
             }
-            if ui.button("⏭").on_hover_text("End (End)").clicked() {
+            if ui.button(">>|").on_hover_text("End (End)").clicked() {
                 playback.seek_end(last);
             }
             ui.separator();
             ui.add(
                 egui::Slider::new(&mut playback.speed, 0.1..=50.0)
                     .logarithmic(true)
-                    .text("× real time"),
+                    .text("x real time"),
             );
             ui.separator();
             let mut dt = playback.dt(h);
@@ -718,11 +727,11 @@ impl ViewerApp {
                 .add(
                     egui::Slider::new(&mut dt, h / f64::from(MAX_SUBDIVISIONS)..=h)
                         .logarithmic(true)
-                        .text(format!("Δt [s] = h/{}", playback.subdivisions())),
+                        .text(format!("dt [s] = h/{}", playback.subdivisions())),
                 )
                 .on_hover_text(
-                    "Display sampling time: the playhead moves in steps of Δt (Left/Right).\n\
-                     Δt = h/n, so every controller sample lies on the grid.\n\
+                    "Display sampling time: the playhead moves in steps of dt (Left/Right).\n\
+                     dt = h/n, so every controller sample lies on the grid.\n\
                      States between samples are exact, not interpolated.",
                 );
             if response.changed() {
@@ -769,10 +778,10 @@ impl ViewerApp {
                             ("vy", &plots.vy, VEL_Y_COLOR),
                         ],
                     ),
-                    time_plot(ui, "θ", t, &[("θ", &plots.theta, THETA_COLOR)]),
-                    time_plot(ui, "ω", t, &[("ω", &plots.omega, OMEGA_COLOR)]),
+                    time_plot(ui, "theta", t, &[("theta", &plots.theta, THETA_COLOR)]),
+                    time_plot(ui, "omega", t, &[("omega", &plots.omega, OMEGA_COLOR)]),
                     time_plot(ui, "Thrust F", t, &[("F", &plots.thrust, THRUST_COLOR)]),
-                    time_plot(ui, "Torque τ", t, &[("τ", &plots.torque, TORQUE_COLOR)]),
+                    time_plot(ui, "Torque tau", t, &[("tau", &plots.torque, TORQUE_COLOR)]),
                 ]
                 .into_iter()
                 .flatten()
@@ -877,7 +886,7 @@ impl ViewerApp {
         painter.circle_stroke(goal, GOAL_RADIUS_PX, egui::Stroke::new(2.0_f32, color));
         painter.circle_filled(goal, 2.0, color);
 
-        // Position tolerance ε_p, drawn to scale once it is visible.
+        // Position tolerance eps_p, drawn to scale once it is visible.
         let tolerance_px = task.tolerance.position as f32 * self.camera.scale;
         if tolerance_px > 1.5 {
             painter.circle_stroke(goal, tolerance_px, egui::Stroke::new(1.0_f32, color));
@@ -916,8 +925,8 @@ impl ViewerApp {
 
         painter.add(egui::Shape::convex_polygon(
             vertices,
-            egui::Color32::LIGHT_BLUE,
-            egui::Stroke::new(TRIANGLE_STROKE_WIDTH, egui::Color32::BLACK),
+            palette::SAPPHIRE,
+            egui::Stroke::new(TRIANGLE_STROKE_WIDTH, palette::WHITE),
         ));
     }
 
@@ -1045,7 +1054,6 @@ impl eframe::App for ViewerApp {
                     }
                     ui.separator();
                 }
-                egui::widgets::global_theme_preference_buttons(ui);
             });
         });
 

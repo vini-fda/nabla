@@ -1,6 +1,6 @@
 //! Desmos-like coordinate grid renderer.
 //!
-//! Adaptive 1/2/5 × 10^n major-step ladder; minor steps are major/5.
+//! Adaptive 1/2/5 x 10^n major-step ladder; minor steps are major/5.
 //! Algorithm borrowed from `egui_plot` (MIT/Apache).
 //!
 //! Pure drawing: takes a `Painter` + `Camera` + `Rect`; no widget state.
@@ -215,7 +215,7 @@ mod tests {
 
     #[test]
     fn nice_step_ladder() {
-        // Boundaries: f ∈ [1, 1.5) → 1, [1.5, 3.5) → 2, [3.5, 7.5) → 5, [7.5, 10) → 10
+        // Boundaries: f in [1, 1.5) -> 1, [1.5, 3.5) -> 2, [3.5, 7.5) -> 5, [7.5, 10) -> 10
         let cases = [
             (1.0, 1.0),
             (1.4, 1.0),
@@ -224,7 +224,7 @@ mod tests {
             (3.6, 5.0),
             (7.4, 5.0),
             (7.6, 10.0),
-            (0.7, 0.5), // f=7 → 5
+            (0.7, 0.5), // f=7 -> 5
             (23.0, 20.0),
             (0.23, 0.2),
             (0.07, 0.05),

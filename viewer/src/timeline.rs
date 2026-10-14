@@ -10,8 +10,8 @@ use crate::grid::{format_tick, major_ticks, nice_step};
 
 const HEIGHT: f32 = 44.0;
 const LABEL_HEIGHT: f32 = 16.0;
-const SAMPLE_COLOR: Color32 = Color32::from_rgb(230, 180, 40);
-const PLAYHEAD_COLOR: Color32 = Color32::from_rgb(40, 90, 200);
+const SAMPLE_COLOR: Color32 = crate::theme::palette::YELLOW;
+const PLAYHEAD_COLOR: Color32 = crate::theme::palette::MAUVE;
 const PLAYHEAD_HANDLE_PX: f32 = 6.0;
 
 /// Minimum spacing between drawn sample marks. Denser samples are thinned to every few.
@@ -139,7 +139,7 @@ pub fn timeline_ui(
         .map(|pos| view.x_to_t(pos.x, rect).clamp(0.0, duration));
     response.on_hover_text(
         "Click/drag: seek   Scroll/pinch: zoom   Shift+scroll: pan   Double-click: whole run\n\
-         Yellow marks: controller samples t = k·h",
+         Yellow marks: controller samples t = k*h",
     );
     seek
 }
@@ -266,7 +266,7 @@ mod tests {
     #[test]
     fn marks_are_thinned_when_dense() {
         assert_eq!(mark_stride(H, 100.0, 3.0), 1, "10 px apart");
-        assert_eq!(mark_stride(H, 10.0, 3.0), 3, "1 px apart → every 3rd");
+        assert_eq!(mark_stride(H, 10.0, 3.0), 3, "1 px apart -> every 3rd");
         assert_eq!(mark_stride(H, 0.0, 3.0), 1, "degenerate");
     }
 }

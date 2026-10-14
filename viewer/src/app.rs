@@ -77,6 +77,9 @@ const FIT_MARGIN: f32 = 0.15;
 /// How often to check the source file for changes.
 const WATCH_INTERVAL: Duration = Duration::from_millis(500);
 
+/// Smallest sampling period offered by the slider.
+const H_MIN: f64 = 0.01;
+
 /// Case selected at startup.
 const DEFAULT_CASE: &str = "agile";
 
@@ -145,6 +148,8 @@ pub struct ViewerApp {
     playback: Playback,
     /// Name of the selected test case.
     case: Option<String>,
+    /// Sampling period the selected case runs with, in place of its own.
+    h: f64,
     /// Show the source code window.
     show_code: bool,
     /// Recompile when the source file changes on disk.
@@ -192,6 +197,7 @@ impl Default for ViewerApp {
             follow_ship: false,
             playback: Playback::default(),
             case: Some(DEFAULT_CASE.to_owned()),
+            h: suite::H,
             show_code: false,
             watch_file: true,
             source: None,
@@ -238,9 +244,17 @@ impl ViewerApp {
         app
     }
 
-    fn selected_case(&self) -> Option<&Case> {
+    /// The selected case, with the sampling period set by the slider.
+    fn selected_case(&self) -> Option<Case> {
         let name = self.case.as_deref()?;
-        self.cases.iter().map(|e| &e.case).find(|c| c.name == name)
+        let mut case = self
+            .cases
+            .iter()
+            .map(|e| &e.case)
+            .find(|c| c.name == name)?
+            .clone();
+        case.task.params.h = self.h;
+        Some(case)
     }
 
     fn open_file(&mut self, path: &Path) {
@@ -272,7 +286,7 @@ impl ViewerApp {
     /// Run the current source on the selected case. Precompiled sources replay at once;
     /// others are compiled and traced in the background, see [`Self::poll_runner`].
     fn run(&mut self, rewind: bool) {
-        let (Some(source), Some(case)) = (&self.source, self.selected_case().cloned()) else {
+        let (Some(source), Some(case)) = (&self.source, self.selected_case()) else {
             return;
         };
         match self.runner.request(source, &case) {
@@ -284,7 +298,7 @@ impl ViewerApp {
     fn poll_runner(&mut self) {
         let was_busy = self.runner.busy();
         if let Some((name, trajectory)) = self.runner.poll() {
-            if let Some(case) = self.selected_case().filter(|c| c.name == name).cloned() {
+            if let Some(case) = self.selected_case().filter(|c| c.name == name) {
                 let rewind = self.rewind_pending;
                 self.show_trajectory(case, trajectory, rewind);
             }
@@ -554,6 +568,23 @@ impl ViewerApp {
         if self.case != old_case {
             self.run(true);
         }
+        let h = ui.add(
+            egui::Slider::new(&mut self.h, H_MIN..=suite::H)
+                .text("h (sampling period)")
+                .suffix(" s"),
+        );
+        if h.double_clicked() {
+            self.h = suite::H;
+        }
+        h.on_hover_text(format!(
+            "Seconds between controller samples. The suites use {} s, so step counts at other \
+             values are not scores. Double-click to reset.",
+            suite::H
+        ));
+        if self.replay.as_ref().is_some_and(|r| r.h() != self.h) && !self.runner.busy() {
+            // Keep the playhead time.
+            self.run(false);
+        }
     }
 
     /// Optional window showing the source with syntax highlighting and line numbers.
@@ -615,7 +646,6 @@ impl ViewerApp {
                 "F_max, tau_max",
                 format!("{:.3}, {:.3}", p.f_max, p.tau_max),
             );
-            row("h", format!("{} s", p.h));
             row(
                 "goal B",
                 format!("({:.2}, {:.2})", task.goal.x, task.goal.y),

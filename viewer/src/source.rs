@@ -174,10 +174,11 @@ impl Runner {
         } else {
             Status::Compiling
         };
-        let (text, file_name, case) = (
+        let (text, file_name, case, h) = (
             source.text.clone(),
             format!("{}.rs", source.name),
             case.name.clone(),
+            case.task.params.h,
         );
         let ctx = self.ctx.clone();
         std::thread::spawn(move || {
@@ -189,7 +190,7 @@ impl Runner {
                 Ok,
             );
             let trajectory = match &candidate {
-                Ok(c) => c.trace(&case).map_err(|e| e.to_string()),
+                Ok(c) => c.trace(&case, h).map_err(|e| e.to_string()),
                 Err(e) => Err(e.clone()),
             };
             // The receiver may be gone if the request was superseded.
@@ -304,7 +305,9 @@ mod tests {
         let (_, solution, _) = database().into_iter().next().expect("a stored solution");
         let source =
             SolutionSource::from_text("edited", format!("{}\n// edited\n", solution.source));
-        let case = suite::find("rest_facing_goal").expect("case");
+        // A sampling period other than the suite's, which the candidate must be told.
+        let mut case = suite::find("rest_facing_goal").expect("case");
+        case.task.params.h = 0.05;
         let mut runner = Runner::default();
         runner.set_source(&source);
         assert!(runner.request(&source, &case).is_none(), "not precompiled");

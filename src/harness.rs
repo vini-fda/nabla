@@ -185,9 +185,11 @@ impl Candidate {
         Report::parse(&self.run(&[])?).map_err(HarnessError::Report)
     }
 
-    /// Simulate the case of either suite named `case`, recording the trajectory.
-    pub fn trace(&self, case: &str) -> Result<Trajectory, HarnessError> {
-        parse_trajectory(&self.run(&["trace", case])?).map_err(HarnessError::Report)
+    /// Simulate the case of either suite named `case` with sampling period `h`, recording the
+    /// trajectory.
+    pub fn trace(&self, case: &str, h: f64) -> Result<Trajectory, HarnessError> {
+        let h = h.to_string();
+        parse_trajectory(&self.run(&["trace", case, &h])?).map_err(HarnessError::Report)
     }
 
     /// Run the binary under [`TIME_LIMIT`] and return its stdout.

@@ -127,19 +127,15 @@ pub const MAX_SUBDIVISIONS: u32 = 1000;
 /// Playback position, display sampling time and speed.
 ///
 /// The position is an integer number of ticks of `dt = h / subdivisions`.
-#[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize, serde::Serialize)]
-#[serde(default)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Playback {
-    #[serde(skip)]
     tick: u64,
-    #[serde(skip)]
     pub playing: bool,
     /// Simulated seconds per real second.
     pub speed: f64,
     /// Display samples per controller sample: `dt = h / subdivisions`.
     subdivisions: u32,
     /// Fraction of a tick accumulated but not yet shown.
-    #[serde(skip)]
     carry: f64,
 }
 

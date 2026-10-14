@@ -39,8 +39,7 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     eframe::run_native(
-        // The app name keys the persisted settings, so it stays; the window title is "Nabla".
-        "ship2d viewer",
+        "Nabla",
         native_options,
         Box::new(|cc| Ok(Box::new(ship2d_graphics::ViewerApp::new(cc, source)))),
     )

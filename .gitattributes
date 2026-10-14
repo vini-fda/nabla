@@ -1,0 +1,7 @@
+# Stored solutions are identified by a hash of their source text (solutions/index.tsv), so
+# checkouts must keep LF line endings on every platform, including Windows.
+*.rs text eol=lf
+*.tsv text eol=lf
+*.sh text eol=lf
+*.toml text eol=lf
+*.typ text eol=lf

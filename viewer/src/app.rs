@@ -77,7 +77,7 @@ const FIT_MARGIN: f32 = 0.15;
 /// How often to check the source file for changes.
 const WATCH_INTERVAL: Duration = Duration::from_millis(500);
 
-/// Case selected when nothing was persisted.
+/// Case selected at startup.
 const DEFAULT_CASE: &str = "agile";
 
 /// A test case and the suite it comes from.
@@ -134,9 +134,6 @@ impl Plots {
     }
 }
 
-/// We derive Deserialize/Serialize so we can persist app state on shutdown.
-#[derive(serde::Deserialize, serde::Serialize)]
-#[serde(default)] // if we add new fields, give them default values when deserializing old state
 pub struct ViewerApp {
     circumradius: f32,
     alpha: f32,
@@ -146,8 +143,6 @@ pub struct ViewerApp {
     show_path: bool,
     follow_ship: bool,
     playback: Playback,
-    /// The solution source file.
-    source_path: Option<PathBuf>,
     /// Name of the selected test case.
     case: Option<String>,
     /// Show the source code window.
@@ -155,39 +150,38 @@ pub struct ViewerApp {
     /// Recompile when the source file changes on disk.
     watch_file: bool,
 
-    #[serde(skip)]
     source: Option<SolutionSource>,
-    #[serde(skip)]
     runner: Runner,
-    #[serde(skip)]
     database: Vec<(Entry, &'static StoredSolution, PathBuf)>,
-    #[serde(skip)]
     cases: Vec<CaseEntry>,
-    #[serde(skip)]
     replay: Option<Replay>,
-    #[serde(skip)]
     plots: Option<Plots>,
-    #[serde(skip)]
     fit_pending: bool,
-    #[serde(skip)]
     timeline: TimelineView,
     /// Rewind and refit the view when the pending trajectory arrives.
-    #[serde(skip)]
     rewind_pending: bool,
     /// `egui` time of the last check for changes on disk.
-    #[serde(skip)]
     last_watch_check: f64,
-    #[serde(skip)]
     load_error: Option<String>,
     /// Wide layout: show the left (controls) and right (plots) side panels.
     show_controls: bool,
     show_plots: bool,
-    #[serde(skip)]
     compact_view: CompactView,
+    /// Dropped files read by the browser.
+    #[cfg(target_arch = "wasm32")]
+    dropped_tx: std::sync::mpsc::Sender<DroppedFile>,
+    #[cfg(target_arch = "wasm32")]
+    dropped_rx: std::sync::mpsc::Receiver<DroppedFile>,
 }
+
+/// A dropped file read by the browser: `(name, contents)`.
+#[cfg(target_arch = "wasm32")]
+type DroppedFile = (String, Result<Vec<u8>, String>);
 
 impl Default for ViewerApp {
     fn default() -> Self {
+        #[cfg(target_arch = "wasm32")]
+        let (dropped_tx, dropped_rx) = std::sync::mpsc::channel();
         Self {
             circumradius: DEFAULT_CIRCUMRADIUS,
             alpha: DEFAULT_ALPHA,
@@ -197,8 +191,7 @@ impl Default for ViewerApp {
             show_path: true,
             follow_ship: false,
             playback: Playback::default(),
-            source_path: None,
-            case: None,
+            case: Some(DEFAULT_CASE.to_owned()),
             show_code: false,
             watch_file: true,
             source: None,
@@ -215,37 +208,26 @@ impl Default for ViewerApp {
             show_controls: true,
             show_plots: true,
             compact_view: CompactView::default(),
+            #[cfg(target_arch = "wasm32")]
+            dropped_tx,
+            #[cfg(target_arch = "wasm32")]
+            dropped_rx,
         }
     }
 }
 
 impl ViewerApp {
-    /// Called once before the first frame. Opens `source` if given, else the last source.
+    /// Called once before the first frame. Opens `source` if given, else the best stored one.
     pub fn new(cc: &eframe::CreationContext<'_>, source: Option<PathBuf>) -> Self {
         theme::apply(&cc.egui_ctx);
 
-        // Load previous app state (if any).
-        // Note that you must enable the `persistence` feature for this to work.
-        let mut app: Self = cc
-            .storage
-            .and_then(|storage| eframe::get_value(storage, eframe::APP_KEY))
-            .unwrap_or_default();
-        app.runner = Runner::new(cc.egui_ctx.clone());
-        app.database = source::database();
-        app.cases = all_cases();
-
-        // Fall back to defaults when the persisted choices no longer exist.
-        let case_ok = app
-            .case
-            .as_deref()
-            .is_some_and(|name| app.cases.iter().any(|e| e.case.name == name));
-        if !case_ok {
-            app.case = Some(DEFAULT_CASE.to_owned());
-        }
-        match source
-            .or_else(|| app.source_path.clone())
-            .filter(|p| p.is_file())
-        {
+        let mut app = Self {
+            runner: Runner::new(cc.egui_ctx.clone()),
+            database: source::database(),
+            cases: all_cases(),
+            ..Self::default()
+        };
+        match source.filter(|p| p.is_file()) {
             Some(path) => app.open_file(&path),
             None => {
                 if let Some((_, solution, path)) = app.database.first().cloned() {
@@ -264,7 +246,6 @@ impl ViewerApp {
     fn open_file(&mut self, path: &Path) {
         match SolutionSource::from_file(path) {
             Ok(source) => {
-                self.source_path = Some(path.to_owned());
                 self.set_source(source, true);
             }
             Err(e) => self.load_error = Some(e),
@@ -369,16 +350,34 @@ impl ViewerApp {
     }
 
     /// Open `.rs` files dropped on the window.
+    #[cfg(not(target_arch = "wasm32"))]
     fn handle_dropped_files(&mut self, ui: &egui::Ui) {
         let dropped = ui.input(|i| i.raw.dropped_files.clone());
         for file in dropped {
-            if let Some(path) = &file.path {
-                self.open_file(path);
-            } else if let Some(bytes) = &file.bytes {
-                match String::from_utf8(bytes.to_vec()) {
-                    Ok(text) => self.set_source(SolutionSource::from_text(&file.name, text), true),
-                    Err(_) => self.load_error = Some(format!("{} is not UTF-8 text", file.name)),
-                }
+            self.open_file(file.path());
+        }
+    }
+
+    /// Open `.rs` files dropped on the page. The browser reads them asynchronously, so the
+    /// contents arrive on a later frame.
+    #[cfg(target_arch = "wasm32")]
+    fn handle_dropped_files(&mut self, ui: &egui::Ui) {
+        let dropped = ui.input(|i| i.raw.dropped_files.clone());
+        for file in dropped {
+            let tx = self.dropped_tx.clone();
+            let ctx = ui.ctx().clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                let name = file.path().display().to_string();
+                // The receiver lives as long as the app.
+                let _ignored = tx.send((name, file.bytes_async().await));
+                ctx.request_repaint();
+            });
+        }
+        while let Ok((name, bytes)) = self.dropped_rx.try_recv() {
+            match bytes.map(String::from_utf8) {
+                Ok(Ok(text)) => self.set_source(SolutionSource::from_text(&name, text), true),
+                Ok(Err(_)) => self.load_error = Some(format!("{name} is not UTF-8 text")),
+                Err(e) => self.load_error = Some(format!("cannot read {name}: {e}")),
             }
         }
     }
@@ -1016,27 +1015,27 @@ impl ViewerApp {
                 .resizable(true)
                 .default_size(CONTROLS_PANEL_MIN_WIDTH)
                 .min_size(CONTROLS_PANEL_MIN_WIDTH)
-                .show_inside(ui, |ui| {
+                .show(ui, |ui| {
                     if hide_button(ui, egui::Align::Max, "\u{25C0}", "Hide this panel") {
                         self.show_controls = false;
                     }
                     self.controls_ui(ui);
                 });
         }
-        egui::Panel::bottom("timeline_panel").show_inside(ui, |ui| self.timeline_ui(ui));
+        egui::Panel::bottom("timeline_panel").show(ui, |ui| self.timeline_ui(ui));
         if self.show_plots {
             egui::Panel::right("plots_panel")
                 .resizable(true)
                 .default_size(PLOT_PANEL_DEFAULT_WIDTH)
                 .min_size(PLOT_PANEL_MIN_WIDTH)
-                .show_inside(ui, |ui| {
+                .show(ui, |ui| {
                     if hide_button(ui, egui::Align::Min, "\u{25B6}", "Hide this panel") {
                         self.show_plots = false;
                     }
                     self.plots_ui(ui);
                 });
         }
-        egui::CentralPanel::default().show_inside(ui, |ui| self.canvas_ui(ui));
+        egui::CentralPanel::default().show(ui, |ui| self.canvas_ui(ui));
 
         // Buttons to bring back hidden panels, floating over the canvas corners.
         let ctx = ui.ctx().clone();
@@ -1068,9 +1067,9 @@ impl ViewerApp {
     /// timeline stays available below the canvas and the plots.
     fn compact_layout(&mut self, ui: &mut egui::Ui) {
         if self.compact_view != CompactView::Controls {
-            egui::Panel::bottom("timeline_panel").show_inside(ui, |ui| self.timeline_ui(ui));
+            egui::Panel::bottom("timeline_panel").show(ui, |ui| self.timeline_ui(ui));
         }
-        egui::CentralPanel::default().show_inside(ui, |ui| match self.compact_view {
+        egui::CentralPanel::default().show(ui, |ui| match self.compact_view {
             CompactView::Canvas => self.canvas_ui(ui),
             CompactView::Controls => self.controls_ui(ui),
             CompactView::Plots => self.plots_ui(ui),
@@ -1079,11 +1078,6 @@ impl ViewerApp {
 }
 
 impl eframe::App for ViewerApp {
-    /// Called by the framework to save state before shutdown.
-    fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        eframe::set_value(storage, eframe::APP_KEY, self);
-    }
-
     /// Called each time the UI needs repainting, which may be many times per second.
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.poll_runner();
@@ -1107,7 +1101,7 @@ impl eframe::App for ViewerApp {
         let compact = ui.available_width() < COMPACT_WIDTH;
         // The tab bar only exists in the compact layout; the wide layout shows everything.
         if compact {
-            egui::Panel::top("top_panel").show_inside(ui, |ui| {
+            egui::Panel::top("top_panel").show(ui, |ui| {
                 ui.horizontal(|ui| {
                     for (view, label) in [
                         (CompactView::Canvas, "View"),

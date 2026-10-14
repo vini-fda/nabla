@@ -9,7 +9,7 @@ use egui::{Pos2, Rect, Vec2};
 const MIN_SCALE: f32 = 0.01;
 const MAX_SCALE: f32 = 1000.0;
 
-#[derive(Debug, Clone, Copy, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, Copy)]
 pub struct Camera {
     /// World coordinates that map to the screen rect's center.
     pub center: Vec2,

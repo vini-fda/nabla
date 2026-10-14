@@ -58,7 +58,7 @@ src/
 From the repository root:
 
 ```sh
-cargo run --release -p ship2d_graphics                        # opens the last source (or the best stored one)
+cargo run --release -p ship2d_graphics                        # opens the best stored solution
 cargo run --release -p ship2d_graphics -- path/to/solution.rs # opens this source
 ```
 

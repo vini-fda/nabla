@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 200 200" role="img" aria-label="Nabla logo">
+  <!-- Transparent background; the color follows the browser theme, like GitHub's favicon. -->
+  <style>
+    :root { --fg: #000000; }
+    @media (prefers-color-scheme: dark) { :root { --fg: #ffffff; } }
+  </style>
+  <g fill="none" stroke="var(--fg)" stroke-width="6" stroke-linejoin="miter">
+    <polygon points="30,45 170,45 100,166"/>
+    <polygon points="47.4,55 152.6,55 100,146"/>
+    <polygon points="64.6,64.9 135.4,64.9 100,126.1"/>
+  </g>
+  <polygon points="82.5,75.2 117.5,75.2 100,105.5" fill="var(--fg)"/>
+</svg>

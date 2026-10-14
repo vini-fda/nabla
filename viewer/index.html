@@ -13,9 +13,12 @@
     <!-- this is the base url relative to which other urls will be constructed. trunk will insert this from the public-url option -->
     <base data-trunk-public-url />
 
-    <link data-trunk rel="icon" href="assets/favicon.ico">
+    <!-- Transparent nabla; the SVG adapts to the browser's light/dark theme. The ICO (white, for
+         dark tab strips) is only the fallback for browsers without SVG favicons. -->
+    <link data-trunk rel="icon" href="assets/favicon.ico" sizes="48x48">
+    <link data-trunk rel="copy-file" href="assets/favicon.svg" data-target-path="assets"/>
+    <link rel="icon" type="image/svg+xml" href="assets/favicon.svg" sizes="any">
     <link data-trunk rel="copy-file" href="assets/nabla-logo.svg" data-target-path="assets"/>
-    <link rel="icon" type="image/svg+xml" href="assets/nabla-logo.svg">
 
 
     <link data-trunk rel="copy-file" href="assets/sw.js"/>

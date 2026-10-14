@@ -175,7 +175,7 @@ impl Default for Playback {
             tick: 0,
             playing: false,
             speed: 1.0,
-            subdivisions: 20,
+            subdivisions: 4,
             carry: 0.0,
         }
     }
@@ -360,27 +360,28 @@ mod tests {
     #[test]
     fn state_between_samples_is_exact_and_continuous() {
         let r = replay();
+        let h = r.h();
         for k in [0, 7, r.last_frame() / 2, r.last_frame() - 1] {
             assert_eq!(r.state_at(k, 0.0), *r.state(k), "offset 0 is the sample");
-            let almost = r.state_at(k, H * (1.0 - 1e-12));
+            let almost = r.state_at(k, h * (1.0 - 1e-12));
             assert!(
                 close(&almost, r.state(k + 1), 1e-9),
                 "continuous at t_(k+1)"
             );
             // Two half steps under the held control reach the next sample.
             let half = Params {
-                h: H / 2.0,
+                h: h / 2.0,
                 ..r.case.task.params
             };
             let u = r.control(k).expect("control");
-            let twice = step(&half, &r.state_at(k, H / 2.0), u);
+            let twice = step(&half, &r.state_at(k, h / 2.0), u);
             assert!(
                 close(&twice, r.state(k + 1), 1e-12),
                 "consistent with s_(k+1)"
             );
         }
         assert_eq!(
-            r.state_at(r.last_frame(), 0.05),
+            r.state_at(r.last_frame(), h / 2.0),
             *r.state(r.last_frame()),
             "held at end"
         );

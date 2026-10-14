@@ -1,4 +1,4 @@
 name	score	max_steps	suite_version	source_hash
-tolerance_aware	8058	650	1	1bb49d031b0620d4
-flip_and_burn_tuned	12389	981	1	99911162253befc8
-flip_and_burn	19805	1639	1	1e092e0bc1537ab9
+flip_and_burn_tuned	58754	5037	2	99911162253befc8
+tolerance_aware	61911	12879	2	1bb49d031b0620d4
+flip_and_burn	95489	8168	2	1e092e0bc1537ab9

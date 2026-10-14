@@ -12,12 +12,12 @@ use crate::problem::{Case, Goal, Task, Tolerance};
 use std::f64::consts::PI;
 
 /// Version of the suites. Scores are only comparable between equal versions.
-pub const SUITE_VERSION: u32 = 1;
+pub const SUITE_VERSION: u32 = 2;
 
 /// Sampling period used by every case.
-pub const H: f64 = 0.1;
+pub const H: f64 = 0.02;
 
-/// Step budget of every case (`2000 s` of simulated time).
+/// Step budget of every case (`400 s` of simulated time).
 pub const MAX_STEPS: usize = 20_000;
 
 /// Target-set size used by every case.

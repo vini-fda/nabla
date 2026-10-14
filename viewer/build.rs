@@ -1,0 +1,147 @@
+//! Typesets [`FORMULAS`] with Typst into white SVGs (glyphs as paths, so no
+//! fonts are needed at runtime), and writes `formulas.rs` with one `Formula` constant per
+//! formula, included by `src/formula.rs`. Typst runs only here, never in the app.
+//!
+//! Every SVG has the same height, `HEIGHT` em, with the baseline `ASCENT` em below the top, so
+//! the app can line formulas up with text. A formula that doesn't fit fails the build.
+
+use std::{env, fs, path::Path};
+
+use typst::diag::{FileError, FileResult};
+use typst::foundations::{Bytes, Datetime, Duration};
+use typst::syntax::{FileId, Source};
+use typst::text::{Font, FontBook};
+use typst::utils::LazyHash;
+use typst::{Library, LibraryExt as _, World};
+use typst_layout::PagedDocument;
+
+/// Math shown in the UI: the name of its `Formula` constant in `src/formula.rs`, and its Typst
+/// math (without the surrounding `$...$`). Vectors are `mathbf(x)`: upright bold, as in LaTeX.
+const FORMULAS: &[(&str, &str)] = &[
+    // Problem input
+    ("H", "h"),
+    ("MASS", "m"),
+    ("INERTIA", "I"),
+    ("LIMITS", "F_max, tau_max"),
+    ("INITIAL_POSITION", "mathbf(p)_0"),
+    ("INITIAL_VELOCITY", "mathbf(v)_0"),
+    ("INITIAL_THETA", "theta_0"),
+    ("INITIAL_OMEGA", "omega_0"),
+    ("GOAL", "B"),
+    // Current state and state plots
+    ("T", "t"),
+    ("K", "k"),
+    ("POSITION", "mathbf(p)"),
+    ("VELOCITY", "mathbf(v)"),
+    ("THETA", "theta"),
+    ("OMEGA", "omega"),
+    ("DISTANCE", "norm(mathbf(p) - B)"),
+    ("SPEED", "norm(mathbf(v))"),
+    ("CONTROL", "mathbf(u)_k = (F, tau)"),
+    ("THRUST", "F"),
+    ("TORQUE", "tau"),
+];
+
+/// Font size the formulas are typeset at. Sizes are written out in em, so it only matters to
+/// Typst's own rounding.
+const SIZE_PT: f64 = 10.0;
+/// Height of every formula's SVG, in em. Keep in sync with `src/formula.rs`.
+const HEIGHT: f64 = 1.4;
+/// Distance from the top of every formula's SVG to its baseline, in em.
+const ASCENT: f64 = 1.0;
+
+/// A single Typst source file, with the fonts bundled with Typst.
+struct Formula<'a> {
+    library: &'a LazyHash<Library>,
+    book: &'a LazyHash<FontBook>,
+    fonts: &'a [Font],
+    source: Source,
+}
+
+impl World for Formula<'_> {
+    fn library(&self) -> &LazyHash<Library> {
+        self.library
+    }
+
+    fn book(&self) -> &LazyHash<FontBook> {
+        self.book
+    }
+
+    fn main(&self) -> FileId {
+        self.source.id()
+    }
+
+    fn source(&self, id: FileId) -> FileResult<Source> {
+        if id == self.source.id() {
+            Ok(self.source.clone())
+        } else {
+            Err(FileError::AccessDenied)
+        }
+    }
+
+    fn file(&self, _: FileId) -> FileResult<Bytes> {
+        Err(FileError::AccessDenied)
+    }
+
+    fn font(&self, index: usize) -> Option<Font> {
+        self.fonts.get(index).cloned()
+    }
+
+    fn today(&self, _: Option<Duration>) -> Option<Datetime> {
+        None
+    }
+}
+
+fn main() {
+    // The formulas are all in this file: rerun only when it changes.
+    println!("cargo:rerun-if-changed=build.rs");
+    let out = env::var("OUT_DIR").expect("cargo sets OUT_DIR");
+    let out = Path::new(&out);
+
+    let library = LazyHash::new(Library::default());
+    let fonts: Vec<Font> = typst_assets::fonts()
+        .flat_map(|data| Font::iter(Bytes::new(data)))
+        .collect();
+    let book = LazyHash::new(FontBook::from_fonts(&fonts));
+
+    let mut code = String::new();
+    for &(name, math) in FORMULAS {
+        // A zero-width strut from `ASCENT` above the baseline to `HEIGHT - ASCENT` below it
+        // fixes the page's height and baseline, as long as the formula fits inside it.
+        let text = format!(
+            "#set page(width: auto, height: auto, margin: 0pt, fill: none)\n\
+             #set text(fill: white, size: {SIZE_PT}pt)\n\
+             #let mathbf(input) = $upright(bold(#input))$\n\
+             #box(width: 0pt, height: {HEIGHT}em, baseline: {}em)${math}$\n",
+            HEIGHT - ASCENT
+        );
+        let world = Formula {
+            library: &library,
+            book: &book,
+            fonts: &fonts,
+            source: Source::detached(text),
+        };
+        let document: PagedDocument = typst::compile(&world)
+            .output
+            .unwrap_or_else(|errors| panic!("{name}: {errors:?}"));
+        let page = &document.pages()[0];
+        let size = page.frame.size();
+        let height = size.y.to_pt() / SIZE_PT;
+        assert!(
+            (height - HEIGHT).abs() < 1e-3,
+            "{name} is {height:.3} em tall, more than the {HEIGHT} em that fits",
+        );
+
+        let file = format!("{}.svg", name.to_lowercase());
+        fs::write(out.join(&file), typst_svg::svg(page, &Default::default()))
+            .expect("writable OUT_DIR");
+        let width = size.x.to_pt() / SIZE_PT;
+        code += &format!(
+            "/// `${math}$`\npub const {name}: Formula = Formula {{\n    \
+             uri: \"bytes://formula/{file}\",\n    \
+             svg: include_bytes!(concat!(env!(\"OUT_DIR\"), \"/{file}\")),\n    \
+             width: {width:.4},\n}};\n\n",
+        );
+    }
+    fs::write(out.join("formulas.rs"), code).expect("writable OUT_DIR");
+}

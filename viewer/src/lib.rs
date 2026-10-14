@@ -5,12 +5,15 @@
 
 mod app;
 pub mod camera;
+mod formula;
 pub mod grid;
 mod highlight;
 mod plume;
 pub mod replay;
 mod ship3d;
+mod sound;
 pub mod source;
+mod synth;
 pub mod theme;
 pub mod timeline;
 pub use app::ViewerApp;

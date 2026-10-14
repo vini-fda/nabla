@@ -69,7 +69,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
-            libxkbcommon-dev libwayland-dev libssl-dev
+            libxkbcommon-dev libwayland-dev libssl-dev libasound2-dev
 
       # The Liquid Glass icon needs Xcode 26; bundle.sh falls back to a flat icon otherwise.
       - name: Select the newest Xcode

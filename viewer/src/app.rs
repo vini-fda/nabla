@@ -13,10 +13,12 @@ use ship2d_optimization::registry::StoredSolution;
 use ship2d_optimization::suite;
 
 use crate::camera::Camera;
+use crate::formula::{self, Formula};
 use crate::grid::{GridStyle, draw_grid};
 use crate::plume::Plume;
 use crate::replay::{MAX_SUBDIVISIONS, Playback, Replay, Series};
 use crate::ship3d::{self, SHIP_GLB, ShipModel, ShipRenderer};
+use crate::sound::Sound;
 use crate::source::{self, Runner, SolutionSource, Status};
 use crate::theme::{self, palette};
 use crate::timeline::{TimelineView, timeline_ui};
@@ -27,7 +29,7 @@ const PLOT_HEIGHT: f32 = 110.0;
 const CONTROLS_PANEL: SidePanel = SidePanel {
     dock: Dock::Left,
     id: "config_panel",
-    title: "Control policy",
+    title: "Settings",
     // Narrowest the contents can be dragged to; below this their rows would be cut off.
     min_width: 320.0,
     default_width: 320.0,
@@ -35,7 +37,7 @@ const CONTROLS_PANEL: SidePanel = SidePanel {
 const PLOTS_PANEL: SidePanel = SidePanel {
     dock: Dock::Right,
     id: "plots_panel",
-    title: "State",
+    title: "State plots",
     min_width: 220.0,
     default_width: 300.0,
 };
@@ -110,8 +112,9 @@ const FIT_MARGIN: f32 = 0.15;
 /// How often to check the source file for changes.
 const WATCH_INTERVAL: Duration = Duration::from_millis(500);
 
-/// Smallest sampling period offered by the slider.
+/// Range of sampling periods offered by the slider (the suites use `suite::H`).
 const H_MIN: f64 = 0.01;
+const H_MAX: f64 = 0.1;
 
 /// Case selected at startup.
 const DEFAULT_CASE: &str = "agile";
@@ -194,6 +197,7 @@ pub struct ViewerApp {
 
     source: Option<SolutionSource>,
     runner: Runner,
+    sound: Sound,
     database: Vec<(Entry, &'static StoredSolution, PathBuf)>,
     cases: Vec<CaseEntry>,
     replay: Option<Replay>,
@@ -245,6 +249,7 @@ impl Default for ViewerApp {
             watch_file: true,
             source: None,
             runner: Runner::default(),
+            sound: Sound::default(),
             database: Vec::new(),
             cases: Vec::new(),
             replay: None,
@@ -272,6 +277,7 @@ impl ViewerApp {
     /// Called once before the first frame. Opens `source` if given, else the best stored one.
     pub fn new(cc: &eframe::CreationContext<'_>, source: Option<PathBuf>) -> Self {
         theme::apply(&cc.egui_ctx);
+        egui_extras::install_image_loaders(&cc.egui_ctx);
 
         let ship3d = cc
             .wgpu_render_state
@@ -509,6 +515,7 @@ impl ViewerApp {
     }
 
     fn source_ui(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Control policy input");
         ui.horizontal(|ui| {
             #[cfg(not(target_arch = "wasm32"))]
             if ui.button("Open .rs...").clicked()
@@ -611,40 +618,41 @@ impl ViewerApp {
     }
 
     fn case_ui(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Case");
+        ui.heading("Problem input");
         let old_case = self.case.clone();
-        egui::ComboBox::from_id_salt("case")
-            .selected_text(egui::RichText::new(self.case.as_deref().unwrap_or("-")).monospace())
-            .height(400.0)
-            .show_ui(ui, |ui| {
-                for suite_name in ["standard", "holdout"] {
-                    ui.label(egui::RichText::new(suite_name).monospace().strong());
-                    for entry in self.cases.iter().filter(|e| e.suite == suite_name) {
-                        let name = &entry.case.name;
-                        ui.selectable_value(
-                            &mut self.case,
-                            Some(name.clone()),
-                            egui::RichText::new(name).monospace(),
-                        );
+        ui.horizontal(|ui| {
+            ui.label("Case:");
+            egui::ComboBox::from_id_salt("case")
+                .selected_text(egui::RichText::new(self.case.as_deref().unwrap_or("-")).monospace())
+                .height(400.0)
+                .show_ui(ui, |ui| {
+                    for suite_name in ["standard", "holdout"] {
+                        ui.label(egui::RichText::new(suite_name).monospace().strong());
+                        for entry in self.cases.iter().filter(|e| e.suite == suite_name) {
+                            let name = &entry.case.name;
+                            ui.selectable_value(
+                                &mut self.case,
+                                Some(name.clone()),
+                                egui::RichText::new(name).monospace(),
+                            );
+                        }
                     }
-                }
-            });
+                });
+        });
         if self.case != old_case {
             self.run(true);
         }
-        let h = ui.add(
-            egui::Slider::new(&mut self.h, H_MIN..=suite::H)
-                .text("h (sampling period)")
-                .suffix(" s"),
-        );
+        let h = ui
+            .horizontal(|ui| {
+                let font = egui::TextStyle::Body.resolve(ui.style());
+                formula::H.ui(ui, &font).on_hover_text("sampling period");
+                ui.add(egui::Slider::new(&mut self.h, H_MIN..=H_MAX).suffix(" s"))
+            })
+            .inner;
         if h.double_clicked() {
             self.h = suite::H;
         }
-        h.on_hover_text(format!(
-            "Seconds between controller samples. The suites use {} s, so step counts at other \
-             values are not scores. Double-click to reset.",
-            suite::H
-        ));
+        h.on_hover_text("Sampling period. Double-click to reset.");
         if self.replay.as_ref().is_some_and(|r| r.h() != self.h) && !self.runner.busy() {
             // Keep the playhead time.
             self.run(false);
@@ -693,32 +701,54 @@ impl ViewerApp {
         let p = &task.params;
         let s = &case.start;
         egui::Grid::new("case_info").num_columns(2).show(ui, |ui| {
-            let mut row = |name: &str, value: String| {
-                ui.monospace(name);
+            let font = egui::TextStyle::Monospace.resolve(ui.style());
+            let mut row = |formula: &Formula, name: &str, value: String| {
+                formula.ui(ui, &font).on_hover_text(name);
                 ui.monospace(value);
                 ui.end_row();
             };
-            row("m, I", format!("{:.3}, {:.3}", p.mass, p.inertia));
+            row(&formula::MASS, "mass", format!("{:.3}", p.mass));
             row(
-                "F_max, tau_max",
+                &formula::INERTIA,
+                "moment of inertia",
+                format!("{:.3}", p.inertia),
+            );
+            row(
+                &formula::LIMITS,
+                "maximum thrust and torque",
                 format!("{:.3}, {:.3}", p.f_max, p.tau_max),
             );
             row(
-                "goal B",
-                format!("({:.2}, {:.2})", task.goal.x, task.goal.y),
+                &formula::INITIAL_POSITION,
+                "initial position",
+                format!("({:.2}, {:.2})", s.x, s.y),
             );
-            row("start position", format!("({:.2}, {:.2})", s.x, s.y));
-            row("start velocity", format!("({:.2}, {:.2})", s.vx, s.vy));
             row(
-                "start theta, omega",
-                format!("{:.2}, {:.2}", s.theta, s.omega),
+                &formula::INITIAL_VELOCITY,
+                "initial velocity",
+                format!("({:.2}, {:.2})", s.vx, s.vy),
+            );
+            row(
+                &formula::INITIAL_THETA,
+                "initial heading angle",
+                format!("{:.2}", s.theta),
+            );
+            row(
+                &formula::INITIAL_OMEGA,
+                "initial angular velocity",
+                format!("{:.2}", s.omega),
+            );
+            row(
+                &formula::GOAL,
+                "goal",
+                format!("({:.2}, {:.2})", task.goal.x, task.goal.y),
             );
         });
         let Some(replay) = &self.replay else {
             return;
         };
         let outcome = match replay.outcome() {
-            Outcome::Reached(n) => format!("Reached in {n} steps ({:.1} s)", replay.time(*n)),
+            Outcome::Reached(n) => format!("Reached goal in {n} steps ({:.1} s)", replay.time(*n)),
             Outcome::Timeout => "Failed: step budget exhausted".to_owned(),
             Outcome::Inadmissible { step, .. } => {
                 format!("Failed: inadmissible control at step {step}")
@@ -734,32 +764,57 @@ impl ViewerApp {
         };
         let goal = replay.case.task.goal;
         ui.heading("Current state");
-        ui.label(format!("t = {:.4} s", replay.time(k) + offset));
-        ui.label(format!("sample k = {k} + {offset:.4} s"));
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            formula::T.ui(ui, &font).on_hover_text("time");
+            ui.label(format!(" = {:.4} s", replay.time(k) + offset));
+        });
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            ui.label("sample ");
+            formula::K.ui(ui, &font).on_hover_text("sample index");
+            ui.label(format!(" = {k} + {offset:.4} s"));
+        });
         egui::Grid::new("frame_info").num_columns(2).show(ui, |ui| {
-            let mut row = |name: &str, value: String| {
-                ui.monospace(name);
+            let font = egui::TextStyle::Monospace.resolve(ui.style());
+            let mut row = |formula: &Formula, name: &str, value: String| {
+                formula.ui(ui, &font).on_hover_text(name);
                 ui.monospace(value);
                 ui.end_row();
             };
-            row("position", format!("({:.3}, {:.3})", s.x, s.y));
-            row("velocity", format!("({:.3}, {:.3})", s.vx, s.vy));
-            row("theta, omega", format!("{:.3}, {:.3}", s.theta, s.omega));
             row(
-                "dist. to B",
+                &formula::POSITION,
+                "position",
+                format!("({:.3}, {:.3})", s.x, s.y),
+            );
+            row(
+                &formula::VELOCITY,
+                "velocity",
+                format!("({:.3}, {:.3})", s.vx, s.vy),
+            );
+            row(&formula::THETA, "heading angle", format!("{:.3}", s.theta));
+            row(
+                &formula::OMEGA,
+                "angular velocity",
+                format!("{:.3}", s.omega),
+            );
+            row(
+                &formula::DISTANCE,
+                "distance to the goal B",
                 format!("{:.4}", (s.x - goal.x).hypot(s.y - goal.y)),
             );
-            row("speed", format!("{:.4}", s.vx.hypot(s.vy)));
+            row(&formula::SPEED, "speed", format!("{:.4}", s.vx.hypot(s.vy)));
             let control = replay.control(k).map_or_else(
                 || "- (final state)".to_owned(),
                 |u| format!("{:.3}, {:.3}", u.thrust, u.torque),
             );
-            row("u_k = (F, tau)", control);
+            row(&formula::CONTROL, "control: thrust and torque", control);
         });
     }
 
     fn display_ui(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Display");
+        ui.heading("Display options");
         ui.add_enabled_ui(self.ship3d.is_some(), |ui| {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.view, CanvasView::Ship3d, "3D");
@@ -790,12 +845,18 @@ impl ViewerApp {
                 self.camera = Camera::default();
             }
         });
+    }
+
+    fn user_inputs_ui(ui: &mut egui::Ui) {
+        ui.heading("User inputs");
         ui.label("Drag: pan   Scroll: zoom");
         ui.label("Space: play/pause   Left / Right: +/-dt");
         ui.label("Shift+Left / Right: +/-sample   Home / End");
     }
 
-    fn timeline_ui(&mut self, ui: &mut egui::Ui) {
+    /// The playback controls, on one row, and the timeline. `compact`, for narrow screens,
+    /// keeps only the transport buttons and a playback speed menu.
+    fn timeline_ui(&mut self, ui: &mut egui::Ui, compact: bool) {
         let Some(replay) = &self.replay else {
             ui.label("Select a solution and a case.");
             return;
@@ -840,10 +901,14 @@ impl ViewerApp {
                 playback.seek_end(last);
             }
             ui.separator();
+            if compact {
+                speed_menu(ui, &mut playback.speed);
+                return;
+            }
             ui.add(
                 egui::Slider::new(&mut playback.speed, 0.1..=50.0)
                     .logarithmic(true)
-                    .text("x real time"),
+                    .text("playback speed"),
             );
             ui.separator();
             let mut dt = playback.dt(h);
@@ -892,22 +957,48 @@ impl ViewerApp {
                     time_plot(
                         ui,
                         "Position",
+                        &formula::POSITION,
                         t,
                         &[("x", &plots.x, POS_X_COLOR), ("y", &plots.y, POS_Y_COLOR)],
                     ),
                     time_plot(
                         ui,
                         "Velocity",
+                        &formula::VELOCITY,
                         t,
                         &[
                             ("vx", &plots.vx, VEL_X_COLOR),
                             ("vy", &plots.vy, VEL_Y_COLOR),
                         ],
                     ),
-                    time_plot(ui, "theta", t, &[("theta", &plots.theta, THETA_COLOR)]),
-                    time_plot(ui, "omega", t, &[("omega", &plots.omega, OMEGA_COLOR)]),
-                    time_plot(ui, "Thrust F", t, &[("F", &plots.thrust, THRUST_COLOR)]),
-                    time_plot(ui, "Torque tau", t, &[("tau", &plots.torque, TORQUE_COLOR)]),
+                    time_plot(
+                        ui,
+                        "Heading angle",
+                        &formula::THETA,
+                        t,
+                        &[("theta", &plots.theta, THETA_COLOR)],
+                    ),
+                    time_plot(
+                        ui,
+                        "Angular velocity",
+                        &formula::OMEGA,
+                        t,
+                        &[("omega", &plots.omega, OMEGA_COLOR)],
+                    ),
+                    time_plot(
+                        ui,
+                        "Thrust",
+                        &formula::THRUST,
+                        t,
+                        &[("F", &plots.thrust, THRUST_COLOR)],
+                    ),
+                    time_plot(
+                        ui,
+                        "Torque",
+                        &formula::TORQUE,
+                        t,
+                        &[("tau", &plots.torque, TORQUE_COLOR)],
+                    ),
                 ]
                 .into_iter()
                 .flatten()
@@ -1142,15 +1233,21 @@ impl ViewerApp {
             self.frame_info_ui(ui);
             ui.separator();
             self.display_ui(ui);
+            ui.separator();
+            self.sound.ui(ui);
+            ui.separator();
+            Self::user_inputs_ui(ui);
         });
     }
 
-    /// Desktop layout: controls left, plots right, timeline below the canvas.
+    /// Desktop layout: the timeline along the bottom, controls left and plots right above it.
     fn wide_layout(&mut self, ui: &mut egui::Ui) {
+        // The timeline first, across the whole window, so neither side panel (nor its
+        // collapsed title bar, which slides back in when the pointer comes near) reaches it.
+        egui::Panel::bottom("timeline_panel").show(ui, |ui| self.timeline_ui(ui, false));
         let mut show_controls = self.show_controls;
         CONTROLS_PANEL.show(ui, &mut show_controls, |ui| self.controls_ui(ui));
         self.show_controls = show_controls;
-        egui::Panel::bottom("timeline_panel").show(ui, |ui| self.timeline_ui(ui));
         let mut show_plots = self.show_plots;
         PLOTS_PANEL.show(ui, &mut show_plots, |ui| self.plots_ui(ui));
         self.show_plots = show_plots;
@@ -1161,7 +1258,7 @@ impl ViewerApp {
     /// timeline stays available below the canvas and the plots.
     fn compact_layout(&mut self, ui: &mut egui::Ui) {
         if self.compact_view != CompactView::Controls {
-            egui::Panel::bottom("timeline_panel").show(ui, |ui| self.timeline_ui(ui));
+            egui::Panel::bottom("timeline_panel").show(ui, |ui| self.timeline_ui(ui, true));
         }
         egui::CentralPanel::default().show(ui, |ui| match self.compact_view {
             CompactView::Canvas => self.canvas_ui(ui),
@@ -1205,7 +1302,7 @@ impl eframe::App for ViewerApp {
                 ui.horizontal(|ui| {
                     for (view, label) in [
                         (CompactView::Canvas, "View"),
-                        (CompactView::Controls, "Controls"),
+                        (CompactView::Controls, CONTROLS_PANEL.title),
                         (CompactView::Plots, "Plots"),
                     ] {
                         ui.selectable_value(&mut self.compact_view, view, label);
@@ -1222,6 +1319,17 @@ impl eframe::App for ViewerApp {
 
         let ctx = ui.ctx().clone();
         self.code_window(&ctx);
+
+        // The thrusters heard at the playhead, while the replay plays.
+        let levels = self
+            .replay
+            .as_ref()
+            .filter(|_| self.playback.playing)
+            .map(|r| {
+                let t = self.playback.time(r.h());
+                (r.thrust_fraction(t) as f32, r.torque_fraction(t) as f32)
+            });
+        self.sound.update(&ctx, levels);
     }
 }
 
@@ -1503,14 +1611,66 @@ fn make_plot(id: &str) -> Plot<'static> {
         .allow_boxed_zoom(false)
 }
 
-/// Plot `lines` against time with a cursor at `t`. Returns the clicked time, if any.
+/// Playback speeds offered by the compact layout's speed menu.
+const MENU_SPEEDS: [f64; 10] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 4.0, 10.0];
+
+/// A playback speed as the menu shows it: `1x`, `1.5x`, `0.25x`.
+fn speed_label(speed: f64) -> String {
+    format!("{}x", (speed * 100.0).round() / 100.0)
+}
+
+/// The compact layout's playback speed control, as in video players: a button with a gauge
+/// and the speed, opening a menu of speeds.
+fn speed_menu(ui: &mut egui::Ui, speed: &mut f64) {
+    let gauge = ui.id().with("speed_gauge");
+    let size = egui::Vec2::splat(ui.text_style_height(&egui::TextStyle::Button));
+    let button =
+        egui::Button::new((egui::Atom::custom(gauge, size), speed_label(*speed))).atom_ui(ui);
+    if let Some(rect) = button.rect(gauge) {
+        let color = ui.style().interact(&button.response).fg_stroke.color;
+        paint_gauge(ui.painter(), rect, color);
+    }
+    let response = button.response.on_hover_text("Playback speed");
+    egui::Popup::menu(&response).show(|ui| {
+        for option in MENU_SPEEDS {
+            let selected = (*speed - option).abs() < 1e-9;
+            if ui.selectable_label(selected, speed_label(option)).clicked() {
+                *speed = option;
+            }
+        }
+    });
+}
+
+/// A speedometer: an arc over the top of `rect` and a needle pointing up and to the right.
+fn paint_gauge(painter: &egui::Painter, rect: egui::Rect, color: egui::Color32) {
+    use std::f32::consts::PI;
+    let stroke = egui::Stroke::new(1.5, color);
+    let radius = 0.45 * rect.width();
+    let center = rect.center() + egui::vec2(0.0, 0.2 * radius);
+    let point = |angle: f32, r: f32| center + r * egui::vec2(angle.cos(), -angle.sin());
+    // From lower left (210 degrees) over the top to lower right (-30 degrees).
+    let arc = (0..=16)
+        .map(|i| point(PI * (7.0 / 6.0 - 4.0 / 3.0 * i as f32 / 16.0), radius))
+        .collect();
+    painter.add(egui::Shape::line(arc, stroke));
+    painter.line_segment([center, point(PI / 4.0, 0.75 * radius)], stroke);
+    painter.circle_filled(center, 1.5, color);
+}
+
+/// Plot `lines` against time with a cursor at `t`, titled "`title` `symbol`". Returns the
+/// clicked time, if any.
 fn time_plot(
     ui: &mut egui::Ui,
     title: &str,
+    symbol: &Formula,
     t: f64,
     lines: &[(&str, &Vec<PlotPoint>, egui::Color32)],
 ) -> Option<f64> {
-    ui.label(title);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        ui.label(format!("{title} "));
+        symbol.ui(ui, &egui::TextStyle::Body.resolve(ui.style()));
+    });
     make_plot(title)
         .show(ui, |plot_ui| {
             for &(name, series, color) in lines {

@@ -97,6 +97,7 @@ matches its current source and score. Do not edit stored files by hand; resubmit
 |---|---|---|
 | `flip_and_burn` | two-layer feedback: braking-aware velocity setpoint, square-root heading law | 19805 |
 | `flip_and_burn_tuned` | same, constants tuned by coordinate descent | 12389 |
+| `tolerance_aware` | same, plus a coasting spin-down finisher and an `ε_v` deadband, retuned | 8058 |
 
 ## Ideas for doing better
 

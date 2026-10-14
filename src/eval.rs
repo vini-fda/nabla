@@ -275,17 +275,28 @@ pub fn evaluate<C: Controller>() -> Report {
 /// Entry point of a compiled candidate.
 ///
 /// * no arguments: evaluate both suites and print the report;
-/// * `trace <case>`: simulate one case of either suite and print its trajectory.
+/// * `trace <case> [h]`: simulate one case of either suite and print its trajectory, with the
+///   sampling period `h` instead of the case's when given.
 pub fn candidate_main<C: Controller>() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.as_slice() {
-        [command, name] if command == "trace" => match suite::find(name) {
-            Some(case) => print!("{}", trajectory_to_text(&simulate::<C>(&case))),
-            None => {
+        [command, name, rest @ ..] if command == "trace" && rest.len() <= 1 => {
+            let Some(mut case) = suite::find(name) else {
                 eprintln!("unknown case {name:?}");
                 std::process::exit(2);
+            };
+            // Optional sampling period, overriding the case's.
+            if let Some(h) = rest.first() {
+                match h.parse::<f64>() {
+                    Ok(h) if h > 0.0 && h.is_finite() => case.task.params.h = h,
+                    _ => {
+                        eprintln!("invalid sampling period {h:?}");
+                        std::process::exit(2);
+                    }
+                }
             }
-        },
+            print!("{}", trajectory_to_text(&simulate::<C>(&case)));
+        }
         _ => print!("{}", evaluate::<C>().to_text()),
     }
 }

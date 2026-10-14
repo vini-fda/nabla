@@ -78,7 +78,7 @@ const FIT_MARGIN: f32 = 0.15;
 const WATCH_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Case selected when nothing was persisted.
-const DEFAULT_CASE: &str = "rest_facing_away";
+const DEFAULT_CASE: &str = "agile";
 
 /// A test case and the suite it comes from.
 struct CaseEntry {
@@ -95,7 +95,12 @@ fn all_cases() -> Vec<CaseEntry> {
         suite: "holdout",
         case,
     });
-    standard.chain(holdout).collect()
+    let mut cases: Vec<CaseEntry> = standard.chain(holdout).collect();
+    // The default case goes first in the list.
+    if let Some(i) = cases.iter().position(|e| e.case.name == DEFAULT_CASE) {
+        cases[..=i].rotate_right(1);
+    }
+    cases
 }
 
 /// Plot series of the current replay, converted once.

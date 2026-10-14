@@ -36,15 +36,15 @@ pub mod palette {
     pub const SUBTEXT: Color32 = Color32::from_gray(185);
 }
 
-const INTER: &[u8] = include_bytes!("../assets/fonts/Inter-Medium.ttf");
+const PLEX: &[u8] = include_bytes!("../assets/fonts/IBMPlexSans-Regular.ttf");
 const LILEX: &[u8] = include_bytes!("../assets/fonts/Lilex-Regular.ttf");
 
-/// Inter for the UI (as in Rerun) and Lilex for code (as in Zed). The fonts are embedded, so
+/// IBM Plex Sans for the UI (as in Zed) and Lilex for code (as in Zed). The fonts are embedded, so
 /// the look is the same on every platform. egui's default fonts stay as glyph fallbacks.
 fn install_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
     for (name, bytes, family) in [
-        ("Inter", INTER, FontFamily::Proportional),
+        ("IBM Plex Sans", PLEX, FontFamily::Proportional),
         ("Lilex", LILEX, FontFamily::Monospace),
     ] {
         fonts.font_data.insert(

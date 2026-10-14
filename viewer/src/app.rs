@@ -178,6 +178,8 @@ pub struct ViewerApp {
     show_velocity: bool,
     show_acceleration: bool,
     show_path: bool,
+    /// Draw the background grid.
+    show_grid: bool,
     /// Show the thrusters' plumes in the 3D view.
     show_plume: bool,
     follow_ship: bool,
@@ -234,6 +236,7 @@ impl Default for ViewerApp {
             show_velocity: true,
             show_acceleration: true,
             show_path: true,
+            show_grid: true,
             show_plume: true,
             follow_ship: false,
             playback: Playback::default(),
@@ -759,6 +762,7 @@ impl ViewerApp {
                 .logarithmic(true)
                 .text("ship size (world units)"),
         );
+        ui.checkbox(&mut self.show_grid, "Grid");
         ui.checkbox(&mut self.show_path, "Path (grey: full, blue: so far)");
         ui.add_enabled_ui(!self.debug_view(), |ui| {
             ui.checkbox(&mut self.show_plume, "Thruster plumes");
@@ -942,7 +946,9 @@ impl ViewerApp {
             GridStyle::faint(ui.visuals())
         };
         let (Some(replay), Some((k, _, state))) = (&self.replay, self.now()) else {
-            draw_grid(&painter, &self.camera, rect, &style);
+            if self.show_grid {
+                draw_grid(&painter, &self.camera, rect, &style);
+            }
             return;
         };
 
@@ -952,7 +958,9 @@ impl ViewerApp {
             self.camera.center = world(state.x, state.y);
         }
 
-        draw_grid(&painter, &self.camera, rect, &style);
+        if self.show_grid {
+            draw_grid(&painter, &self.camera, rect, &style);
+        }
         if self.show_path {
             self.draw_path(&painter, rect, replay, k, &state);
         }

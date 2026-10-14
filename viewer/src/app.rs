@@ -3,6 +3,7 @@
 //! next to plots of the state and control signals.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use egui_plot::{Legend, Line, Plot, PlotPoint, VLine};
@@ -15,6 +16,7 @@ use ship2d_optimization::suite;
 use crate::camera::Camera;
 use crate::grid::{GridStyle, draw_grid};
 use crate::replay::{MAX_SUBDIVISIONS, Playback, Replay, Series};
+use crate::ship3d::{self, SHIP_GLB, ShipModel, ShipRenderer};
 use crate::source::{self, Runner, SolutionSource, Status};
 use crate::theme::{self, palette};
 use crate::timeline::{TimelineView, timeline_ui};
@@ -82,6 +84,16 @@ const START_RADIUS_PX: f32 = 5.0;
 
 /// Below this width (in points), e.g. on phones, the panels are shown one at a time.
 const COMPACT_WIDTH: f32 = 800.0;
+
+/// How the canvas shows the ship.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum CanvasView {
+    /// The textured 3D model seen from above, with the path, goal and a faint grid.
+    #[default]
+    Ship3d,
+    /// A flat triangle with velocity and acceleration arrows, on a labeled grid.
+    Debug,
+}
 
 /// What the compact (narrow-screen) layout shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -193,6 +205,9 @@ pub struct ViewerApp {
     show_controls: bool,
     show_plots: bool,
     compact_view: CompactView,
+    view: CanvasView,
+    /// Draws the 3D ship; `None` where OpenGL can't (then the canvas shows the debug view).
+    ship3d: Option<Arc<ShipRenderer>>,
     /// Dropped files read by the browser.
     #[cfg(target_arch = "wasm32")]
     dropped_tx: std::sync::mpsc::Sender<DroppedFile>,
@@ -235,6 +250,8 @@ impl Default for ViewerApp {
             show_controls: true,
             show_plots: true,
             compact_view: CompactView::default(),
+            view: CanvasView::default(),
+            ship3d: None,
             #[cfg(target_arch = "wasm32")]
             dropped_tx,
             #[cfg(target_arch = "wasm32")]
@@ -248,10 +265,17 @@ impl ViewerApp {
     pub fn new(cc: &eframe::CreationContext<'_>, source: Option<PathBuf>) -> Self {
         theme::apply(&cc.egui_ctx);
 
+        let ship3d = cc.gl.as_ref().and_then(|gl| {
+            ShipModel::load(SHIP_GLB)
+                .and_then(|model| ShipRenderer::new(gl, &model))
+                .inspect_err(|e| log::warn!("No 3D view: {e}"))
+                .ok()
+        });
         let mut app = Self {
             runner: Runner::new(cc.egui_ctx.clone()),
             database: source::database(),
             cases: all_cases(),
+            ship3d: ship3d.map(Arc::new),
             ..Self::default()
         };
         match source.filter(|p| p.is_file()) {
@@ -716,14 +740,23 @@ impl ViewerApp {
 
     fn display_ui(&mut self, ui: &mut egui::Ui) {
         ui.heading("Display");
+        ui.add_enabled_ui(self.ship3d.is_some(), |ui| {
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.view, CanvasView::Ship3d, "3D");
+                ui.selectable_value(&mut self.view, CanvasView::Debug, "Debug")
+                    .on_hover_text("Flat ship with velocity and acceleration arrows");
+            });
+        });
         ui.add(
             egui::Slider::new(&mut self.circumradius, 0.05..=10.0)
                 .logarithmic(true)
                 .text("ship size (world units)"),
         );
         ui.checkbox(&mut self.show_path, "Path (grey: full, blue: so far)");
-        ui.checkbox(&mut self.show_velocity, "Velocity (green)");
-        ui.checkbox(&mut self.show_acceleration, "Acceleration (red)");
+        ui.add_enabled_ui(self.debug_view(), |ui| {
+            ui.checkbox(&mut self.show_velocity, "Velocity (green)");
+            ui.checkbox(&mut self.show_acceleration, "Acceleration (red)");
+        });
         ui.checkbox(&mut self.follow_ship, "Follow ship");
         ui.horizontal(|ui| {
             if ui.button("Fit view").clicked() {
@@ -892,7 +925,12 @@ impl ViewerApp {
         }
 
         let painter = ui.painter_at(rect);
-        let style = GridStyle::from_visuals(ui.visuals());
+        let debug = self.debug_view();
+        let style = if debug {
+            GridStyle::from_visuals(ui.visuals())
+        } else {
+            GridStyle::faint(ui.visuals())
+        };
         let (Some(replay), Some((k, _, state))) = (&self.replay, self.now()) else {
             draw_grid(&painter, &self.camera, rect, &style);
             return;
@@ -909,8 +947,29 @@ impl ViewerApp {
             self.draw_path(&painter, rect, replay, k, &state);
         }
         self.draw_goal(&painter, rect, replay, &state);
-        self.draw_ship(&painter, rect, &state);
-        self.draw_arrows(&painter, rect, replay, k, &state);
+        match &self.ship3d {
+            Some(renderer) if !debug => {
+                if let Some(callback) = ship3d::paint_callback(
+                    renderer,
+                    &self.camera,
+                    rect,
+                    world(state.x, state.y),
+                    state.theta as f32,
+                    self.circumradius,
+                ) {
+                    painter.add(callback);
+                }
+            }
+            _ => {
+                self.draw_ship(&painter, rect, &state);
+                self.draw_arrows(&painter, rect, replay, k, &state);
+            }
+        }
+    }
+
+    /// Whether the canvas shows the debug view: when chosen, or when there is no 3D view.
+    fn debug_view(&self) -> bool {
+        self.view == CanvasView::Debug || self.ship3d.is_none()
     }
 
     /// Full path, and the path up to the ship's current (possibly between-samples) position.
@@ -1083,6 +1142,12 @@ impl ViewerApp {
 }
 
 impl eframe::App for ViewerApp {
+    fn on_exit(&mut self, gl: Option<&eframe::glow::Context>) {
+        if let (Some(gl), Some(renderer)) = (gl, &self.ship3d) {
+            renderer.destroy(gl);
+        }
+    }
+
     /// Called each time the UI needs repainting, which may be many times per second.
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.poll_runner();

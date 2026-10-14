@@ -36,6 +36,9 @@ fn main() -> eframe::Result {
             .with_min_inner_size([700.0, 450.0])
             .with_title("Nabla")
             .with_icon(app_icon()),
+        // For the 3D ship view.
+        depth_buffer: 24,
+        multisampling: 4,
         ..Default::default()
     };
     eframe::run_native(
@@ -55,6 +58,8 @@ fn main() {
 
     let web_options = eframe::WebOptions {
         renderer: eframe::Renderer::Glow,
+        // For the 3D ship view. (WebGL contexts come with a depth buffer anyway.)
+        depth_buffer: 24,
         ..Default::default()
     };
 

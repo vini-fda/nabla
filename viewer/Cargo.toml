@@ -16,6 +16,8 @@ egui_plot = "0.37.0"
 eframe = { version = "0.36.2", features = ["glow"] }
 log = "0.4.34"
 ship2d_optimization = { path = "..", features = ["registry"] }
+gltf = { version = "1.4.1", default-features = false, features = ["utils"] }
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
 
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

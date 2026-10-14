@@ -8,6 +8,7 @@ pub mod camera;
 pub mod grid;
 mod highlight;
 pub mod replay;
+mod ship3d;
 pub mod source;
 pub mod theme;
 pub mod timeline;

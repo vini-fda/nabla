@@ -1035,15 +1035,6 @@ impl eframe::App for ViewerApp {
         let compact = ui.available_width() < COMPACT_WIDTH;
         egui::Panel::top("top_panel").show_inside(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
-                let is_web = cfg!(target_arch = "wasm32");
-                if !is_web {
-                    ui.menu_button("File", |ui| {
-                        if ui.button("Quit").clicked() {
-                            ui.send_viewport_cmd(egui::ViewportCommand::Close);
-                        }
-                    });
-                    ui.add_space(16.0);
-                }
                 if compact {
                     for (view, label) in [
                         (CompactView::Canvas, "View"),

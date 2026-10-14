@@ -1,0 +1,3 @@
+[target.'cfg(target_os = "macos")']
+# Wrap the viewer in an app bundle on `cargo run`, so the Dock shows the Liquid Glass icon.
+runner = "viewer/macos/run-bundled.sh"

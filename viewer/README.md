@@ -62,7 +62,7 @@ cargo run --release -p ship2d_graphics                        # opens the last s
 cargo run --release -p ship2d_graphics -- path/to/solution.rs # opens this source
 ```
 
-On macOS, `viewer/macos/bundle.sh` builds `target/release/ship2d viewer.app`, an app bundle with the layered Icon Composer icon (`viewer/macos/nabla_macOS.icon`), which macOS 26 renders with Liquid Glass. It needs Xcode, for `actool`. Run without the bundle, the viewer shows a flat rounded icon instead.
+On macOS, `viewer/macos/bundle.sh` builds `target/release/ship2d viewer.app`, an app bundle with the layered Icon Composer icon (`viewer/macos/nabla_macOS.icon`), which macOS 26 renders with Liquid Glass. It needs Xcode, for `actool`. `cargo run` on macOS goes through this bundle automatically (cargo runner in `.cargo/config.toml`, `viewer/macos/run-bundled.sh`); a bare executable can only show a flat rounded icon.
 
 ```sh
 viewer/macos/bundle.sh && open "target/release/ship2d viewer.app"

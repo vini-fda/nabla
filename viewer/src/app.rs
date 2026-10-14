@@ -18,6 +18,7 @@ use crate::grid::{GridStyle, draw_grid};
 use crate::plume::Plume;
 use crate::replay::{MAX_SUBDIVISIONS, Playback, Replay, Series};
 use crate::ship3d::{self, SHIP_GLB, ShipModel, ShipRenderer};
+use crate::sound::Sound;
 use crate::source::{self, Runner, SolutionSource, Status};
 use crate::theme::{self, palette};
 use crate::timeline::{TimelineView, timeline_ui};
@@ -196,6 +197,7 @@ pub struct ViewerApp {
 
     source: Option<SolutionSource>,
     runner: Runner,
+    sound: Sound,
     database: Vec<(Entry, &'static StoredSolution, PathBuf)>,
     cases: Vec<CaseEntry>,
     replay: Option<Replay>,
@@ -247,6 +249,7 @@ impl Default for ViewerApp {
             watch_file: true,
             source: None,
             runner: Runner::default(),
+            sound: Sound::default(),
             database: Vec::new(),
             cases: Vec::new(),
             replay: None,
@@ -1225,6 +1228,8 @@ impl ViewerApp {
             ui.separator();
             self.display_ui(ui);
             ui.separator();
+            self.sound.ui(ui);
+            ui.separator();
             Self::user_inputs_ui(ui);
         });
     }
@@ -1306,6 +1311,17 @@ impl eframe::App for ViewerApp {
 
         let ctx = ui.ctx().clone();
         self.code_window(&ctx);
+
+        // The thrusters heard at the playhead, while the replay plays.
+        let levels = self
+            .replay
+            .as_ref()
+            .filter(|_| self.playback.playing)
+            .map(|r| {
+                let t = self.playback.time(r.h());
+                (r.thrust_fraction(t) as f32, r.torque_fraction(t) as f32)
+            });
+        self.sound.update(&ctx, levels);
     }
 }
 

@@ -8,7 +8,7 @@ Playback is continuous in time. Between controller samples the control is held c
 
 ## What's on screen
 
-- **Left panel**: the solution source (open, reload, compile status and errors), the case picker, the case's parameters and initial state, the outcome (steps to reach the target set), the state and control at the current frame, and display options.
+- **Left panel**: the solution source (open, reload, compile status and errors), the case picker, the case's parameters and initial state, the outcome (steps to reach the target set), the state and control at the current frame, display options, and sound: the ion thruster's sound (five synthesized styles to choose from), master/ion/RCS volume knobs, and buttons to hear each thruster on its own.
 - **Main canvas**: the ship drawn as an isosceles triangle in a Desmos-style coordinate grid you can pan (drag) and zoom (scroll, anchored at the cursor). It shows the full path (grey), the part travelled so far (blue), the start, the goal `B` with its position tolerance, and the velocity (green) and acceleration (red) arrows.
 - **Bottom panel**: playback controls, the playback speed (relative to real time), the display sampling time `Δt`, and an After Effects-style timeline. The timeline has a thin yellow mark at every controller sample `t_k = k h` and a playhead. Click or drag to seek, scroll to zoom, shift+scroll to pan, double-click to show the whole run.
 - **Right panel**: x, y, vx, vy, θ, ω and the controls F, τ over the whole run, with a cursor at the current time. Click a plot to jump to that time.
@@ -48,7 +48,9 @@ src/
 ├── replay.rs    ← a solution run on a case, exact states between samples, playback on the Δt grid
 ├── timeline.rs  ← After Effects-style timeline: sample marks, playhead, zoom
 ├── camera.rs    ← world↔screen transform, pan, cursor-anchored zoom
-└── grid.rs      ← Desmos-style grid with 1/2/5×10ⁿ adaptive spacing
+├── grid.rs      ← Desmos-style grid with 1/2/5×10ⁿ adaptive spacing
+├── synth.rs     ← thruster sound synthesizer: ion thruster styles, RCS hiss
+└── sound.rs     ← audio output (cpal: native or Web Audio), sound settings and volume knobs
 ```
 
 `replay`, `camera` and `grid` (and the timeline's view geometry) are free of egui widget types, so they're independently unit-testable. `cargo test --lib` runs the test suite.
@@ -71,7 +73,7 @@ viewer/macos/bundle.sh && open "target/release/Nabla.app"
 On Linux you may need:
 
 ```sh
-sudo apt-get install libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
+sudo apt-get install libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev libasound2-dev
 ```
 
 For a web build with [Trunk](https://trunkrs.dev/), from this directory:

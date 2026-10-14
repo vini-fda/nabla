@@ -925,8 +925,8 @@ impl ViewerApp {
 
         painter.add(egui::Shape::convex_polygon(
             vertices,
-            palette::SAPPHIRE,
-            egui::Stroke::new(TRIANGLE_STROKE_WIDTH, palette::WHITE),
+            palette::WHITE,
+            egui::Stroke::new(TRIANGLE_STROKE_WIDTH, palette::BLACK),
         ));
     }
 

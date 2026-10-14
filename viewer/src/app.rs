@@ -178,7 +178,7 @@ pub struct ViewerApp {
     show_velocity: bool,
     show_acceleration: bool,
     show_path: bool,
-    /// Show the thruster's plume in the 3D view.
+    /// Show the thrusters' plumes in the 3D view.
     show_plume: bool,
     follow_ship: bool,
     playback: Playback,
@@ -761,7 +761,7 @@ impl ViewerApp {
         );
         ui.checkbox(&mut self.show_path, "Path (grey: full, blue: so far)");
         ui.add_enabled_ui(!self.debug_view(), |ui| {
-            ui.checkbox(&mut self.show_plume, "Thruster plume");
+            ui.checkbox(&mut self.show_plume, "Thruster plumes");
         });
         ui.add_enabled_ui(self.debug_view(), |ui| {
             ui.checkbox(&mut self.show_velocity, "Velocity (green)");
@@ -962,7 +962,7 @@ impl ViewerApp {
                 let t = self.playback.time(replay.h());
                 let plume = self.plume.as_ref().filter(|_| self.show_plume);
                 if let Some(plume) = plume {
-                    plume.paint_jet(&painter, &self.camera, rect, replay, t, self.circumradius);
+                    plume.paint_jets(&painter, &self.camera, rect, replay, t, self.circumradius);
                 }
                 if let Some(callback) = ship3d::paint_callback(
                     renderer,
@@ -975,7 +975,7 @@ impl ViewerApp {
                     painter.add(callback);
                 }
                 if let Some(plume) = plume {
-                    plume.paint_nozzle(&painter, &self.camera, rect, replay, t, self.circumradius);
+                    plume.paint_nozzles(&painter, &self.camera, rect, replay, t, self.circumradius);
                 }
             }
             _ => {

@@ -88,6 +88,15 @@ impl Replay {
             .map_or(0.0, |u| u.thrust / self.case.task.params.f_max)
     }
 
+    /// Torque at time `t` as a fraction of `tau_max` (-1 to 1); 0 outside the run.
+    pub fn torque_fraction(&self, t: f64) -> f64 {
+        if t < 0.0 {
+            return 0.0;
+        }
+        self.control(self.frame_at(t))
+            .map_or(0.0, |u| u.torque / self.case.task.params.tau_max)
+    }
+
     /// The sample `k` whose period `[t_k, t_{k+1})` holds time `t >= 0`.
     fn frame_at(&self, t: f64) -> usize {
         (t / self.h()).floor() as usize

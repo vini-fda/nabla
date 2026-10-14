@@ -1,7 +1,6 @@
 # Optimization task: stop the ship at a point in the fewest steps
 
-This is a finite, discretized version of Problem 2 of the `ship2d_lean` write-up (`docs/main.typ`, section "Discrete-time
-version of the second problem").
+This is a finite, discretized version of the ship control problem (`docs/main.typ`).
 
 ## The problem
 

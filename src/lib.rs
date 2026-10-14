@@ -1,4 +1,4 @@
-//! A finite, discretized version of Problem 2 of the `ship2d_lean` write-up (come to rest at a point), set
+//! A finite, discretized version of the ship control problem (come to rest at a point), set
 //! up as an optimization task: find a controller that solves every test case in the fewest
 //! total steps. See `TASK.md`.
 //!

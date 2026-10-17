@@ -5,6 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use egui::IdSalt;
 use egui_plot::{Legend, Line, Plot, PlotPoint, VLine};
 use ship2d_optimization::State;
 use ship2d_optimization::db::Entry;
@@ -20,7 +21,7 @@ use crate::replay::{MAX_SUBDIVISIONS, Playback, Replay, Series};
 use crate::ship3d::{self, SHIP_GLB, ShipModel, ShipRenderer};
 use crate::sound::Sound;
 use crate::source::{self, Runner, SolutionSource, Status};
-use crate::theme::{self, palette};
+use crate::theme::{self, icons, palette};
 use crate::timeline::{TimelineView, timeline_ui};
 
 const TRIANGLE_STROKE_WIDTH: f32 = 2.0;
@@ -666,7 +667,7 @@ impl ViewerApp {
         };
         let mut open = self.show_code;
         egui::Window::new(egui::RichText::new(format!("{}.rs", source.name)).monospace())
-            .id(egui::Id::new("source_code_window"))
+            .id(egui::Id::unique("source_code_window"))
             .open(&mut open)
             .default_size([640.0, 720.0])
             .show(ctx, |ui| {
@@ -865,23 +866,23 @@ impl ViewerApp {
         let playback = &mut self.playback;
         ui.horizontal_wrapped(|ui| {
             if ui
-                .button("\u{23EE}")
+                .button(icons::SKIP_BACK)
                 .on_hover_text("Start (Home)")
                 .clicked()
             {
                 playback.seek_start();
             }
             if ui
-                .button("|\u{25C0}")
+                .button(icons::CARET_LEFT)
                 .on_hover_text("Previous controller sample (Shift+Left)")
                 .clicked()
             {
                 playback.previous_sample(last);
             }
             let play = if playback.playing {
-                "\u{23F8}"
+                icons::PAUSE
             } else {
-                "\u{25B6}"
+                icons::PLAY
             };
             if ui
                 .button(play)
@@ -891,13 +892,17 @@ impl ViewerApp {
                 playback.toggle(last);
             }
             if ui
-                .button("\u{25B6}|")
+                .button(icons::CARET_RIGHT)
                 .on_hover_text("Next controller sample (Shift+Right)")
                 .clicked()
             {
                 playback.next_sample(last);
             }
-            if ui.button("\u{23ED}").on_hover_text("End (End)").clicked() {
+            if ui
+                .button(icons::SKIP_FORWARD)
+                .on_hover_text("End (End)")
+                .clicked()
+            {
                 playback.seek_end(last);
             }
             ui.separator();
@@ -1367,7 +1372,7 @@ impl SidePanel {
             min_width,
             default_width,
         } = *self;
-        let id = egui::Id::new(id);
+        let id = egui::Id::unique(id);
         let ctx = ui.ctx().clone();
         let openness = ctx.animate_bool(id.with("openness"), *expanded);
 
@@ -1504,7 +1509,7 @@ fn title_bar(
     use std::f32::consts::TAU;
 
     let response = ui
-        .interact(rect, ui.id().with("title_bar"), egui::Sense::click())
+        .interact(rect, ui.scope_id().with("title_bar"), egui::Sense::click())
         .on_hover_text(if expanded {
             "Hide this panel"
         } else {
@@ -1622,7 +1627,7 @@ fn speed_label(speed: f64) -> String {
 /// The compact layout's playback speed control, as in video players: a button with a gauge
 /// and the speed, opening a menu of speeds.
 fn speed_menu(ui: &mut egui::Ui, speed: &mut f64) {
-    let gauge = ui.id().with("speed_gauge");
+    let gauge = IdSalt::new("speed_gauge");
     let size = egui::Vec2::splat(ui.text_style_height(&egui::TextStyle::Button));
     let button =
         egui::Button::new((egui::Atom::custom(gauge, size), speed_label(*speed))).atom_ui(ui);

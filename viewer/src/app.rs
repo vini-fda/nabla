@@ -14,6 +14,7 @@ use ship2d_optimization::registry::StoredSolution;
 use ship2d_optimization::suite;
 
 use crate::camera::{Camera, Vec3};
+use crate::canvas_buttons::{self, Toggle};
 use crate::formula::{self, Formula};
 use crate::gizmo::ViewGizmo;
 use crate::grid::{GridStyle, draw_grid};
@@ -180,6 +181,8 @@ pub struct ViewerApp {
     alpha: f32,
     camera: Camera,
     gizmo: ViewGizmo,
+    /// Show the navigation gizmo.
+    show_gizmo: bool,
     show_velocity: bool,
     show_acceleration: bool,
     show_path: bool,
@@ -240,6 +243,7 @@ impl Default for ViewerApp {
             alpha: DEFAULT_ALPHA,
             camera: Camera::default(),
             gizmo: ViewGizmo::default(),
+            show_gizmo: true,
             show_velocity: true,
             show_acceleration: true,
             show_path: true,
@@ -846,8 +850,6 @@ impl ViewerApp {
             ui.checkbox(&mut self.show_velocity, "Velocity (green)");
             ui.checkbox(&mut self.show_acceleration, "Acceleration (red)");
         });
-        ui.checkbox(&mut self.follow_ship, "Follow ship")
-            .on_hover_text("Keep the ship at the center of the view (F)");
         ui.horizontal(|ui| {
             if ui.button("Fit view").clicked() {
                 self.fit_pending = true;
@@ -864,7 +866,7 @@ impl ViewerApp {
         ui.label("Drag: pan   Scroll: zoom");
         ui.label("Drag the axes: orbit   Click an axis: view along it");
         ui.label("Space: play/pause   Left / Right: +/-dt");
-        ui.label("F: follow the ship");
+        ui.label("F: follow the ship (or the rocket button)");
         ui.label("Shift+Left / Right: +/-sample   Home / End");
     }
 
@@ -1029,10 +1031,16 @@ impl ViewerApp {
         }
     }
 
-    fn canvas_ui(&mut self, ui: &mut egui::Ui) {
+    /// The canvas. `inset` is how much of its right edge is taken, at the top, by a collapsed
+    /// side panel's floating triangle: the gizmo and the buttons in the top right corner
+    /// move left of it.
+    fn canvas_ui(&mut self, ui: &mut egui::Ui, inset: f32) {
         let (rect, response) =
             ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
-        self.gizmo.input(ui, rect, &mut self.camera);
+        // Where the gizmo and the buttons go, in its top right corner.
+        let corner = rect.with_max_x(rect.right() - inset);
+        self.gizmo
+            .input(ui, corner, &mut self.camera, self.show_gizmo);
 
         // Pan with primary drag (disabled while following the ship, since
         // the center is locked to the ship's position each frame).
@@ -1060,7 +1068,26 @@ impl ViewerApp {
 
         let painter = ui.painter_at(rect);
         self.draw_scene(ui, &painter, rect);
-        self.gizmo.paint(ui, &painter, rect, &self.camera);
+        if self.show_gizmo {
+            self.gizmo.paint(ui, &painter, corner, &self.camera);
+        }
+        canvas_buttons::show(
+            ui,
+            &painter,
+            corner,
+            &mut [
+                Toggle {
+                    icon: icons::outline::SPHERE,
+                    on: &mut self.show_gizmo,
+                    tooltip: "Show the navigation gizmo",
+                },
+                Toggle {
+                    icon: icons::outline::ROCKET_LAUNCH,
+                    on: &mut self.follow_ship,
+                    tooltip: "Follow the ship (F)",
+                },
+            ],
+        );
     }
 
     /// Everything on the canvas but the gizmo.
@@ -1293,7 +1320,9 @@ impl ViewerApp {
         let mut show_plots = self.show_plots;
         PLOTS_PANEL.show(ui, &mut show_plots, |ui| self.plots_ui(ui));
         self.show_plots = show_plots;
-        egui::CentralPanel::default().show(ui, |ui| self.canvas_ui(ui));
+        // The plots panel's triangle floats over the canvas's corner while it's collapsed.
+        let inset = if show_plots { 0.0 } else { TITLE_BAR_WIDTH };
+        egui::CentralPanel::default().show(ui, |ui| self.canvas_ui(ui, inset));
     }
 
     /// Narrow-screen layout: one full-size view at a time, chosen in the top bar; the
@@ -1303,7 +1332,7 @@ impl ViewerApp {
             egui::Panel::bottom("timeline_panel").show(ui, |ui| self.timeline_ui(ui, true));
         }
         egui::CentralPanel::default().show(ui, |ui| match self.compact_view {
-            CompactView::Canvas => self.canvas_ui(ui),
+            CompactView::Canvas => self.canvas_ui(ui, 0.0),
             CompactView::Controls => {
                 ui.heading(CONTROLS_PANEL.title);
                 self.controls_ui(ui);

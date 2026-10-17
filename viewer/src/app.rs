@@ -1106,6 +1106,14 @@ impl ViewerApp {
                         "Dragging the canvas rotates the camera. Click to pan instead",
                     ],
                 ),
+                Button::switch(
+                    [icons::outline::GRID_FOUR, icons::outline::PERSPECTIVE],
+                    &mut self.camera.perspective,
+                    [
+                        "Orthographic view. Click for perspective",
+                        "Perspective view. Click for orthographic",
+                    ],
+                ),
             ],
         );
     }
@@ -1154,7 +1162,8 @@ impl ViewerApp {
                 // After the ship, whose depth they are tested against.
                 if self.show_plume {
                     let t = self.playback.time(replay.h());
-                    let depth = DepthMap::new(renderer, &self.camera, position, self.circumradius);
+                    let depth =
+                        DepthMap::new(renderer, &self.camera, rect, position, self.circumradius);
                     if let Some(callback) =
                         plume.paint(&self.camera, rect, replay, t, self.circumradius, &depth)
                     {
@@ -1184,55 +1193,65 @@ impl ViewerApp {
         now: &State,
     ) {
         let states = &replay.trajectory.states;
-        let full = screen_path(&self.camera, rect, states);
-        let mut traveled = screen_path(&self.camera, rect, &states[..=k]);
-        traveled.push(self.camera.world_to_screen(world(now.x, now.y), rect));
-        painter.add(egui::Shape::line(
-            full,
-            egui::Stroke::new(1.0_f32, PATH_COLOR),
-        ));
-        painter.add(egui::Shape::line(
-            traveled,
-            egui::Stroke::new(2.0_f32, TRAVELED_COLOR),
-        ));
-
-        let start = self
-            .camera
-            .world_to_screen(world(states[0].x, states[0].y), rect);
-        painter.circle_stroke(
-            start,
-            START_RADIUS_PX,
-            egui::Stroke::new(1.5_f32, TRAVELED_COLOR),
+        let point = |s: &State| Vec3::plane(world(s.x, s.y));
+        let full = screen_path(&self.camera, rect, states.iter().map(point));
+        let traveled = screen_path(
+            &self.camera,
+            rect,
+            states[..=k].iter().chain([now]).map(point),
         );
+        for run in full {
+            painter.add(egui::Shape::line(
+                run,
+                egui::Stroke::new(1.0_f32, PATH_COLOR),
+            ));
+        }
+        for run in traveled {
+            painter.add(egui::Shape::line(
+                run,
+                egui::Stroke::new(2.0_f32, TRAVELED_COLOR),
+            ));
+        }
+
+        if let Some(start) = self
+            .camera
+            .world_to_screen(world(states[0].x, states[0].y), rect)
+        {
+            painter.circle_stroke(
+                start,
+                START_RADIUS_PX,
+                egui::Stroke::new(1.5_f32, TRAVELED_COLOR),
+            );
+        }
     }
 
     fn draw_goal(&self, painter: &egui::Painter, rect: egui::Rect, replay: &Replay, now: &State) {
         let task = &replay.case.task;
-        let goal = self
-            .camera
-            .world_to_screen(world(task.goal.x, task.goal.y), rect);
         let reached = task.reached(now);
         let color = GOAL_COLOR.gamma_multiply(if reached { 0.35 } else { 1.0 });
-        painter.circle_stroke(goal, GOAL_RADIUS_PX, egui::Stroke::new(2.0_f32, color));
-        painter.circle_filled(goal, 2.0, color);
 
         // Position tolerance eps_p, drawn to scale once it is visible: a circle in the plane,
         // an ellipse once the view is tilted.
         let tolerance = task.tolerance.position as f32;
         if tolerance * self.camera.scale > 1.5 {
             let center = world(task.goal.x, task.goal.y);
-            let circle = (0..64)
-                .map(|i| {
-                    let angle = i as f32 / 64.0 * std::f32::consts::TAU;
-                    let p = center + egui::Vec2::angled(angle) * tolerance;
-                    self.camera.world_to_screen(p, rect)
-                })
-                .collect();
-            painter.add(egui::Shape::closed_line(
-                circle,
-                egui::Stroke::new(1.0_f32, color),
-            ));
+            let circle = (0..=64).map(|i| {
+                let angle = i as f32 / 64.0 * std::f32::consts::TAU;
+                Vec3::plane(center + egui::Vec2::angled(angle) * tolerance)
+            });
+            for run in self.camera.project_polyline(circle, rect) {
+                painter.add(egui::Shape::line(run, egui::Stroke::new(1.0_f32, color)));
+            }
         }
+
+        let Some(goal) = self
+            .camera
+            .world_to_screen(world(task.goal.x, task.goal.y), rect)
+        else {
+            return;
+        };
+        painter.circle_stroke(goal, GOAL_RADIUS_PX, egui::Stroke::new(2.0_f32, color));
+        painter.circle_filled(goal, 2.0, color);
         painter.text(
             goal + egui::vec2(GOAL_LABEL_OFFSET_PX, -GOAL_LABEL_OFFSET_PX),
             egui::Align2::LEFT_BOTTOM,
@@ -1255,7 +1274,7 @@ impl ViewerApp {
             (-cos_2alpha, -sin_2alpha),
         ];
 
-        let vertices: Vec<egui::Pos2> = base_vertices
+        let Some(vertices) = base_vertices
             .iter()
             .map(|&(px, py)| {
                 let x = cos_theta * px - sin_theta * py;
@@ -1263,7 +1282,10 @@ impl ViewerApp {
                 let vertex = center + egui::vec2(x, y) * self.circumradius;
                 self.camera.world_to_screen(vertex, rect)
             })
-            .collect();
+            .collect::<Option<Vec<egui::Pos2>>>()
+        else {
+            return;
+        };
 
         // Seen from below, the triangle is wound the other way; `convex_polygon` takes either.
         painter.add(egui::Shape::convex_polygon(
@@ -1281,13 +1303,22 @@ impl ViewerApp {
         k: usize,
         state: &State,
     ) {
-        let center = self.camera.world_to_screen(world(state.x, state.y), rect);
+        let position = Vec3::plane(world(state.x, state.y));
+        let (Some(center), Some(scale)) = (
+            self.camera.project(position, rect),
+            self.camera.scale_at(position, rect),
+        ) else {
+            return;
+        };
 
-        // World vectors -> screen vectors through the camera's orientation. Use fixed pixel
-        // scales (decoupled from camera zoom) so arrows behave like HUD indicators.
+        // World vectors -> screen vectors through the camera's view at the ship. Use fixed
+        // pixel scales (decoupled from camera zoom) so arrows behave like HUD indicators.
         let arrow = |v: [f64; 2], px_per_unit: f32, color: egui::Color32| {
             let v = Vec3::plane(world(v[0], v[1]));
-            let screen = self.camera.screen_vector(v) / self.camera.scale * px_per_unit;
+            let Some(screen) = self.camera.screen_vector_at(position, v, rect) else {
+                return;
+            };
+            let screen = screen / scale * px_per_unit;
             if screen.length() > ARROW_MIN_PIXELS {
                 painter.arrow(center, screen, egui::Stroke::new(ARROW_STROKE_WIDTH, color));
             }
@@ -1659,25 +1690,34 @@ fn world(x: f64, y: f64) -> egui::Vec2 {
     egui::vec2(x as f32, y as f32)
 }
 
-/// Screen polyline through `states`, skipping points closer than `PATH_MIN_SEGMENT_PX`.
-fn screen_path(camera: &Camera, rect: egui::Rect, states: &[State]) -> Vec<egui::Pos2> {
-    let mut path: Vec<egui::Pos2> = Vec::with_capacity(states.len());
-    for s in states {
-        let p = camera.world_to_screen(world(s.x, s.y), rect);
-        if path
-            .last()
-            .is_none_or(|q| q.distance(p) >= PATH_MIN_SEGMENT_PX)
-        {
-            path.push(p);
-        }
-    }
-    if let (Some(s), Some(&q)) = (states.last(), path.last()) {
-        let p = camera.world_to_screen(world(s.x, s.y), rect);
-        if p != q {
-            path.push(p);
-        }
-    }
-    path
+/// The polyline through world points `points` on screen, as the runs of it in front of the
+/// eye, each skipping points closer than `PATH_MIN_SEGMENT_PX` but its last.
+fn screen_path(
+    camera: &Camera,
+    rect: egui::Rect,
+    points: impl IntoIterator<Item = Vec3>,
+) -> Vec<Vec<egui::Pos2>> {
+    camera
+        .project_polyline(points, rect)
+        .into_iter()
+        .map(|run| {
+            let mut path: Vec<egui::Pos2> = Vec::with_capacity(run.len());
+            for &p in &run {
+                if path
+                    .last()
+                    .is_none_or(|q| q.distance(p) >= PATH_MIN_SEGMENT_PX)
+                {
+                    path.push(p);
+                }
+            }
+            if let (Some(&p), Some(&q)) = (run.last(), path.last())
+                && p != q
+            {
+                path.push(p);
+            }
+            path
+        })
+        .collect()
 }
 
 /// Center the camera on `bounds` (in the plane) and zoom so they fill the canvas, as seen

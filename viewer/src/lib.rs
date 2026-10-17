@@ -6,6 +6,7 @@
 mod app;
 pub mod camera;
 mod formula;
+mod gizmo;
 pub mod grid;
 mod highlight;
 mod plume;
@@ -13,6 +14,7 @@ pub mod replay;
 mod ship3d;
 mod sound;
 pub mod source;
+mod sprites;
 mod synth;
 pub mod theme;
 pub mod timeline;

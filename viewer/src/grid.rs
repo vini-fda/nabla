@@ -3,11 +3,12 @@
 //! Adaptive 1/2/5 x 10^n major-step ladder; minor steps are major/5.
 //! Algorithm borrowed from `egui_plot` (MIT/Apache).
 //!
-//! Pure drawing: takes a `Painter` + `Camera` + `Rect`; no widget state.
+//! Pure drawing: takes a `Painter` + `Camera` + `Rect`; no widget state. The grid lies on
+//! the plane `z = 0`, so it tilts with the camera.
 
 use egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Stroke, Vec2};
 
-use crate::camera::Camera;
+use crate::camera::{Camera, Orbit};
 
 pub struct GridStyle {
     pub minor_color: Color32,
@@ -61,130 +62,135 @@ impl ClampOrLow for f32 {
     }
 }
 
+/// How squarely the plane must face the viewer (the cosine of the angle between its normal
+/// and the view) for the grid to be drawn at all, and for it to be drawn at full strength.
+/// The grid fades out in between, as the view turns edge on to the plane.
+const MIN_FACING: f32 = 0.05;
+const FULL_FACING: f32 = 0.3;
+
+/// The grid of the plane `z = 0`, seen through `camera` in `rect`.
 pub fn draw_grid(painter: &Painter, camera: &Camera, rect: Rect, style: &GridStyle) {
     if !(rect.width() >= 1.0 && rect.height() >= 1.0) {
         return;
     }
-    let bottom_left_world = camera.screen_to_world(rect.left_bottom(), rect);
-    let top_right_world = camera.screen_to_world(rect.right_top(), rect);
-    let world_min_x = bottom_left_world.x;
-    let world_max_x = top_right_world.x;
-    let world_min_y = bottom_left_world.y;
-    let world_max_y = top_right_world.y;
+    let facing = camera.orbit.toward_viewer().z.abs();
+    if facing < MIN_FACING {
+        return;
+    }
+    let fade = ((facing - MIN_FACING) / (FULL_FACING - MIN_FACING)).min(1.0);
+    let [minor_color, major_color, axis_color] =
+        [style.minor_color, style.major_color, style.axis_color].map(|c| c.gamma_multiply(fade));
 
-    let target_world = (style.target_major_spacing_px / camera.scale) as f64;
+    // The part of the plane on screen, a parallelogram, and its bounding box.
+    let corners = [
+        rect.left_top(),
+        rect.right_top(),
+        rect.left_bottom(),
+        rect.right_bottom(),
+    ]
+    .map(|c| camera.screen_to_world(c, rect));
+    let Some(corners) = corners.into_iter().collect::<Option<Vec<_>>>() else {
+        return;
+    };
+    let min = corners.iter().copied().fold(Vec2::INFINITY, Vec2::min);
+    let max = corners.iter().copied().fold(-Vec2::INFINITY, Vec2::max);
+    let (world_min_x, world_max_x) = (min.x as f64, max.x as f64);
+    let (world_min_y, world_max_y) = (min.y as f64, max.y as f64);
+
+    // A tilted plane is foreshortened on screen by `facing` across the tilt, and not at all
+    // along it: the spacing is a compromise between the two.
+    let target_world = (style.target_major_spacing_px / (camera.scale * facing.sqrt())) as f64;
     let major_step = nice_step(target_world);
     let minor_step = major_step / 5.0;
 
+    let x_line = |x: f64, width: f32, color: Color32| {
+        let [a, b] = [world_min_y, world_max_y]
+            .map(|y| camera.world_to_screen(Vec2::new(x as f32, y as f32), rect));
+        painter.line_segment([a, b], Stroke::new(width, color));
+    };
+    let y_line = |y: f64, width: f32, color: Color32| {
+        let [a, b] = [world_min_x, world_max_x]
+            .map(|x| camera.world_to_screen(Vec2::new(x as f32, y as f32), rect));
+        painter.line_segment([a, b], Stroke::new(width, color));
+    };
+
     // Minors drawn first; majors overlay them at the same x/y, so we don't need
     // to skip-overlap.
-    for &x in &major_ticks(world_min_x as f64, world_max_x as f64, minor_step) {
-        let p = camera.world_to_screen(Vec2::new(x as f32, 0.0), rect);
-        painter.line_segment(
-            [Pos2::new(p.x, rect.top()), Pos2::new(p.x, rect.bottom())],
-            Stroke::new(1.0_f32, style.minor_color),
-        );
-    }
-    for &y in &major_ticks(world_min_y as f64, world_max_y as f64, minor_step) {
-        let p = camera.world_to_screen(Vec2::new(0.0, y as f32), rect);
-        painter.line_segment(
-            [Pos2::new(rect.left(), p.y), Pos2::new(rect.right(), p.y)],
-            Stroke::new(1.0_f32, style.minor_color),
-        );
-    }
-    for &x in &major_ticks(world_min_x as f64, world_max_x as f64, major_step) {
-        let p = camera.world_to_screen(Vec2::new(x as f32, 0.0), rect);
-        painter.line_segment(
-            [Pos2::new(p.x, rect.top()), Pos2::new(p.x, rect.bottom())],
-            Stroke::new(1.0_f32, style.major_color),
-        );
-    }
-    for &y in &major_ticks(world_min_y as f64, world_max_y as f64, major_step) {
-        let p = camera.world_to_screen(Vec2::new(0.0, y as f32), rect);
-        painter.line_segment(
-            [Pos2::new(rect.left(), p.y), Pos2::new(rect.right(), p.y)],
-            Stroke::new(1.0_f32, style.major_color),
-        );
+    for (step, color) in [(minor_step, minor_color), (major_step, major_color)] {
+        for &x in &major_ticks(world_min_x, world_max_x, step) {
+            x_line(x, 1.0, color);
+        }
+        for &y in &major_ticks(world_min_y, world_max_y, step) {
+            y_line(y, 1.0, color);
+        }
     }
 
     // Axes on top.
     if (world_min_x..=world_max_x).contains(&0.0) {
-        let p = camera.world_to_screen(Vec2::ZERO, rect);
-        painter.line_segment(
-            [Pos2::new(p.x, rect.top()), Pos2::new(p.x, rect.bottom())],
-            Stroke::new(1.5_f32, style.axis_color),
-        );
+        x_line(0.0, 1.5, axis_color);
     }
     if (world_min_y..=world_max_y).contains(&0.0) {
-        let p = camera.world_to_screen(Vec2::ZERO, rect);
-        painter.line_segment(
-            [Pos2::new(rect.left(), p.y), Pos2::new(rect.right(), p.y)],
-            Stroke::new(1.5_f32, style.axis_color),
-        );
+        y_line(0.0, 1.5, axis_color);
     }
 
     if style.labels {
-        draw_labels(painter, camera, rect, style, major_step);
+        draw_labels(painter, camera, rect, style, major_step, (min, max));
     }
 }
 
-/// Coordinates of the major lines that are `major_step` apart.
-fn draw_labels(painter: &Painter, camera: &Camera, rect: Rect, style: &GridStyle, major_step: f64) {
-    let bottom_left_world = camera.screen_to_world(rect.left_bottom(), rect);
-    let top_right_world = camera.screen_to_world(rect.right_top(), rect);
-    let (world_min_x, world_max_x) = (bottom_left_world.x, top_right_world.x);
-    let (world_min_y, world_max_y) = (bottom_left_world.y, top_right_world.y);
+/// Coordinates of the major lines that are `major_step` apart, along the axes. Seen from
+/// straight above, labels of an axis off screen are pinned to the screen's edge; in other
+/// views only the labels of points on screen are drawn.
+fn draw_labels(
+    painter: &Painter,
+    camera: &Camera,
+    rect: Rect,
+    style: &GridStyle,
+    major_step: f64,
+    (min, max): (Vec2, Vec2),
+) {
+    let (world_min_x, world_max_x) = (min.x as f64, max.x as f64);
+    let (world_min_y, world_max_y) = (min.y as f64, max.y as f64);
+    let pinned = camera.orbit.is_near(Orbit::TOP, 1e-4);
+    // Where the label of the axis point at `p` goes, if anywhere.
+    let place = |p: Pos2| {
+        let inside = Pos2::new(
+            p.x.clamp_or_low(rect.left() + 4.0, rect.right() - 4.0),
+            p.y.clamp_or_low(rect.top() + 4.0, rect.bottom() - 14.0),
+        );
+        (pinned || inside == p).then_some(inside)
+    };
+    let label = |p: Pos2, text: String| {
+        painter.text(
+            p + Vec2::new(3.0, 2.0),
+            Align2::LEFT_TOP,
+            text,
+            style.label_font.clone(),
+            style.label_color,
+        );
+    };
 
-    // Labels along the visible x-axis (or pinned to bottom edge if y=0 is offscreen)
-    // and y-axis (or left edge).
-    let x_label_screen_y = camera
-        .world_to_screen(Vec2::ZERO, rect)
-        .y
-        .clamp_or_low(rect.top() + 4.0, rect.bottom() - 14.0);
-    let y_label_screen_x = camera
-        .world_to_screen(Vec2::ZERO, rect)
-        .x
-        .clamp_or_low(rect.left() + 4.0, rect.right() - 4.0);
-
-    for &x in &major_ticks(world_min_x as f64, world_max_x as f64, major_step) {
+    for &x in &major_ticks(world_min_x, world_max_x, major_step) {
         if x.abs() < major_step * 0.5 {
             continue; // skip origin label; the y-axis label slot covers it
         }
-        let p = camera.world_to_screen(Vec2::new(x as f32, 0.0), rect);
-        painter.text(
-            Pos2::new(p.x + 3.0, x_label_screen_y + 2.0),
-            Align2::LEFT_TOP,
-            format_tick(x, major_step),
-            style.label_font.clone(),
-            style.label_color,
-        );
+        if let Some(p) = place(camera.world_to_screen(Vec2::new(x as f32, 0.0), rect)) {
+            label(p, format_tick(x, major_step));
+        }
     }
-    for &y in &major_ticks(world_min_y as f64, world_max_y as f64, major_step) {
+    for &y in &major_ticks(world_min_y, world_max_y, major_step) {
         if y.abs() < major_step * 0.5 {
             continue;
         }
-        let p = camera.world_to_screen(Vec2::new(0.0, y as f32), rect);
-        painter.text(
-            Pos2::new(y_label_screen_x + 3.0, p.y + 2.0),
-            Align2::LEFT_TOP,
-            format_tick(y, major_step),
-            style.label_font.clone(),
-            style.label_color,
-        );
+        if let Some(p) = place(camera.world_to_screen(Vec2::new(0.0, y as f32), rect)) {
+            label(p, format_tick(y, major_step));
+        }
     }
 
     // Origin label.
-    let o = camera.world_to_screen(Vec2::ZERO, rect);
-    painter.text(
-        Pos2::new(
-            o.x.clamp_or_low(rect.left() + 4.0, rect.right() - 4.0) + 3.0,
-            o.y.clamp_or_low(rect.top() + 4.0, rect.bottom() - 14.0) + 2.0,
-        ),
-        Align2::LEFT_TOP,
-        "0",
-        style.label_font.clone(),
-        style.label_color,
-    );
+    if let Some(p) = place(camera.world_to_screen(Vec2::ZERO, rect)) {
+        label(p, "0".to_owned());
+    }
 }
 
 pub(crate) fn nice_step(target: f64) -> f64 {

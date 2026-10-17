@@ -62,6 +62,8 @@ pub mod icons {
     pub mod outline {
         use egui::{FontFamily, FontId};
 
+        pub const ARROW_COUNTER_CLOCKWISE: &str = "\u{E038}";
+        pub const ARROWS_OUT_CARDINAL: &str = "\u{E0A4}";
         pub const ROCKET_LAUNCH: &str = "\u{E3FE}";
         pub const SPHERE: &str = "\u{EE66}";
 

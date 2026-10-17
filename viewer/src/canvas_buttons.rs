@@ -1,6 +1,6 @@
-//! Floating toggle buttons over the canvas, like the ones by Blender's navigation gizmo:
-//! white outline icons in a grey rounded column in the canvas's top right corner, right of
-//! the gizmo, light blue while on.
+//! Floating buttons over the canvas, like the ones by Blender's navigation gizmo: white
+//! outline icons in a grey rounded column in the canvas's top right corner, right of the
+//! gizmo. Toggles turn light blue while on; switches between two modes show the mode's icon.
 
 use egui::{Color32, CornerRadius, Pos2, Rect, Sense, Vec2};
 
@@ -23,17 +23,42 @@ const COLUMN: Color32 = Color32::from_rgba_unmultiplied_const(46, 46, 46, 210);
 /// Color of an icon while on, and of the button behind it.
 const ON: Color32 = palette::BLUE;
 
-/// A toggle: its icon, the setting it flips, and its tooltip.
-pub struct Toggle<'a> {
-    pub icon: &'static str,
-    pub on: &'a mut bool,
-    pub tooltip: &'static str,
+/// A button: the setting it flips when clicked, and its icon and tooltip while the setting
+/// is off and while it is on.
+pub struct Button<'a> {
+    on: &'a mut bool,
+    icons: [&'static str; 2],
+    tooltips: [&'static str; 2],
+    /// Show "on" light blue.
+    highlight: bool,
 }
 
-/// Shows `toggles` in a column in the top right corner of `canvas`, and flips the one
-/// clicked.
-pub fn show(ui: &egui::Ui, painter: &egui::Painter, canvas: Rect, toggles: &mut [Toggle<'_>]) {
-    let count = toggles.len() as f32;
+impl<'a> Button<'a> {
+    /// A toggle: one icon, light blue while `on`.
+    pub fn toggle(icon: &'static str, on: &'a mut bool, tooltip: &'static str) -> Self {
+        Self {
+            on,
+            icons: [icon; 2],
+            tooltips: [tooltip; 2],
+            highlight: true,
+        }
+    }
+
+    /// A switch between two modes, off and `on`, each with its own icon and tooltip.
+    pub fn switch(icons: [&'static str; 2], on: &'a mut bool, tooltips: [&'static str; 2]) -> Self {
+        Self {
+            on,
+            icons,
+            tooltips,
+            highlight: false,
+        }
+    }
+}
+
+/// Shows `buttons` in a column in the top right corner of `canvas`, and flips the setting of
+/// the one clicked.
+pub fn show(ui: &egui::Ui, painter: &egui::Painter, canvas: Rect, buttons: &mut [Button<'_>]) {
+    let count = buttons.len() as f32;
     let column = Rect::from_min_size(
         Pos2::new(
             canvas.right() - MARGIN_RIGHT - WIDTH,
@@ -47,23 +72,26 @@ pub fn show(ui: &egui::Ui, painter: &egui::Painter, canvas: Rect, toggles: &mut 
         COLUMN,
     );
 
-    for (i, toggle) in toggles.iter_mut().enumerate() {
+    for (i, button) in buttons.iter_mut().enumerate() {
         let rect = Rect::from_min_size(
             column.min + Vec2::new(PADDING, PADDING + i as f32 * (SIZE + PADDING)),
             Vec2::splat(SIZE),
         );
-        let id = ui.scope_id().with(("canvas_button", toggle.icon));
+        let id = ui.scope_id().with(("canvas_button", button.icons[0]));
+        let state = usize::from(*button.on);
         let response = ui
             .interact(rect, id, Sense::click())
-            .on_hover_text(toggle.tooltip);
+            .on_hover_text(button.tooltips[state]);
         if response.clicked() {
-            *toggle.on = !*toggle.on;
+            *button.on = !*button.on;
         }
+        let state = usize::from(*button.on);
+        let lit = button.highlight && *button.on;
         if response.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
 
-        let background = match (*toggle.on, response.hovered()) {
+        let background = match (lit, response.hovered()) {
             (true, hovered) => Some(ON.gamma_multiply(if hovered { 0.35 } else { 0.25 })),
             (false, true) => Some(Color32::from_white_alpha(25)),
             (false, false) => None,
@@ -71,11 +99,11 @@ pub fn show(ui: &egui::Ui, painter: &egui::Painter, canvas: Rect, toggles: &mut 
         if let Some(background) = background {
             painter.rect_filled(rect, CornerRadius::same((SIZE / 2.0) as u8), background);
         }
-        let color = if *toggle.on { ON } else { palette::WHITE };
+        let color = if lit { ON } else { palette::WHITE };
         painter.text(
             rect.center(),
             egui::Align2::CENTER_CENTER,
-            toggle.icon,
+            button.icons[state],
             icons::outline::font(ICON_SIZE),
             color,
         );

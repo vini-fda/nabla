@@ -14,7 +14,7 @@ use ship2d_optimization::registry::StoredSolution;
 use ship2d_optimization::suite;
 
 use crate::camera::{Camera, Vec3};
-use crate::canvas_buttons::{self, Toggle};
+use crate::canvas_buttons::{self, Button};
 use crate::formula::{self, Formula};
 use crate::gizmo::ViewGizmo;
 use crate::grid::{GridStyle, draw_grid};
@@ -183,6 +183,8 @@ pub struct ViewerApp {
     gizmo: ViewGizmo,
     /// Show the navigation gizmo.
     show_gizmo: bool,
+    /// Dragging the canvas orbits the camera, rather than panning.
+    drag_orbits: bool,
     show_velocity: bool,
     show_acceleration: bool,
     show_path: bool,
@@ -244,6 +246,7 @@ impl Default for ViewerApp {
             camera: Camera::default(),
             gizmo: ViewGizmo::default(),
             show_gizmo: true,
+            drag_orbits: false,
             show_velocity: true,
             show_acceleration: true,
             show_path: true,
@@ -863,7 +866,7 @@ impl ViewerApp {
 
     fn user_inputs_ui(ui: &mut egui::Ui) {
         ui.heading("User inputs");
-        ui.label("Drag: pan   Scroll: zoom");
+        ui.label("Drag: pan (or rotate: arrows button)   Scroll: zoom");
         ui.label("Drag the axes: orbit   Click an axis: view along it");
         ui.label("Space: play/pause   Left / Right: +/-dt");
         ui.label("F: follow the ship (or the rocket button)");
@@ -1042,10 +1045,16 @@ impl ViewerApp {
         self.gizmo
             .input(ui, corner, &mut self.camera, self.show_gizmo);
 
-        // Pan with primary drag (disabled while following the ship, since
-        // the center is locked to the ship's position each frame).
-        if !self.follow_ship && response.dragged_by(egui::PointerButton::Primary) {
-            self.camera.pan_by_screen(response.drag_delta());
+        // Primary drag orbits the camera or pans, as the pan/rotate button says. Panning is
+        // disabled while following the ship, since the center is locked to the ship's
+        // position each frame.
+        if response.dragged_by(egui::PointerButton::Primary) {
+            if self.drag_orbits {
+                self.gizmo.orbit(&mut self.camera, response.drag_delta());
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+            } else if !self.follow_ship {
+                self.camera.pan_by_screen(response.drag_delta());
+            }
         }
 
         // Zoom with scroll/pinch while the cursor is over the canvas.
@@ -1076,16 +1085,27 @@ impl ViewerApp {
             &painter,
             corner,
             &mut [
-                Toggle {
-                    icon: icons::outline::SPHERE,
-                    on: &mut self.show_gizmo,
-                    tooltip: "Show the navigation gizmo",
-                },
-                Toggle {
-                    icon: icons::outline::ROCKET_LAUNCH,
-                    on: &mut self.follow_ship,
-                    tooltip: "Follow the ship (F)",
-                },
+                Button::toggle(
+                    icons::outline::SPHERE,
+                    &mut self.show_gizmo,
+                    "Show the navigation gizmo",
+                ),
+                Button::toggle(
+                    icons::outline::ROCKET_LAUNCH,
+                    &mut self.follow_ship,
+                    "Follow the ship (F)",
+                ),
+                Button::switch(
+                    [
+                        icons::outline::ARROWS_OUT_CARDINAL,
+                        icons::outline::ARROW_COUNTER_CLOCKWISE,
+                    ],
+                    &mut self.drag_orbits,
+                    [
+                        "Dragging the canvas pans. Click to rotate instead",
+                        "Dragging the canvas rotates the camera. Click to pan instead",
+                    ],
+                ),
             ],
         );
     }

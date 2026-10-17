@@ -104,13 +104,7 @@ impl ViewGizmo {
             self.active = response.hovered() || response.dragged();
 
             if response.dragged() {
-                self.target = None;
-                let delta = response.drag_delta() * ORBIT_PER_PIXEL;
-                camera.orbit = Orbit {
-                    azimuth: camera.orbit.azimuth - delta.x,
-                    elevation: camera.orbit.elevation + delta.y,
-                }
-                .normalized();
+                self.orbit(camera, response.drag_delta());
                 ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
             } else if self.hovered.is_some() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -124,6 +118,18 @@ impl ViewGizmo {
             }
         }
         self.animate(ui.ctx(), camera);
+    }
+
+    /// Orbits `camera` by a drag of `delta` (screen pixels), on the gizmo or on the canvas: the
+    /// scene turns as if grabbed. Stops any turn under way.
+    pub fn orbit(&mut self, camera: &mut Camera, delta: Vec2) {
+        self.target = None;
+        let delta = delta * ORBIT_PER_PIXEL;
+        camera.orbit = Orbit {
+            azimuth: camera.orbit.azimuth - delta.x,
+            elevation: camera.orbit.elevation + delta.y,
+        }
+        .normalized();
     }
 
     /// Turns `camera` toward the target view, if any.

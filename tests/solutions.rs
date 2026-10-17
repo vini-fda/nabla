@@ -1,7 +1,7 @@
 //! Every stored solution solves every case, and its index entry is up to date.
 
 use ship2d_optimization::harness::source_hash;
-use ship2d_optimization::{Controller, db, eval, suite};
+use ship2d_optimization::{Controller, db, eval};
 
 fn check_solution<C: Controller>(name: &str, src: &str) {
     let report = eval::evaluate::<C>();
@@ -17,11 +17,6 @@ fn check_solution<C: Controller>(name: &str, src: &str) {
         entry.source_hash,
         source_hash(src),
         "{name} changed since it was scored"
-    );
-    assert_eq!(
-        entry.suite_version,
-        suite::SUITE_VERSION,
-        "{name} was scored on another suite"
     );
     assert_eq!(
         Some(entry.score),

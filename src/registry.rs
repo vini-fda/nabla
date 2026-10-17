@@ -2,12 +2,11 @@
 //!
 //! `build.rs` generates one module per `solutions/<name>.rs` plus the table [`SOLUTIONS`], and
 //! embeds `solutions/index.tsv`. Use [`valid`] to get the solutions whose index entry matches
-//! their source and the current suite.
+//! their source.
 
 use crate::db::{Entry, parse_index};
 use crate::harness::source_hash;
 use crate::problem::{Case, Trajectory};
-use crate::suite::SUITE_VERSION;
 
 /// A stored solution, compiled in.
 pub struct StoredSolution {
@@ -19,16 +18,14 @@ pub struct StoredSolution {
 
 include!(concat!(env!("OUT_DIR"), "/registry.rs"));
 
-/// Stored solutions whose index entry exists, matches their source hash and was scored on the
-/// current suite version, best score first.
+/// Stored solutions whose index entry exists and matches their source hash, best score first.
 pub fn valid() -> Vec<(&'static StoredSolution, Entry)> {
     let index = parse_index(INDEX).unwrap_or_default();
     let mut valid: Vec<_> = SOLUTIONS
         .iter()
         .filter_map(|sol| {
             let entry = index.iter().find(|e| e.name == sol.name)?;
-            (entry.suite_version == SUITE_VERSION && entry.source_hash == source_hash(sol.source))
-                .then(|| (sol, entry.clone()))
+            (entry.source_hash == source_hash(sol.source)).then(|| (sol, entry.clone()))
         })
         .collect();
     valid.sort_by_key(|(_, e)| (e.score, e.name.clone()));

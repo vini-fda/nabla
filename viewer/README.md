@@ -91,7 +91,7 @@ Every push to `main` deploys the web build to GitHub Pages (`.github/workflows/p
 
 ## Development
 
-See the repository root: `check.sh` runs the same checks as CI, plus the web build, and `.githooks/pre-commit` runs the format and lint checks before each commit (enable it with `git config core.hooksPath .githooks`).
+See the repository root: `cargo xtask check` runs the same checks as CI, plus the web build, and `.githooks/pre-commit` runs the format and lint checks before each commit (enable it with `git config core.hooksPath .githooks`).
 
 ## Acknowledgments
 

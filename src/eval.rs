@@ -3,9 +3,8 @@
 
 use crate::model::{Control, State};
 use crate::problem::{Case, Controller, Outcome, Trajectory, run, simulate};
-use crate::suite;
+use crate::{parallel, suite};
 use std::fmt::Write;
-use std::thread;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SuiteKind {
@@ -75,7 +74,7 @@ impl Report {
 
     /// Serialize as one marked, tab-separated line per case, plus header and footer lines.
     pub fn to_text(&self) -> String {
-        let mut out = format!("{MARK}\tbegin\t{}\n", suite::SUITE_VERSION);
+        let mut out = format!("{MARK}\tbegin\n");
         for r in &self.results {
             let detail = outcome_fields(&r.outcome);
             writeln!(
@@ -95,12 +94,8 @@ impl Report {
         let mut lines = text
             .lines()
             .filter_map(|l| l.strip_prefix(MARK)?.strip_prefix('\t'));
-        let version = format!("begin\t{}", suite::SUITE_VERSION);
-        if lines.next() != Some(version.as_str()) {
-            return Err(format!(
-                "missing or mismatched header (expected suite v{})",
-                suite::SUITE_VERSION
-            ));
+        if lines.next() != Some("begin") {
+            return Err("missing header".to_string());
         }
         let mut results = Vec::new();
         for line in lines {
@@ -161,7 +156,7 @@ fn parse_outcome(f: &[&str]) -> Option<Outcome> {
 /// Serialize a trajectory as marked, tab-separated lines: one `s` line per state, one `u` line
 /// per control, then the outcome. `f64` values round-trip exactly.
 pub fn trajectory_to_text(t: &Trajectory) -> String {
-    let mut out = format!("{MARK}\ttrace\t{}\n", suite::SUITE_VERSION);
+    let mut out = format!("{MARK}\ttrace\n");
     for s in &t.states {
         writeln!(
             out,
@@ -183,12 +178,8 @@ pub fn parse_trajectory(text: &str) -> Result<Trajectory, String> {
     let mut lines = text
         .lines()
         .filter_map(|l| l.strip_prefix(MARK)?.strip_prefix('\t'));
-    let header = format!("trace\t{}", suite::SUITE_VERSION);
-    if lines.next() != Some(header.as_str()) {
-        return Err(format!(
-            "missing or mismatched trace header (expected suite v{})",
-            suite::SUITE_VERSION
-        ));
+    if lines.next() != Some("trace") {
+        return Err("missing trace header".to_string());
     }
     let (mut states, mut controls, mut outcome) = (Vec::new(), Vec::new(), None);
     for line in lines {
@@ -234,41 +225,28 @@ pub fn parse_trajectory(text: &str) -> Result<Trajectory, String> {
     Err("trace truncated (no end line)".to_string())
 }
 
-/// Run `C` on every case, in parallel. Each case gets its own controller instance.
-fn run_all<C: Controller>(cases: &[Case]) -> Vec<Outcome> {
-    let workers = thread::available_parallelism().map_or(1, |n| n.get());
-    let chunk = cases.len().div_ceil(workers).max(1);
-    thread::scope(|scope| {
-        let handles: Vec<_> = cases
-            .chunks(chunk)
-            .map(|chunk| scope.spawn(move || chunk.iter().map(run::<C>).collect::<Vec<_>>()))
-            .collect();
-        handles
-            .into_iter()
-            .flat_map(|h| h.join().expect("evaluation thread panicked"))
-            .collect()
-    })
-}
-
-/// Evaluate `C` on the standard and holdout suites.
+/// Evaluate `C` on the standard and holdout suites. Every case gets its own controller
+/// instance, and all cases of both suites run in parallel ([`parallel::map`]).
 pub fn evaluate<C: Controller>() -> Report {
-    let mut results = Vec::new();
-    for (kind, cases) in [
-        (SuiteKind::Standard, suite::standard()),
-        (SuiteKind::Holdout, suite::holdout()),
-    ] {
-        let outcomes = run_all::<C>(&cases);
-        results.extend(
-            cases
+    let cases: Vec<(SuiteKind, Case)> = suite::standard()
+        .into_iter()
+        .map(|case| (SuiteKind::Standard, case))
+        .chain(
+            suite::holdout()
                 .into_iter()
-                .zip(outcomes)
-                .map(|(case, outcome)| CaseResult {
-                    suite: kind,
-                    name: case.name,
-                    outcome,
-                }),
-        );
-    }
+                .map(|case| (SuiteKind::Holdout, case)),
+        )
+        .collect();
+    let outcomes = parallel::map(&cases, |(_, case)| run::<C>(case));
+    let results = cases
+        .into_iter()
+        .zip(outcomes)
+        .map(|((suite, case), outcome)| CaseResult {
+            suite,
+            name: case.name,
+            outcome,
+        })
+        .collect();
     Report { results }
 }
 

@@ -5,14 +5,12 @@
 //! * [`holdout`]: more random cases with a different seed. They are not scored, but must be
 //!   solved too, so that a solution cannot just memorize the standard cases.
 //!
-//! Changing any case changes scores, so bump [`SUITE_VERSION`] whenever this file changes.
+//! There is one version of the suites: the current one. Changing a case, [`H`], [`MAX_STEPS`] or
+//! [`TOLERANCE`] changes scores, so resubmit the stored solutions afterwards (see `TASK.md`).
 
 use crate::model::{Params, State};
 use crate::problem::{Case, Goal, Task, Tolerance};
 use std::f64::consts::PI;
-
-/// Version of the suites. Scores are only comparable between equal versions.
-pub const SUITE_VERSION: u32 = 2;
 
 /// Sampling period used by every case.
 pub const H: f64 = 0.02;

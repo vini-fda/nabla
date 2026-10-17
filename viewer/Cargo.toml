@@ -12,7 +12,7 @@ targets = ["x86_64-unknown-linux-gnu", "wasm32-unknown-unknown"]
 
 [dependencies]
 egui = "0.37.0"
-egui_plot = "0.37.0"
+egui_plot = { git = "https://github.com/emilk/egui_plot", rev = "aead78045a529884eac5ad267251caa73bd832aa" }
 eframe = { version = "0.37.0", features = ["wgpu"] }
 log = "0.4.34"
 ship2d_optimization = { path = "..", features = ["registry"] }

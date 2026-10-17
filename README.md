@@ -14,13 +14,13 @@ See [`TASK.md`](TASK.md) for the rules, the interface a solution implements, and
 **Web app:** https://vini-fda.github.io/ship2d_optimization/ replays the stored solutions on every test case in continuous time, with plots, a timeline and the solution's source. The same app runs natively ([`viewer/`](viewer)), where it can also compile and replay any solution file, recompiling when you save it.
 
 ```sh
-cargo run --release -- eval path/to/solution.rs   # score a solution
-cargo run --release -- leaderboard                # stored solutions, best first
-cargo test --workspace --release                  # model, viewer and every stored solution
-cargo run --release -p ship2d_graphics            # the viewer, natively
+cargo xtask eval path/to/solution.rs     # score a solution (or several at once)
+cargo xtask leaderboard                  # stored solutions, best first
+cargo test --workspace --release         # model, viewer and every stored solution
+cargo run --release -p ship2d_graphics   # the viewer, natively
 ```
 
-`./check.sh` runs the same checks as CI, plus the web build. Every push to `main` deploys the web app.
+Development tasks are in the `xtask` crate (`cargo xtask help`). `cargo xtask check` runs the same checks as CI, plus the web build. Every push to `main` deploys the web app.
 
 ## Releasing
 

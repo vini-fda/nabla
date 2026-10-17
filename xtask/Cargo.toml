@@ -8,6 +8,7 @@ description = "Development tasks for this repository: `cargo xtask help`."
 [dependencies]
 anyhow = "1.0.104"
 xshell = "0.2.7"
+ship2d_optimization = { path = ".." }
 
 [lints]
 workspace = true

@@ -1,4 +1,4 @@
-name	score	max_steps	suite_version	source_hash
-flip_and_burn_tuned	58754	5037	2	99911162253befc8
-tolerance_aware	61911	12879	2	1bb49d031b0620d4
-flip_and_burn	95489	8168	2	1e092e0bc1537ab9
+name	score	max_steps	source_hash
+flip_and_burn_tuned	58754	5037	99911162253befc8
+tolerance_aware	61911	12879	1bb49d031b0620d4
+flip_and_burn	95489	8168	1e092e0bc1537ab9

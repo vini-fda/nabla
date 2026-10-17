@@ -2,6 +2,7 @@
 //! pattern: <https://github.com/matklad/cargo-xtask>). Run `cargo xtask help`.
 
 mod bundle;
+mod solutions;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -12,18 +13,32 @@ use xshell::{Shell, cmd};
 const HELP: &str = "\
 Usage: cargo xtask <task> [options]
 
-Tasks:
-  bundle [--profile <name>] [--target <triple>] [--flat-icon]
-      Build the viewer and wrap it in a macOS app bundle, `Nabla.app`, next to the binary
-      (`target/release/Nabla.app` by default). macOS only; needs Xcode, for `actool`.
-      --flat-icon skips the Liquid Glass icon (Assets.car) and uses only the flat .icns.
+Solutions (see TASK.md):
+  eval <solution.rs>...
+      Compile solutions and evaluate them on both suites. One file: a table of every case,
+      then the score. Several: they compile in parallel, then get one line each, best first.
+  submit <name> <solution.rs>
+      Evaluate a solution and, if it solves every case, store it as `solutions/<name>.rs`.
+  leaderboard
+      The stored solutions, best first.
+  verify
+      Re-evaluate every stored solution and check its entry in `solutions/index.tsv`.
 
+Viewer:
   run [--profile <name>] [--target <triple>] [-- <viewer arguments>...]
       Build and run the viewer. On macOS it runs inside the app bundle, so the Dock shows the
       Liquid Glass icon; an unchanged bundle is only refreshed with the new binary.
       `cargo viewer` is `cargo xtask run --profile fast`.
+  bundle [--profile <name>] [--target <triple>] [--flat-icon]
+      Build the viewer and wrap it in a macOS app bundle, `Nabla.app`, next to the binary
+      (`target/release/Nabla.app` by default). macOS only; needs Xcode, for `actool`.
+      --flat-icon skips the Liquid Glass icon (Assets.car) and uses only the flat .icns.
+  The profile defaults to `release`.
 
-The profile defaults to `release`.
+Repository:
+  check
+      The checks CI runs (.github/workflows/ci.yml) for this platform, plus the web build,
+      which needs `trunk`.
 ";
 
 /// The options shared by every task: which build of the viewer to use.
@@ -35,7 +50,7 @@ struct Build {
 impl Build {
     /// `cargo build` the viewer, and return the path of its binary.
     fn run(&self, sh: &Shell) -> Result<PathBuf> {
-        let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
+        let cargo = cargo();
         let profile = &self.profile;
         let target = self.target.as_ref().map(|t| ["--target", t]);
         let target = target.iter().flatten();
@@ -71,16 +86,42 @@ fn target_dir() -> PathBuf {
         .map_or_else(|| project_root().join("target"), PathBuf::from)
 }
 
+fn cargo() -> String {
+    std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned())
+}
+
 fn main() -> Result<ExitCode> {
     let mut args = std::env::args().skip(1);
     let task = args.next().unwrap_or_default();
+    let args: Vec<String> = args.collect();
 
+    let sh = Shell::new()?;
+    sh.change_dir(project_root());
+    match (task.as_str(), args.as_slice()) {
+        ("eval", paths) => solutions::eval(paths)?,
+        ("submit", [name, path]) => solutions::submit(name, path)?,
+        ("leaderboard", []) => solutions::leaderboard()?,
+        ("verify", []) => solutions::verify()?,
+        ("check", []) => check(&sh)?,
+        ("bundle" | "run", _) => return viewer(&sh, &task, args),
+        ("help" | "--help" | "-h", _) => print_help(),
+        ("submit" | "leaderboard" | "verify" | "check", _) => {
+            bail!("wrong arguments for `{task}`\n\n{HELP}")
+        }
+        _ => bail!("unknown task `{task}`\n\n{HELP}"),
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// The `bundle` and `run` tasks.
+fn viewer(sh: &Shell, task: &str, args: Vec<String>) -> Result<ExitCode> {
     let mut build = Build {
         profile: "release".to_owned(),
         target: None,
     };
     let mut flat_icon = false;
     let mut passthrough = Vec::new();
+    let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--profile" => build.profile = args.next().context("--profile needs a name")?,
@@ -91,30 +132,62 @@ fn main() -> Result<ExitCode> {
         }
     }
 
-    let sh = Shell::new()?;
-    sh.change_dir(project_root());
-    match task.as_str() {
-        "bundle" => {
-            if !cfg!(target_os = "macos") {
-                bail!("app bundles are macOS only");
-            }
-            let bin = build.run(&sh)?;
-            bundle::create(&sh, &bin, flat_icon)?;
-            Ok(ExitCode::SUCCESS)
-        }
-        "run" => {
-            let mut bin = build.run(&sh)?;
-            if cfg!(target_os = "macos") {
-                bin = bundle::refresh(&sh, &bin)?;
-            }
-            run(&bin, &passthrough)
-        }
-        "help" | "--help" | "-h" => {
-            print_help();
-            Ok(ExitCode::SUCCESS)
-        }
-        _ => bail!("unknown task `{task}`\n\n{HELP}"),
+    if task == "bundle" && !cfg!(target_os = "macos") {
+        bail!("app bundles are macOS only");
     }
+    let mut bin = build.run(sh)?;
+    if task == "bundle" {
+        bundle::create(sh, &bin, flat_icon)?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    if cfg!(target_os = "macos") {
+        bin = bundle::refresh(sh, &bin)?;
+    }
+    run(&bin, &passthrough)
+}
+
+/// The checks of `.github/workflows/ci.yml` for this platform, plus the web build.
+fn check(sh: &Shell) -> Result<()> {
+    let cargo = cargo();
+    let _rustflags = sh.push_env("RUSTFLAGS", "-D warnings");
+    let _rustdocflags = sh.push_env("RUSTDOCFLAGS", "-D warnings");
+    cmd!(sh, "{cargo} fmt --all -- --check").run()?;
+    cmd!(
+        sh,
+        "{cargo} doc --locked --quiet --workspace --no-deps --document-private-items"
+    )
+    .run()?;
+    cmd!(
+        sh,
+        "{cargo} clippy --locked --quiet --workspace --all-targets"
+    )
+    .run()?;
+    cmd!(
+        sh,
+        "{cargo} clippy --locked --quiet -p ship2d_graphics --lib --target wasm32-unknown-unknown"
+    )
+    .run()?;
+    // As in CI: release mode, with debug assertions and overflow checks on for this
+    // workspace's crates.
+    let checks = ["ship2d_optimization", "ship2d_graphics"]
+        .iter()
+        .flat_map(|package| {
+            ["debug-assertions", "overflow-checks"].map(|setting| {
+                [
+                    "--config".to_owned(),
+                    format!("profile.release.package.{package}.{setting}=true"),
+                ]
+            })
+        })
+        .flatten();
+    cmd!(
+        sh,
+        "{cargo} test --locked --quiet --workspace --release {checks...}"
+    )
+    .run()?;
+    let _viewer = sh.push_dir("viewer");
+    cmd!(sh, "trunk build --release").run()?;
+    Ok(())
 }
 
 #[expect(clippy::print_stdout, reason = "the help text is the task's output")]

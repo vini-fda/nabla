@@ -5,11 +5,10 @@
 
 use crate::eval::Report;
 use crate::harness::{crate_dir, source_hash};
-use crate::suite::SUITE_VERSION;
 use std::io;
 use std::path::PathBuf;
 
-const HEADER: &str = "name\tscore\tmax_steps\tsuite_version\tsource_hash";
+const HEADER: &str = "name\tscore\tmax_steps\tsource_hash";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
@@ -18,7 +17,6 @@ pub struct Entry {
     pub score: usize,
     /// Largest step count over the standard suite.
     pub max_steps: usize,
-    pub suite_version: u32,
     pub source_hash: String,
 }
 
@@ -63,15 +61,14 @@ pub fn parse_index(text: &str) -> io::Result<Vec<Entry>> {
         .filter(|l| !l.trim().is_empty())
         .map(|line| {
             let f: Vec<&str> = line.split('\t').collect();
-            if f.len() != 5 {
+            if f.len() != 4 {
                 return Err(bad(line));
             }
             Ok(Entry {
                 name: f[0].to_string(),
                 score: f[1].parse().map_err(|_| bad(line))?,
                 max_steps: f[2].parse().map_err(|_| bad(line))?,
-                suite_version: f[3].parse().map_err(|_| bad(line))?,
-                source_hash: f[4].to_string(),
+                source_hash: f[3].to_string(),
             })
         })
         .collect()
@@ -82,8 +79,8 @@ fn save(entries: &mut [Entry]) -> io::Result<()> {
     let mut text = format!("{HEADER}\n");
     for e in entries.iter() {
         text += &format!(
-            "{}\t{}\t{}\t{}\t{}\n",
-            e.name, e.score, e.max_steps, e.suite_version, e.source_hash
+            "{}\t{}\t{}\t{}\n",
+            e.name, e.score, e.max_steps, e.source_hash
         );
     }
     std::fs::write(index_path(), text)
@@ -106,7 +103,6 @@ pub fn submit(name: &str, src: &str, report: &Report) -> Result<Entry, String> {
         name: name.to_string(),
         score,
         max_steps,
-        suite_version: SUITE_VERSION,
         source_hash: source_hash(src),
     };
     let io = |e: io::Error| e.to_string();

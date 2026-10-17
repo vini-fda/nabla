@@ -57,7 +57,7 @@ pub fn refresh(sh: &Shell, bin: &Path) -> Result<PathBuf> {
 }
 
 /// Whether the bundle's Info.plist is newer than everything it was made from: the icon, the
-/// viewer's version, and this program.
+/// viewer's version, and this module, which lays the bundle out.
 fn is_current(app: &Path) -> Result<bool> {
     let Ok(made) = fs::metadata(app.join("Contents/Info.plist")).and_then(|m| m.modified()) else {
         return Ok(false);
@@ -65,7 +65,7 @@ fn is_current(app: &Path) -> Result<bool> {
     let root = project_root();
     let mut inputs = vec![
         root.join("viewer/Cargo.toml"),
-        std::env::current_exe().context("finding xtask's own executable")?,
+        root.join("xtask/src/bundle.rs"),
     ];
     collect_files(&root.join("viewer/macos/nabla_macOS.icon"), &mut inputs)?;
     for input in inputs {

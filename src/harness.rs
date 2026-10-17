@@ -1,14 +1,19 @@
 //! Compile a solution given as Rust source and evaluate it in a separate process.
 //!
 //! The source must define `pub struct Solution` implementing [`crate::Controller`]. It is written
-//! into a throwaway cargo project under `target/candidates/<hash>/` that depends on this crate,
-//! built in release mode (all candidates share one target directory, so this crate is only
-//! compiled once), and run under a time limit. The candidate prints its report, or the
+//! into a cargo project of its own, `target/candidates/<hash>/`, that depends on this crate, built
+//! in release mode, and run under a time limit. The candidate prints its report, or the
 //! trajectory of one case, on stdout.
+//!
+//! Every candidate project has its own target directory, so builds of different sources never
+//! wait for each other's cargo lock: any number of evaluations can run at once, in one process
+//! ([`build_sources`]) or in many. The price is that each new source also compiles this crate,
+//! about a second. An unchanged source is not rebuilt.
 //!
 //! The candidate runs as ordinary native code with no sandbox: only evaluate sources you trust.
 
 use crate::eval::{Report, parse_trajectory};
+use crate::parallel;
 use crate::problem::Trajectory;
 use std::fmt;
 use std::io::{self, Read};
@@ -128,36 +133,46 @@ pub struct Candidate {
     pub binary: PathBuf,
 }
 
+/// Write `contents` to `path` unless it already holds exactly that, so that an unchanged file
+/// keeps its modification time (no rebuild) and is never rewritten under a concurrent build.
+fn write_if_changed(path: &Path, contents: &str) -> io::Result<()> {
+    if std::fs::read(path).is_ok_and(|old| old == contents.as_bytes()) {
+        return Ok(());
+    }
+    std::fs::write(path, contents)
+}
+
 /// Compile `src` into a [`Candidate`]. Unchanged sources reuse the previous build.
 ///
 /// Needs `cargo`. Without this crate's source tree (a released binary), the first build
 /// downloads this crate's version from [`REPOSITORY`].
 pub fn build_source(src: &str) -> Result<Candidate, HarnessError> {
-    let hash = source_hash(src);
-    let target = work_dir(&crate_dir());
-    let project = target.join("candidates").join(&hash);
-    let package = format!("candidate_{hash}");
+    let project = work_dir(&crate_dir())
+        .join("candidates")
+        .join(source_hash(src));
     std::fs::create_dir_all(project.join("src"))?;
-    std::fs::write(
-        project.join("Cargo.toml"),
-        format!(
-            "[package]\nname = \"{package}\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n\
+    write_if_changed(
+        &project.join("Cargo.toml"),
+        &format!(
+            "[package]\nname = \"candidate\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n\
              [dependencies]\nship2d_optimization = {}\n\n[workspace]\n",
             dependency(&crate_dir())
         ),
     )?;
-    std::fs::write(
-        project.join("src/main.rs"),
+    write_if_changed(
+        &project.join("src/main.rs"),
         "mod solution;\n\nfn main() {\n    \
          ship2d_optimization::eval::candidate_main::<solution::Solution>();\n}\n",
     )?;
-    std::fs::write(project.join("src/solution.rs"), src)?;
+    write_if_changed(&project.join("src/solution.rs"), src)?;
 
-    let shared_target = target.join("candidates-target");
+    // The project's own target directory: see the module documentation.
+    let target = project.join("target");
     let build = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
         .args(["build", "--release", "--quiet", "--manifest-path"])
         .arg(project.join("Cargo.toml"))
-        .env("CARGO_TARGET_DIR", &shared_target)
+        .arg("--target-dir")
+        .arg(&target)
         .output()
         .map_err(|e| match e.kind() {
             io::ErrorKind::NotFound => HarnessError::Compile(
@@ -173,10 +188,15 @@ pub fn build_source(src: &str) -> Result<Candidate, HarnessError> {
         ));
     }
     Ok(Candidate {
-        binary: shared_target
+        binary: target
             .join("release")
-            .join(format!("{package}{}", std::env::consts::EXE_SUFFIX)),
+            .join(format!("candidate{}", std::env::consts::EXE_SUFFIX)),
     })
+}
+
+/// [`build_source`] for every source, in parallel. The results are in the order of `sources`.
+pub fn build_sources(sources: &[&str]) -> Vec<Result<Candidate, HarnessError>> {
+    parallel::map(sources, |src| build_source(src))
 }
 
 impl Candidate {

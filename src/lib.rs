@@ -6,6 +6,7 @@
 //! * [`problem`]: target set, the [`Controller`] interface and the simulation loop.
 //! * [`suite`]: the test cases.
 //! * [`eval`]: evaluation on both suites and the report format.
+//! * [`parallel`]: the lock-free parallel map that evaluations and batch builds run on.
 //! * [`harness`]: compile and evaluate a solution given as Rust source.
 //! * [`db`]: the database of solutions.
 //! * `registry` (feature `registry`): every stored solution, compiled in, for tools such as the
@@ -18,6 +19,7 @@ pub mod db;
 pub mod eval;
 pub mod harness;
 pub mod model;
+pub mod parallel;
 pub mod problem;
 #[cfg(feature = "registry")]
 pub mod registry;

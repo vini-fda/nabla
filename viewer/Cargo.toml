@@ -3,7 +3,7 @@ name = "ship2d_graphics"
 version = "0.4.1"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-include = ["LICENSE-APACHE", "LICENSE-MIT", "**/*.rs", "Cargo.toml", "assets/fonts/*"]
+include = ["LICENSE-APACHE", "LICENSE-MIT", "**/*.rs", "Cargo.toml", "assets/fonts/*", "assets/formulas/*"]
 rust-version = "1.99"
 
 [package.metadata.docs.rs]
@@ -33,9 +33,3 @@ web-sys = "0.3.106"             # to access the DOM (to hide the loading text)
 
 [lints]
 workspace = true
-
-[build-dependencies]
-typst = "0.15.1"
-typst-assets = { version = "0.15.1", features = ["fonts"] }
-typst-layout = "0.15.1"
-typst-svg = "0.15.1"

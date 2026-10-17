@@ -18,16 +18,20 @@
 //! downstream with the gas that carries it, like the eddies of a real jet, while the gas
 //! expands, cools and fades.
 //!
-//! Particles are soft sprites added onto the canvas (egui colors with zero alpha add up),
-//! so where many overlap, near a nozzle, they saturate toward white.
+//! Particles are soft sprites added onto the canvas (colors with zero alpha add up), so where
+//! many overlap, near a nozzle, they saturate toward white. They are drawn after the 3D ship
+//! and depth tested against it (see [`crate::sprites`]), so the hull hides the parts of the
+//! plumes behind it, and only those, from whichever side the camera looks.
 //!
 //! Lengths are in units of the ship's half length `L`, so the plumes scale with the ship.
 
-use egui::{Color32, Pos2, Vec2};
+use egui::{Color32, Vec2};
 use ship2d_optimization::State;
 
-use crate::camera::Camera;
+use crate::camera::{Camera, Vec3};
 use crate::replay::Replay;
+use crate::ship3d::{DepthMap, Image};
+use crate::sprites::{SpriteBatch, SpriteRenderer};
 
 /// How one kind of jet looks.
 struct Jet {
@@ -97,147 +101,217 @@ const RCS: Jet = Jet {
 const MAIN_NOZZLE: f32 = 0.98;
 
 /// The reaction control thrusters, in model coordinates (`L`; x to the ship's right, y to
-/// its nose) as seen from above, and whether each is on the visible edge rather than under
-/// the hull. The tips are the corners of equilateral triangles: of circumradius 0.14 at the
-/// nose and 0.38 at the tail, one corner under the hull and two at +-30 degrees above it.
-const RCS_NOZZLES: [(f32, f32, bool); 6] = [
-    (0.0, 0.92, false),
-    (0.121, 0.92, true),
-    (-0.121, 0.92, true),
-    (0.0, -0.96, false),
-    (0.329, -0.96, true),
-    (-0.329, -0.96, true),
+/// its nose, z up out of the plane). The tips are the corners of equilateral triangles: of
+/// circumradius 0.14 at the nose and 0.38 at the tail, one corner under the hull and two at
+/// +-30 degrees above it.
+const RCS_NOZZLES: [(f32, f32, f32); 6] = [
+    (0.0, 0.92, -0.14),
+    (0.121, 0.92, 0.07),
+    (-0.121, 0.92, 0.07),
+    (0.0, -0.96, -0.38),
+    (0.329, -0.96, 0.19),
+    (-0.329, -0.96, 0.19),
 ];
 
-/// A nozzle at an instant: where it is (world), and which way its exhaust goes.
+/// How far round the hull from the viewer a tip may be, as the cosine of the angle between
+/// its direction from the ship's axis and the view, for its flash to show: a little past
+/// the silhouette.
+const RCS_MIN_FACING: f32 = -0.1;
+
+/// How far toward the viewer the glows at the nozzles are drawn, in `L`, past the hull
+/// right around them: the main nozzle's over the engine bell and the tail, as when seen from
+/// above, and the reaction control ones off the hull's tips. The hull farther in front still
+/// hides them.
+const MAIN_GLOW_LIFT: f32 = 0.45;
+const RCS_GLOW_LIFT: f32 = 0.1;
+
+/// The least a sprite is foreshortened along its axis, as a fraction of its length, so the
+/// round cross-section of a jet seen end on still shows.
+const MIN_FORESHORTENING: f32 = 0.35;
+
+/// A nozzle at an instant: where it is (world), and which way its exhaust goes (in the
+/// plane).
 #[derive(Clone, Copy)]
 struct Nozzle {
     position: Vec2,
+    /// Height above the plane.
+    z: f32,
+    /// Direction of the tip from the ship's axis, as a unit vector across it.
+    outward: Vec3,
     direction: Vec2,
 }
 
-/// The sprite texture, a soft round blob.
+impl Nozzle {
+    /// The world point at `p` in the plane of the nozzle's height.
+    fn at(&self, p: Vec2) -> Vec3 {
+        Vec3::new(p.x, p.y, self.z)
+    }
+}
+
+/// Draws the plumes, as soft sprites depth tested against the 3D ship.
 pub struct Plume {
-    sprite: egui::TextureHandle,
+    renderer: SpriteRenderer,
 }
 
 impl Plume {
-    pub fn new(ctx: &egui::Context) -> Self {
-        const SIZE: usize = 64;
+    /// Sets up the sprites' drawing in egui's render pass, as [`crate::ship3d::ShipRenderer::new`].
+    pub fn new(
+        render_state: &eframe::egui_wgpu::RenderState,
+        msaa_samples: u32,
+        depth_format: Option<eframe::wgpu::TextureFormat>,
+    ) -> Self {
+        // The sprite: a soft round blob, premultiplied.
+        const SIZE: u32 = 64;
         let pixels = (0..SIZE * SIZE)
-            .map(|i| {
+            .flat_map(|i| {
                 let (x, y) = ((i % SIZE) as f32, (i / SIZE) as f32);
                 let d = Vec2::new(x + 0.5, y + 0.5) / SIZE as f32 * 2.0 - Vec2::splat(1.0);
                 // Gaussian, cut off smoothly at the edge.
                 let r2 = d.length_sq();
                 let a = (-4.0 * r2).exp() * (1.0 - r2).max(0.0);
-                let v = (a * 255.0).round() as u8;
-                Color32::from_rgba_premultiplied(v, v, v, v)
+                [(a * 255.0).round() as u8; 4]
             })
             .collect();
-        let image = egui::ColorImage::new([SIZE, SIZE], pixels);
+        let sprite = Image {
+            width: SIZE,
+            height: SIZE,
+            pixels,
+        };
         Self {
-            sprite: ctx.load_texture("plume_sprite", image, egui::TextureOptions::LINEAR),
+            renderer: SpriteRenderer::new(render_state, &sprite, msaa_samples, depth_format),
         }
     }
 
-    /// The jets at time `t`, from a ship of half length `half_length`. Paint them before
-    /// the ship, which covers their start.
-    pub fn paint_jets(
+    /// Paints the plumes at time `t`, from a ship of half length `half_length`, seen through
+    /// `camera` in `canvas`, with the ship's depth `depth`. Paint them after the ship, which
+    /// hides them where it is nearer.
+    pub fn paint(
         &self,
-        painter: &egui::Painter,
         camera: &Camera,
         canvas: egui::Rect,
         replay: &Replay,
         t: f64,
         half_length: f32,
-    ) {
-        let l = half_length;
-        let mut mesh = egui::Mesh::with_texture(self.sprite.id());
-
-        // The main jet's luminous body: a soft cone from the nozzle, and a brighter core.
-        let thrust = smoothed(t, |t| replay.thrust_fraction(t));
-        if thrust > 0.0 {
-            let [nozzle] = main_nozzle(&replay.state_at_time(t), l);
-            let (along, across) = screen_axes(-nozzle.direction, l * camera.scale);
-            let [hot, warm, _] = MAIN.colors;
-            for (distance, length, width, color, gain) in
-                [(0.9, 1.0, 0.28, warm, 0.22), (0.45, 0.5, 0.11, hot, 0.3)]
-            {
-                let center = nozzle.position + nozzle.direction * distance * l;
-                let center = camera.world_to_screen(center, canvas);
-                let color = additive(color, gain * thrust);
-                add_sprite(&mut mesh, center, along * length, across * width, color);
-            }
-        }
-
+        depth: &DepthMap,
+    ) -> Option<egui::PaintCallback> {
         let view = View {
             camera,
             canvas,
             replay,
             t,
-            l,
+            l: half_length,
+            depth,
         };
-        view.particles(
-            &mut mesh,
+        let mut batch = SpriteBatch::default();
+        view.jets(&mut batch);
+        view.nozzles(&mut batch);
+        self.renderer.paint_callback(canvas, batch)
+    }
+}
+
+/// What the plumes are drawn for: time `t` of `replay`, a ship of half length `l`, seen
+/// through `camera` in `canvas`, with the ship's depth `depth`.
+struct View<'a> {
+    camera: &'a Camera,
+    canvas: egui::Rect,
+    replay: &'a Replay,
+    t: f64,
+    l: f32,
+    depth: &'a DepthMap,
+}
+
+impl View<'_> {
+    /// Adds a sprite at world point `p`, drawn `lift` world units toward the viewer, with
+    /// half axes `a` and `b` on screen.
+    fn sprite(
+        &self,
+        batch: &mut SpriteBatch,
+        p: Vec3,
+        lift: f32,
+        a: Vec2,
+        b: Vec2,
+        color: Color32,
+    ) {
+        let center = self.camera.project(p, self.canvas);
+        batch.add(center, a, b, self.depth.depth(p, lift), color);
+    }
+
+    /// The jets.
+    fn jets(&self, batch: &mut SpriteBatch) {
+        let Self {
+            camera,
+            replay,
+            t,
+            l,
+            ..
+        } = *self;
+
+        // The main jet's luminous body: a soft cone from the nozzle, and a brighter core.
+        let thrust = smoothed(t, |t| replay.thrust_fraction(t));
+        if thrust > 0.0 {
+            let [nozzle] = main_nozzle(&replay.state_at_time(t), l);
+            let (along, across) = screen_axes(camera, -nozzle.direction, l);
+            let [hot, warm, _] = MAIN.colors;
+            for (distance, length, width, color, gain) in
+                [(0.9, 1.0, 0.28, warm, 0.22), (0.45, 0.5, 0.11, hot, 0.3)]
+            {
+                let center = nozzle.position + nozzle.direction * distance * l;
+                let color = additive(color, gain * thrust);
+                self.sprite(
+                    batch,
+                    nozzle.at(center),
+                    0.0,
+                    along * length,
+                    across * width,
+                    color,
+                );
+            }
+        }
+
+        self.particles(
+            batch,
             &MAIN,
             0,
             |t| replay.thrust_fraction(t),
             |s, _| main_nozzle(s, l),
         );
-        view.particles(
-            &mut mesh,
+        self.particles(
+            batch,
             &RCS,
             1,
             |t| replay.torque_fraction(t),
             |s, torque| rcs_nozzles(s, torque, l),
         );
-        painter.add(egui::Shape::mesh(mesh));
     }
 
-    /// The glows where the jets leave their nozzles at time `t`. Paint them over the ship.
-    pub fn paint_nozzles(
-        &self,
-        painter: &egui::Painter,
-        camera: &Camera,
-        canvas: egui::Rect,
-        replay: &Replay,
-        t: f64,
-        half_length: f32,
-    ) {
-        let l = half_length;
+    /// The glows where the jets leave their nozzles.
+    fn nozzles(&self, batch: &mut SpriteBatch) {
+        let Self {
+            camera,
+            replay,
+            t,
+            l,
+            ..
+        } = *self;
         let s = replay.state_at_time(t);
-        let mut mesh = egui::Mesh::with_texture(self.sprite.id());
 
         let thrust = smoothed(t, |t| replay.thrust_fraction(t));
         if thrust > 0.0 {
             let [nozzle] = main_nozzle(&s, l);
-            let center = camera.world_to_screen(nozzle.position, canvas);
-            let (along, across) = screen_axes(-nozzle.direction, l * camera.scale);
+            let p = nozzle.at(nozzle.position);
+            let lift = MAIN_GLOW_LIFT * l;
+            let (along, across) = screen_axes(camera, -nozzle.direction, l);
             let [hot, warm, _] = MAIN.colors;
-            // A wide dim halo, the glowing ring seen edge on, and its white-hot core.
-            add_sprite(
-                &mut mesh,
-                center,
-                along * 0.45,
-                across * 0.55,
-                additive(warm, 0.35 * thrust),
-            );
-            add_sprite(
-                &mut mesh,
-                center,
-                along * 0.09,
-                across * 0.28,
-                additive(hot, 0.8 * thrust),
-            );
             let white = [255.0, 255.0, 255.0];
-            add_sprite(
-                &mut mesh,
-                center,
-                along * 0.05,
-                across * 0.12,
-                additive(white, 0.9 * thrust),
-            );
+            // A wide dim halo, the glowing ring seen edge on, and its white-hot core.
+            for (length, width, color, gain) in [
+                (0.45, 0.55, warm, 0.35),
+                (0.09, 0.28, hot, 0.8),
+                (0.05, 0.12, white, 0.9),
+            ] {
+                let color = additive(color, gain * thrust);
+                self.sprite(batch, p, lift, along * length, across * width, color);
+            }
         }
 
         // A flash at each visible reaction control nozzle that is firing.
@@ -245,14 +319,14 @@ impl Plume {
         if torque != 0.0 {
             let strength = torque.abs();
             let r = 0.07 * l * camera.scale * strength.sqrt();
-            let nozzles = rcs_nozzles(&s, torque, l);
-            for (nozzle, &(_, _, visible)) in nozzles.iter().zip(&RCS_NOZZLES) {
-                if visible {
-                    let center = camera.world_to_screen(nozzle.position, canvas);
+            let toward_viewer = camera.orbit.toward_viewer();
+            for nozzle in rcs_nozzles(&s, torque, l) {
+                if nozzle.outward.dot(toward_viewer) > RCS_MIN_FACING {
                     let color = additive(RCS.colors[0], 0.9 * strength);
-                    add_sprite(
-                        &mut mesh,
-                        center,
+                    self.sprite(
+                        batch,
+                        nozzle.at(nozzle.position),
+                        RCS_GLOW_LIFT * l,
                         Vec2::new(r, 0.0),
                         Vec2::new(0.0, r),
                         color,
@@ -260,28 +334,15 @@ impl Plume {
                 }
             }
         }
-        painter.add(egui::Shape::mesh(mesh));
     }
-}
 
-/// What the particles are drawn for: time `t` of `replay`, a ship of half length `l`, seen
-/// through `camera` in `canvas`.
-struct View<'a> {
-    camera: &'a Camera,
-    canvas: egui::Rect,
-    replay: &'a Replay,
-    t: f64,
-    l: f32,
-}
-
-impl View<'_> {
-    /// Adds the live particles of `jet` to `mesh`. `strength` gives how hard the jet fires
+    /// Adds the live particles of `jet` to `batch`. `strength` gives how hard the jet fires
     /// at a time (-1 to 1; the sign is the nozzles' business), and `nozzles` where its
     /// nozzles are and which way they blow, given the state and strength then. `salt` keeps
     /// different jets' particles from sharing random numbers.
     fn particles<const N: usize>(
         &self,
-        mesh: &mut egui::Mesh,
+        batch: &mut SpriteBatch,
         jet: &Jet,
         salt: u64,
         strength: impl Fn(f64) -> f64,
@@ -289,10 +350,10 @@ impl View<'_> {
     ) {
         let Self {
             camera,
-            canvas,
             replay,
             t,
             l,
+            ..
         } = *self;
         let first = ((t - jet.lifetime) * jet.rate).ceil().max(0.0) as u64;
         let last = (t.min(replay.duration()) * jet.rate).floor().max(0.0) as u64;
@@ -333,10 +394,9 @@ impl View<'_> {
                     jet.gain * power.sqrt() * fade,
                 );
                 let radius = l * (jet.size.0 + jet.size.1 * life) * (1.0 + 0.3 * size);
-                let center = camera.world_to_screen(p, canvas);
-                let (along, across) = screen_axes(direction, radius * camera.scale);
+                let (along, across) = screen_axes(camera, direction, radius);
                 let streak = 1.0 + (jet.streak - 1.0) * (1.0 - life);
-                add_sprite(mesh, center, along * streak, across, color);
+                self.sprite(batch, nozzle.at(p), 0.0, along * streak, across, color);
             }
         }
     }
@@ -347,6 +407,8 @@ fn main_nozzle(s: &State, l: f32) -> [Nozzle; 1] {
     let heading = Vec2::angled(s.theta as f32);
     [Nozzle {
         position: position(s) - heading * MAIN_NOZZLE * l,
+        z: 0.0,
+        outward: Vec3::plane(-heading),
         direction: -heading,
     }]
 }
@@ -359,8 +421,13 @@ fn rcs_nozzles(s: &State, torque: f32, l: f32) -> [Nozzle; 6] {
     // `rot90` turns +x to -y: clockwise in the world (y up), so to the ship's right.
     let right = heading.rot90();
     let sign = torque.signum();
-    RCS_NOZZLES.map(|(x, y, _)| Nozzle {
+    RCS_NOZZLES.map(|(x, y, z)| Nozzle {
         position: position(s) + (heading * y + right * x) * l,
+        z: z * l,
+        outward: {
+            let r = x.hypot(z);
+            Vec3::plane(right * (x / r)) + Vec3::Z * (z / r)
+        },
         // At the nose (y > 0) to the right for positive torque, at the tail to the left.
         direction: right * sign * y.signum(),
     })
@@ -379,30 +446,17 @@ fn smoothed(t: f64, fraction: impl Fn(f64) -> f64) -> f32 {
         / 4.0
 }
 
-/// Screen vectors (y down) of length `length` along world direction `direction` and
-/// across it.
-fn screen_axes(direction: Vec2, length: f32) -> (Vec2, Vec2) {
-    let along = Vec2::new(direction.x, -direction.y) * length;
-    (along, along.rot90())
-}
-
-/// A sprite centered on `center` with half axes `a` and `b`.
-fn add_sprite(mesh: &mut egui::Mesh, center: Pos2, a: Vec2, b: Vec2, color: Color32) {
-    let base = mesh.vertices.len() as u32;
-    for (corner, uv) in [
-        (-a - b, Pos2::new(0.0, 0.0)),
-        (a - b, Pos2::new(1.0, 0.0)),
-        (a + b, Pos2::new(1.0, 1.0)),
-        (-a + b, Pos2::new(0.0, 1.0)),
-    ] {
-        mesh.vertices.push(egui::epaint::Vertex {
-            pos: center + corner,
-            uv,
-            color,
-        });
-    }
-    mesh.indices
-        .extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+/// A sprite's half axes on screen (y down) for world length `length` along `direction` (in
+/// the plane) and across it, seen through `camera`. Seen at a slant, the axis along
+/// `direction` is foreshortened, down to [`MIN_FORESHORTENING`]; the one across it, round
+/// the jet, isn't.
+fn screen_axes(camera: &Camera, direction: Vec2, length: f32) -> (Vec2, Vec2) {
+    let full = length * camera.scale;
+    let along = camera.screen_vector(Vec3::plane(direction) * length);
+    let unit = along.normalized();
+    let unit = if unit.is_finite() { unit } else { Vec2::X };
+    let along = unit * along.length().max(MIN_FORESHORTENING * full);
+    (along, unit.rot90() * full)
 }
 
 /// `rgb` (0 to 255) scaled by `brightness`, with zero alpha, so it adds onto what is below.

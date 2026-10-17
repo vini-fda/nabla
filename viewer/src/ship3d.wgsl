@@ -1,10 +1,11 @@
-// The ship's model, lit and textured. World axes: x right, y up the screen, z out of the
-// screen toward the viewer. See ship3d.rs.
+// The ship's model, lit and textured. Lighting is in view space, so the ship is lit the same
+// from whichever side the camera looks: x right, y up the screen, z out of the screen toward
+// the viewer (in the default top-down view, the world's own axes). See ship3d.rs.
 
 struct Uniforms {
     clip_from_model: mat4x4<f32>,
     // Rotation part only (the model is scaled uniformly), for normals.
-    world_from_model: mat4x4<f32>,
+    view_from_model: mat4x4<f32>,
     // x: 1 to gamma-encode the output (the target is not sRGB), 0 to write linear color.
     output: vec4<f32>,
 }
@@ -29,7 +30,7 @@ fn vs_main(
 ) -> VertexOut {
     var out: VertexOut;
     out.position = u.clip_from_model * vec4<f32>(position, 1.0);
-    out.normal = (u.world_from_model * vec4<f32>(normal, 0.0)).xyz;
+    out.normal = (u.view_from_model * vec4<f32>(normal, 0.0)).xyz;
     out.uv = uv;
     return out;
 }

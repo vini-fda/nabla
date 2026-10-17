@@ -13,12 +13,13 @@ use ship2d_optimization::problem::{Case, Outcome, Trajectory};
 use ship2d_optimization::registry::StoredSolution;
 use ship2d_optimization::suite;
 
-use crate::camera::Camera;
+use crate::camera::{Camera, Vec3};
 use crate::formula::{self, Formula};
+use crate::gizmo::ViewGizmo;
 use crate::grid::{GridStyle, draw_grid};
 use crate::plume::Plume;
 use crate::replay::{MAX_SUBDIVISIONS, Playback, Replay, Series};
-use crate::ship3d::{self, SHIP_GLB, ShipModel, ShipRenderer};
+use crate::ship3d::{self, DepthMap, SHIP_GLB, ShipModel, ShipRenderer};
 use crate::sound::Sound;
 use crate::source::{self, Runner, SolutionSource, Status};
 use crate::theme::{self, icons, palette};
@@ -178,6 +179,7 @@ pub struct ViewerApp {
     circumradius: f32,
     alpha: f32,
     camera: Camera,
+    gizmo: ViewGizmo,
     show_velocity: bool,
     show_acceleration: bool,
     show_path: bool,
@@ -215,9 +217,9 @@ pub struct ViewerApp {
     show_plots: bool,
     compact_view: CompactView,
     view: CanvasView,
-    /// Draws the 3D ship; `None` where OpenGL can't (then the canvas shows the debug view).
-    ship3d: Option<ShipRenderer>,
-    plume: Option<Plume>,
+    /// Draws the 3D ship and its plumes; `None` where OpenGL can't (then the canvas shows the
+    /// debug view).
+    ship3d: Option<(ShipRenderer, Plume)>,
     /// Dropped files read by the browser.
     #[cfg(target_arch = "wasm32")]
     dropped_tx: std::sync::mpsc::Sender<DroppedFile>,
@@ -237,6 +239,7 @@ impl Default for ViewerApp {
             circumradius: DEFAULT_CIRCUMRADIUS,
             alpha: DEFAULT_ALPHA,
             camera: Camera::default(),
+            gizmo: ViewGizmo::default(),
             show_velocity: true,
             show_acceleration: true,
             show_path: true,
@@ -265,7 +268,6 @@ impl Default for ViewerApp {
             compact_view: CompactView::default(),
             view: CanvasView::default(),
             ship3d: None,
-            plume: None,
             #[cfg(target_arch = "wasm32")]
             dropped_tx,
             #[cfg(target_arch = "wasm32")]
@@ -293,7 +295,10 @@ impl ViewerApp {
                     u32::from(crate::MULTISAMPLING)
                 };
                 let depth = eframe::egui_wgpu::depth_format_from_bits(crate::DEPTH_BUFFER, 0);
-                Ok(ShipRenderer::new(render_state, &model, samples, depth))
+                Ok((
+                    ShipRenderer::new(render_state, &model, samples, depth),
+                    Plume::new(render_state, samples, depth),
+                ))
             })
             .inspect_err(|e| log::warn!("No 3D view: {e}"))
             .ok();
@@ -302,7 +307,6 @@ impl ViewerApp {
             database: source::database(),
             cases: all_cases(),
             ship3d,
-            plume: Some(Plume::new(&cc.egui_ctx)),
             ..Self::default()
         };
         match source.filter(|p| p.is_file()) {
@@ -480,13 +484,13 @@ impl ViewerApp {
     }
 
     /// Space: play/pause. Left/Right: one dt. Shift+Left/Right: previous/next controller
-    /// sample. Home/End: start/end.
+    /// sample. Home/End: start/end. F: follow the ship or stop following it.
     fn handle_keys(&mut self, ui: &egui::Ui) {
         if ui.ctx().memory(|m| m.focused().is_some()) {
             return;
         }
         let last = self.last_frame();
-        let (space, left, right, home, end, shift) = ui.input(|i| {
+        let (space, left, right, home, end, shift, follow) = ui.input(|i| {
             (
                 i.key_pressed(egui::Key::Space),
                 i.key_pressed(egui::Key::ArrowLeft),
@@ -494,8 +498,13 @@ impl ViewerApp {
                 i.key_pressed(egui::Key::Home),
                 i.key_pressed(egui::Key::End),
                 i.modifiers.shift,
+                // Not with a modifier, which is the browser's or the system's (Cmd+F: find).
+                i.key_pressed(egui::Key::F) && i.modifiers.is_none(),
             )
         });
+        if follow {
+            self.follow_ship = !self.follow_ship;
+        }
         let p = &mut self.playback;
         if space {
             p.toggle(last);
@@ -837,13 +846,15 @@ impl ViewerApp {
             ui.checkbox(&mut self.show_velocity, "Velocity (green)");
             ui.checkbox(&mut self.show_acceleration, "Acceleration (red)");
         });
-        ui.checkbox(&mut self.follow_ship, "Follow ship");
+        ui.checkbox(&mut self.follow_ship, "Follow ship")
+            .on_hover_text("Keep the ship at the center of the view (F)");
         ui.horizontal(|ui| {
             if ui.button("Fit view").clicked() {
                 self.fit_pending = true;
             }
             if ui.button("Reset view").clicked() {
                 self.camera = Camera::default();
+                self.gizmo.stop();
             }
         });
     }
@@ -851,7 +862,9 @@ impl ViewerApp {
     fn user_inputs_ui(ui: &mut egui::Ui) {
         ui.heading("User inputs");
         ui.label("Drag: pan   Scroll: zoom");
+        ui.label("Drag the axes: orbit   Click an axis: view along it");
         ui.label("Space: play/pause   Left / Right: +/-dt");
+        ui.label("F: follow the ship");
         ui.label("Shift+Left / Right: +/-sample   Home / End");
     }
 
@@ -1019,6 +1032,7 @@ impl ViewerApp {
     fn canvas_ui(&mut self, ui: &mut egui::Ui) {
         let (rect, response) =
             ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
+        self.gizmo.input(ui, rect, &mut self.camera);
 
         // Pan with primary drag (disabled while following the ship, since
         // the center is locked to the ship's position each frame).
@@ -1045,6 +1059,12 @@ impl ViewerApp {
         }
 
         let painter = ui.painter_at(rect);
+        self.draw_scene(ui, &painter, rect);
+        self.gizmo.paint(ui, &painter, rect, &self.camera);
+    }
+
+    /// Everything on the canvas but the gizmo.
+    fn draw_scene(&mut self, ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect) {
         let debug = self.debug_view();
         let style = if debug {
             GridStyle::from_visuals(ui.visuals())
@@ -1053,7 +1073,7 @@ impl ViewerApp {
         };
         let (Some(replay), Some((k, _, state))) = (&self.replay, self.now()) else {
             if self.show_grid {
-                draw_grid(&painter, &self.camera, rect, &style);
+                draw_grid(painter, &self.camera, rect, &style);
             }
             return;
         };
@@ -1061,40 +1081,43 @@ impl ViewerApp {
         // Follow mode: keep the ship centered. Done after pan/zoom so zoom
         // still adjusts scale around the (now ship-centered) view.
         if self.follow_ship {
-            self.camera.center = world(state.x, state.y);
+            self.camera.center = Vec3::plane(world(state.x, state.y));
         }
 
         if self.show_grid {
-            draw_grid(&painter, &self.camera, rect, &style);
+            draw_grid(painter, &self.camera, rect, &style);
         }
         if self.show_path {
-            self.draw_path(&painter, rect, replay, k, &state);
+            self.draw_path(painter, rect, replay, k, &state);
         }
-        self.draw_goal(&painter, rect, replay, &state);
+        self.draw_goal(painter, rect, replay, &state);
         match &self.ship3d {
-            Some(renderer) if !debug => {
-                let t = self.playback.time(replay.h());
-                let plume = self.plume.as_ref().filter(|_| self.show_plume);
-                if let Some(plume) = plume {
-                    plume.paint_jets(&painter, &self.camera, rect, replay, t, self.circumradius);
-                }
+            Some((renderer, plume)) if !debug => {
+                let position = world(state.x, state.y);
                 if let Some(callback) = ship3d::paint_callback(
                     renderer,
                     &self.camera,
                     rect,
-                    world(state.x, state.y),
+                    position,
                     state.theta as f32,
                     self.circumradius,
                 ) {
                     painter.add(callback);
                 }
-                if let Some(plume) = plume {
-                    plume.paint_nozzles(&painter, &self.camera, rect, replay, t, self.circumradius);
+                // After the ship, whose depth they are tested against.
+                if self.show_plume {
+                    let t = self.playback.time(replay.h());
+                    let depth = DepthMap::new(renderer, &self.camera, position, self.circumradius);
+                    if let Some(callback) =
+                        plume.paint(&self.camera, rect, replay, t, self.circumradius, &depth)
+                    {
+                        painter.add(callback);
+                    }
                 }
             }
             _ => {
-                self.draw_ship(&painter, rect, &state);
-                self.draw_arrows(&painter, rect, replay, k, &state);
+                self.draw_ship(painter, rect, &state);
+                self.draw_arrows(painter, rect, replay, k, &state);
             }
         }
     }
@@ -1146,10 +1169,22 @@ impl ViewerApp {
         painter.circle_stroke(goal, GOAL_RADIUS_PX, egui::Stroke::new(2.0_f32, color));
         painter.circle_filled(goal, 2.0, color);
 
-        // Position tolerance eps_p, drawn to scale once it is visible.
-        let tolerance_px = task.tolerance.position as f32 * self.camera.scale;
-        if tolerance_px > 1.5 {
-            painter.circle_stroke(goal, tolerance_px, egui::Stroke::new(1.0_f32, color));
+        // Position tolerance eps_p, drawn to scale once it is visible: a circle in the plane,
+        // an ellipse once the view is tilted.
+        let tolerance = task.tolerance.position as f32;
+        if tolerance * self.camera.scale > 1.5 {
+            let center = world(task.goal.x, task.goal.y);
+            let circle = (0..64)
+                .map(|i| {
+                    let angle = i as f32 / 64.0 * std::f32::consts::TAU;
+                    let p = center + egui::Vec2::angled(angle) * tolerance;
+                    self.camera.world_to_screen(p, rect)
+                })
+                .collect();
+            painter.add(egui::Shape::closed_line(
+                circle,
+                egui::Stroke::new(1.0_f32, color),
+            ));
         }
         painter.text(
             goal + egui::vec2(GOAL_LABEL_OFFSET_PX, -GOAL_LABEL_OFFSET_PX),
@@ -1161,7 +1196,7 @@ impl ViewerApp {
     }
 
     fn draw_ship(&self, painter: &egui::Painter, rect: egui::Rect, state: &State) {
-        let center = self.camera.world_to_screen(world(state.x, state.y), rect);
+        let center = world(state.x, state.y);
         let (sin_theta, cos_theta) = (state.theta as f32).sin_cos();
         let (sin_2alpha, cos_2alpha) = (2.0 * self.alpha).sin_cos();
 
@@ -1173,16 +1208,17 @@ impl ViewerApp {
             (-cos_2alpha, -sin_2alpha),
         ];
 
-        let pixel_radius = self.circumradius * self.camera.scale;
         let vertices: Vec<egui::Pos2> = base_vertices
             .iter()
             .map(|&(px, py)| {
                 let x = cos_theta * px - sin_theta * py;
                 let y = sin_theta * px + cos_theta * py;
-                egui::pos2(center.x + pixel_radius * x, center.y - pixel_radius * y)
+                let vertex = center + egui::vec2(x, y) * self.circumradius;
+                self.camera.world_to_screen(vertex, rect)
             })
             .collect();
 
+        // Seen from below, the triangle is wound the other way; `convex_polygon` takes either.
         painter.add(egui::Shape::convex_polygon(
             vertices,
             palette::WHITE,
@@ -1200,10 +1236,11 @@ impl ViewerApp {
     ) {
         let center = self.camera.world_to_screen(world(state.x, state.y), rect);
 
-        // World vectors -> screen vectors: flip y. Use fixed pixel scales
-        // (decoupled from camera zoom) so arrows behave like HUD indicators.
+        // World vectors -> screen vectors through the camera's orientation. Use fixed pixel
+        // scales (decoupled from camera zoom) so arrows behave like HUD indicators.
         let arrow = |v: [f64; 2], px_per_unit: f32, color: egui::Color32| {
-            let screen = egui::vec2(v[0] as f32, -(v[1] as f32)) * px_per_unit;
+            let v = Vec3::plane(world(v[0], v[1]));
+            let screen = self.camera.screen_vector(v) / self.camera.scale * px_per_unit;
             if screen.length() > ARROW_MIN_PIXELS {
                 painter.arrow(center, screen, egui::Stroke::new(ARROW_STROKE_WIDTH, color));
             }
@@ -1594,11 +1631,29 @@ fn screen_path(camera: &Camera, rect: egui::Rect, states: &[State]) -> Vec<egui:
     path
 }
 
-/// Center the camera on `bounds` and zoom so they fill the canvas, with a margin.
+/// Center the camera on `bounds` (in the plane) and zoom so they fill the canvas, as seen
+/// from the camera's side, with a margin.
 fn fit_camera(camera: &mut Camera, bounds: ([f64; 2], [f64; 2]), rect: egui::Rect) {
     let (lo, hi) = bounds;
-    camera.center = world(f64::midpoint(lo[0], hi[0]), f64::midpoint(lo[1], hi[1]));
-    let size = world(hi[0] - lo[0], hi[1] - lo[1]).max(egui::vec2(1.0, 1.0));
+    camera.center = Vec3::plane(world(
+        f64::midpoint(lo[0], hi[0]),
+        f64::midpoint(lo[1], hi[1]),
+    ));
+    // The bounds' extent across and up the screen, in world units.
+    let [right, up, _] = camera.orbit.basis();
+    let corners = [
+        [lo[0], lo[1]],
+        [hi[0], lo[1]],
+        [lo[0], hi[1]],
+        [hi[0], hi[1]],
+    ]
+    .map(|[x, y]| Vec3::plane(world(x, y)));
+    let extent = |axis: Vec3| {
+        let along = corners.map(|c| c.dot(axis));
+        along.iter().copied().fold(f32::MIN, f32::max)
+            - along.iter().copied().fold(f32::MAX, f32::min)
+    };
+    let size = egui::vec2(extent(right), extent(up)).max(egui::vec2(1.0, 1.0));
     let usable = rect.size() * (1.0 - 2.0 * FIT_MARGIN);
     let scale = (usable.x / size.x).min(usable.y / size.y);
     if scale.is_finite() && scale > 0.0 {

@@ -1,7 +1,7 @@
 //! The ship's textured 3D model, and a wgpu renderer that draws it into the canvas (through
-//! egui's own render pass, with its depth buffer), seen from straight above with an
-//! orthographic projection that matches the 2D [`Camera`], so the model lines up with
-//! everything the canvas paints around it. The shader is `ship3d.wgsl`.
+//! egui's own render pass, with its depth buffer), with the orthographic projection of the
+//! [`Camera`], so the model lines up with everything the canvas paints around it from any
+//! side. The shader is `ship3d.wgsl`.
 //!
 //! The model is `assets/nabla_starship.glb`: one mesh with positions, normals and
 //! texture coordinates, a base color texture (2048 px JPEG) and a metallic-roughness
@@ -10,7 +10,7 @@
 use eframe::egui_wgpu::{self, CallbackResources, CallbackTrait, ScreenDescriptor};
 use eframe::wgpu::{self, util::DeviceExt as _};
 
-use crate::camera::Camera;
+use crate::camera::{Camera, Vec3};
 
 /// The model, embedded in the binary.
 #[expect(
@@ -19,16 +19,17 @@ use crate::camera::Camera;
 )]
 pub const SHIP_GLB: &[u8] = include_bytes!("../assets/nabla_starship.glb");
 
-/// Which way of the model faces the camera (up, out of the screen): +z is the side with
-/// both bays open onto the machinery inside. The nose is +y.
+/// Which way of the model faces up out of the plane (+z, toward the camera in the default
+/// top-down view): +z is the side with both bays open onto the machinery inside. The nose
+/// is +y.
 const MODEL_TOP: [f32; 3] = [0.0, 0.0, 1.0];
 
 /// An RGBA8 image.
 #[derive(Clone)]
-struct Image {
-    width: u32,
-    height: u32,
-    pixels: Vec<u8>,
+pub struct Image {
+    pub width: u32,
+    pub height: u32,
+    pub pixels: Vec<u8>,
 }
 
 /// The ship's mesh and textures, as read from the glTF file.
@@ -40,6 +41,8 @@ pub struct ShipModel {
     metallic_roughness: Image,
     /// Distance from the model's origin to its nose, along +y.
     half_length: f32,
+    /// Distance from the model's origin to its farthest vertex.
+    radius: f32,
 }
 
 /// Bytes per vertex in the vertex buffer: eight four-byte floats.
@@ -76,6 +79,10 @@ impl ShipModel {
             .flat_map(|((p, n), uv)| [p[0], p[1], p[2], n[0], n[1], n[2], uv[0], uv[1]])
             .collect();
         let half_length = positions.iter().map(|p| p[1]).fold(f32::MIN, f32::max);
+        let radius = positions
+            .iter()
+            .map(|p| p.iter().map(|c| c * c).sum::<f32>().sqrt())
+            .fold(0.0, f32::max);
 
         let pbr = primitive.material().pbr_metallic_roughness();
         let texture_image = |texture: Option<gltf::texture::Texture<'_>>| -> Result<Image, String> {
@@ -101,6 +108,7 @@ impl ShipModel {
                 pbr.metallic_roughness_texture().map(|info| info.texture()),
             )?,
             half_length,
+            radius,
         })
     }
 }
@@ -121,6 +129,8 @@ const UNIFORMS_SIZE: u64 = (16 + 16 + 4) * 4;
 /// Draws the model; its GPU resources live in the egui renderer's callback resources.
 pub struct ShipRenderer {
     half_length: f32,
+    /// The model's [`ShipModel::radius`] over its half length.
+    radius: f32,
     /// Gamma-encode the shader's output, for a target that is not sRGB.
     gamma_output: bool,
 }
@@ -223,6 +233,7 @@ impl ShipRenderer {
             });
         Self {
             half_length: model.half_length,
+            radius: model.radius / model.half_length,
             gamma_output: !render_state.target_format.is_srgb(),
         }
     }
@@ -355,6 +366,45 @@ impl CallbackTrait for ShipCallback {
     }
 }
 
+/// How the 3D view's depth buffer maps distance toward the viewer, so whatever is drawn
+/// depth tested against the ship (see [`crate::sprites`]) agrees with it: depth 0.5 at the
+/// ship's center, 0 (nearest) to 1 (farthest) from the ship's reach in front of it to its
+/// reach behind it.
+#[derive(Clone, Copy)]
+pub struct DepthMap {
+    toward_viewer: Vec3,
+    /// Distance toward the viewer of the ship's center.
+    origin: f32,
+    /// Distance from the ship's center to its farthest point.
+    reach: f32,
+}
+
+impl DepthMap {
+    /// For the ship of `renderer` at `position` with half length `half_length`, seen
+    /// through `camera`.
+    pub fn new(
+        renderer: &ShipRenderer,
+        camera: &Camera,
+        position: egui::Vec2,
+        half_length: f32,
+    ) -> Self {
+        let toward_viewer = camera.orbit.toward_viewer();
+        Self {
+            toward_viewer,
+            origin: Vec3::plane(position).dot(toward_viewer),
+            reach: half_length * renderer.radius,
+        }
+    }
+
+    /// Depth of world point `p` moved `nearer` world units toward the viewer, clamped to
+    /// 0 to 1: anything nearer than the whole ship is in front of it, anything farther,
+    /// behind it.
+    pub fn depth(&self, p: Vec3, nearer: f32) -> f32 {
+        let distance = p.dot(self.toward_viewer) + nearer - self.origin;
+        (0.5 - distance / (2.0 * self.reach)).clamp(0.0, 1.0)
+    }
+}
+
 /// Paints the ship (the model, scaled so the nose is `half_length` world units from its
 /// center) at `position`, heading `theta` radians counterclockwise from +x, into the canvas
 /// `canvas` seen through `camera`. Returns `None` when the ship is outside the canvas.
@@ -366,9 +416,12 @@ pub fn paint_callback(
     theta: f32,
     half_length: f32,
 ) -> Option<egui::PaintCallback> {
-    // Only the ship's surroundings are drawn into.
+    // Only the ship's surroundings are drawn into: the model fits in a sphere of radius
+    // `reach`.
+    let depth = DepthMap::new(renderer, camera, position, half_length);
+    let reach = depth.reach;
     let center = camera.world_to_screen(position, canvas);
-    let radius = half_length * camera.scale * 1.05;
+    let radius = reach * camera.scale * 1.02;
     let rect =
         egui::Rect::from_center_size(center, egui::Vec2::splat(2.0 * radius)).intersect(canvas);
     if !rect.is_positive() {
@@ -377,34 +430,50 @@ pub fn paint_callback(
 
     let scale = half_length / renderer.half_length;
     let r = rotation(theta);
+    let [right, up, toward_viewer] = camera.orbit.basis();
 
-    // Clip coordinates of world point (x, y, z), x and y through the camera onto the screen,
-    // then into `rect`; z (toward the viewer) into depth (0 to 1), nearer being smaller.
+    // Clip coordinates of world point p: across and up the screen through the camera, then
+    // into `rect`; toward the viewer into depth by `depth`.
     let k = camera.scale;
     let canvas_center = canvas.center();
-    let (sx, sy) = (2.0 * k / rect.width(), 2.0 * k / rect.height());
-    let tx = 2.0 * (canvas_center.x - camera.center.x * k - rect.center().x) / rect.width();
-    let ty = -2.0 * (canvas_center.y + camera.center.y * k - rect.center().y) / rect.height();
-    let sz = -1.0 / (2.0 * half_length);
-    let clip_from_world = [
-        [sx, 0.0, 0.0, 0.0],
-        [0.0, sy, 0.0, 0.0],
-        [0.0, 0.0, sz, 0.0],
-        [tx, ty, 0.5, 1.0],
+    let s = [
+        2.0 * k / rect.width(),
+        2.0 * k / rect.height(),
+        -1.0 / (2.0 * reach),
     ];
+    let tx =
+        2.0 * (canvas_center.x - camera.center.dot(right) * k - rect.center().x) / rect.width();
+    let ty = -2.0 * (canvas_center.y + camera.center.dot(up) * k - rect.center().y) / rect.height();
+    let tz = 0.5 + depth.origin / (2.0 * reach);
+    // Column `i` of the world-to-view rotation, rows scaled by `[a, b, c]`.
+    let column = |i: usize, [a, b, c]: [f32; 3]| {
+        let [r, u, v] = [right, up, toward_viewer].map(|axis| axis.to_array()[i]);
+        [a * r, b * u, c * v, 0.0]
+    };
+    let clip_from_world = [column(0, s), column(1, s), column(2, s), [tx, ty, tz, 1.0]];
     let world_from_model = [
         [scale * r[0], scale * r[1], scale * r[2], 0.0],
         [scale * r[3], scale * r[4], scale * r[5], 0.0],
         [scale * r[6], scale * r[7], scale * r[8], 0.0],
         [position.x, position.y, 0.0, 1.0],
     ];
+    // Normals go to view space (right, up, toward the viewer), where the lights are.
+    let view_from_world = [
+        column(0, [1.0; 3]),
+        column(1, [1.0; 3]),
+        column(2, [1.0; 3]),
+        [0.0, 0.0, 0.0, 1.0],
+    ];
     let rotation4 = [
-        r[0], r[1], r[2], 0.0, r[3], r[4], r[5], 0.0, r[6], r[7], r[8], 0.0, 0.0, 0.0, 0.0, 1.0,
+        [r[0], r[1], r[2], 0.0],
+        [r[3], r[4], r[5], 0.0],
+        [r[6], r[7], r[8], 0.0],
+        [0.0, 0.0, 0.0, 1.0],
     ];
     let output = [f32::from(u8::from(renderer.gamma_output)), 0.0, 0.0, 0.0];
 
     let mut uniforms = to_bytes(&mul4(&clip_from_world, &world_from_model));
-    uniforms.extend(to_bytes(&rotation4));
+    uniforms.extend(to_bytes(&mul4(&view_from_world, &rotation4)));
     uniforms.extend(to_bytes(&output));
     Some(egui_wgpu::Callback::new_paint_callback(
         rect,
@@ -413,7 +482,7 @@ pub fn paint_callback(
 }
 
 /// The rotation (column-major 3x3) that turns the model's nose (+y) to heading `theta` in
-/// the plane and its [`MODEL_TOP`] toward the viewer (+z).
+/// the plane and its [`MODEL_TOP`] up out of the plane (+z).
 fn rotation(theta: f32) -> [f32; 9] {
     let (sin, cos) = theta.sin_cos();
     let nose = [0.0, 1.0, 0.0];
@@ -452,13 +521,13 @@ fn mul4(a: &[[f32; 4]; 4], b: &[[f32; 4]; 4]) -> [f32; 16] {
     out
 }
 
-fn to_bytes(floats: &[f32]) -> Vec<u8> {
+pub fn to_bytes(floats: &[f32]) -> Vec<u8> {
     floats.iter().flat_map(|f| f.to_ne_bytes()).collect()
 }
 
 /// Uploads `image` as a texture of `format` with a full chain of mipmaps (wgpu doesn't make
 /// them), and returns its view.
-fn upload_texture(
+pub fn upload_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     image: &Image,

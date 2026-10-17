@@ -1,6 +1,6 @@
 [package]
 name = "ship2d_optimization"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2024"
 
 [dependencies]
@@ -10,14 +10,34 @@ edition = "2024"
 registry = []
 
 [workspace]
-# The core crate (this package) and the egui viewer / web app.
-members = ["viewer"]
+# The core crate (this package), the egui viewer / web app, and the development tasks
+# (`cargo xtask`).
+members = ["viewer", "xtask"]
 
 [profile.release]
 opt-level = 2 # fast and small wasm
 lto = true
 codegen-units = 1
 strip = true
+
+# For iterating on the viewer: `cargo viewer` (alias in .cargo/config.toml), or
+# `cargo run --profile fast -p ship2d_graphics` for the bare binary. As optimized as release, but without its
+# whole-program LTO and single codegen unit, and incremental: a small edit to the viewer
+# rebuilds in about 2 s instead of about 50 s. Not for shipping (larger binary, no LTO).
+[profile.fast]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true
+strip = false
+
+# This workspace's crates are the ones that change: many small codegen units, so an edit
+# recompiles only the few it touches.
+[profile.fast.package.ship2d_graphics]
+codegen-units = 256
+
+[profile.fast.package.ship2d_optimization]
+codegen-units = 256
 
 # Optimize all dependencies even in debug builds:
 [profile.dev.package."*"]

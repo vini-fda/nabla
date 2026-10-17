@@ -8,7 +8,7 @@ const APP_ICON: &[u8] = include_bytes!("../assets/app-icon-macos.png");
 #[cfg(all(not(target_os = "macos"), not(target_arch = "wasm32")))]
 const APP_ICON: &[u8] = include_bytes!("../assets/favicon-512x512.png");
 
-/// Inside a macOS app bundle (`viewer/macos/bundle.sh`), the Dock shows the bundle's layered
+/// Inside a macOS app bundle (`cargo xtask bundle`), the Dock shows the bundle's layered
 /// Liquid Glass icon; an empty icon tells eframe not to replace it. Elsewhere use [`APP_ICON`].
 #[cfg(not(target_arch = "wasm32"))]
 fn app_icon() -> egui::IconData {

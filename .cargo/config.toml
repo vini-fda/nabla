@@ -1,3 +1,6 @@
-[target.'cfg(target_os = "macos")']
-# Wrap the viewer in an app bundle on `cargo run`, so the Dock shows the Liquid Glass icon.
-runner = "viewer/macos/run-bundled.sh"
+[alias]
+# Development tasks, in the `xtask` crate: `cargo xtask help`.
+xtask = "run -q -p xtask --"
+# The viewer, built with the `fast` profile (see Cargo.toml): quick rebuilds while iterating.
+# On macOS it runs inside the app bundle, for the Liquid Glass Dock icon.
+viewer = "run -q -p xtask -- run --profile fast"

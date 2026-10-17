@@ -1,3 +1,6 @@
 /target
 .DS_Store
 *.pdf
+# Scratch for tuning solutions (see TASK.md, "Tuning parameters").
+/tuning/
+/examples/tune_*.rs

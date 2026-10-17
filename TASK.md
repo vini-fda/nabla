@@ -214,7 +214,9 @@ Things to keep in mind:
   of one evaluation read the same `GAINS`.
 - **Watch for overfitting.** Only the standard suite is scored, and the holdout cases are just
   pass/fail. `score` returns infinity when a holdout case fails, so the search avoids those
-  gains. Before submitting, also check the tuned gains on fresh random cases:
+  gains, but it can still trade robustness for score on cases outside the suites. Accept an
+  improvement only if it also solves a set of random validation cases. Before submitting, check
+  the result on another set of random cases that the search never saw:
 
   ```rust
   *GAINS.write().unwrap() = best;
@@ -226,6 +228,9 @@ Things to keep in mind:
 - **Keep the stored source free of tuning hooks.** A stored solution must not read the
   environment or any other outside state. Its score has to be reproducible from its source
   alone.
+
+For Claude, the `tune-controller` skill (`.claude/skills/tune-controller/`) follows this
+workflow with a ready-made tuner: coordinate descent with validation cases and a final check.
 
 ## The database
 

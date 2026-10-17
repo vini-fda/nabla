@@ -245,6 +245,7 @@ matches its current source and score. Do not edit stored files by hand. Resubmit
 | `flip_and_burn` | two-layer feedback: braking-aware velocity setpoint, square-root heading law |
 | `flip_and_burn_tuned` | same, constants tuned by coordinate descent |
 | `tolerance_aware` | same, plus a coasting spin-down finisher and an `ε_v` deadband, retuned |
+| `tolerance_aware_tuned` | `tolerance_aware` retuned in-process, with validation cases (`tune-controller` skill) |
 
 `cargo xtask leaderboard` shows their current scores.
 

@@ -6,7 +6,7 @@ publish = false
 description = "Development tasks for this repository: `cargo xtask help`."
 
 [dependencies]
-anyhow = "1.0.102"
+anyhow = "1.0.104"
 xshell = "0.2.7"
 
 [lints]

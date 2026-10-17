@@ -115,12 +115,117 @@ cargo xtask help                                  # every task, including the vi
   cases do not leave the other cores idle.
 - **Many solutions.** Pass them all to one `cargo xtask eval`. They compile in parallel, then
   run one at a time, so each run gets every core and the run times stay comparable.
+  For many variants of one solution that differ only in constants, see "Tuning parameters"
+  below instead.
 - **Many processes at once** (e.g. several agents): build the tasks once with
   `cargo build -p xtask`, then call `target/debug/xtask eval …` directly. `cargo xtask` goes
   through `cargo run`, which replaces `target/debug/xtask` on every call, even when nothing
   changed. Several calls launched at the same instant can therefore fail to start.
 - **Trust.** The candidate runs as ordinary native code, with no sandbox. Only evaluate code you
   trust.
+
+## Tuning parameters
+
+To tune a solution's constants (gains, margins, thresholds), evaluate it many times in a single
+process. `cargo xtask eval` is built for scoring finished solutions: every distinct source is a
+new build, and every run is a new process. A tuner instead calls `eval::evaluate` directly, so
+each point costs one evaluation (the suites in parallel on every core) and nothing else.
+
+**1. Make the solution tunable.** Gather the constants in a struct, with their current values as
+the default, and add a constructor that takes them. `new` uses the default, so the file stays a
+valid solution:
+
+```rust
+#[derive(Clone, Copy, Debug)]
+pub struct Gains {
+    pub brake_fraction: f64,
+    pub align: f64,
+}
+
+impl Gains {
+    pub const DEFAULT: Gains = Gains { brake_fraction: 0.84, align: 0.37 };
+}
+
+impl Solution {
+    pub fn with_gains(task: &Task, gains: Gains) -> Self { /* … */ }
+}
+
+impl Controller for Solution {
+    fn new(task: &Task) -> Self {
+        Solution::with_gains(task, Gains::DEFAULT)
+    }
+    // …
+}
+```
+
+**2. Write the tuner as an example program**, e.g. `examples/tune_mine.rs`, that includes the
+solution file as a module. `Controller::new` only receives the `Task`, so the gains under test
+go through a static, which `new` reads once per case:
+
+```rust
+#[path = "../path/to/mine.rs"]
+mod solution;
+
+use ship2d_optimization::{Control, Controller, State, Task, eval, parallel, problem, suite};
+use solution::{Gains, Solution};
+use std::sync::RwLock;
+
+static GAINS: RwLock<Gains> = RwLock::new(Gains::DEFAULT);
+
+struct Tuned(Solution);
+
+impl Controller for Tuned {
+    fn new(task: &Task) -> Self {
+        Tuned(Solution::with_gains(task, *GAINS.read().unwrap()))
+    }
+    fn control(&mut self, k: usize, state: &State) -> Control {
+        self.0.control(k, state)
+    }
+}
+
+/// The score with these gains: infinite if any case of either suite fails.
+fn score(gains: Gains) -> f64 {
+    *GAINS.write().unwrap() = gains;
+    eval::evaluate::<Tuned>().score().map_or(f64::INFINITY, |s| s as f64)
+}
+
+fn main() {
+    // Any search over `score`: coordinate descent, Nelder–Mead, a grid, …
+}
+```
+
+**3. Run it** with the `fast` profile, which skips the release profile's slow whole-program
+LTO:
+
+```sh
+cargo run --profile fast --example tune_mine
+```
+
+The scores are the same as with `cargo xtask eval`, since optimization levels do not change
+floating-point results in Rust. For the current solutions, one point takes a few tens of
+milliseconds.
+
+**4. Store the result.** Copy the best values into `Gains::DEFAULT`, then run
+`cargo xtask eval` and `cargo xtask submit`. The tuner itself is not part of the solution.
+
+Things to keep in mind:
+
+- **Evaluate one point at a time.** Each evaluation already uses every core, and all the cases
+  of one evaluation read the same `GAINS`.
+- **Watch for overfitting.** Only the standard suite is scored, and the holdout cases are just
+  pass/fail. `score` returns infinity when a holdout case fails, so the search avoids those
+  gains. Before submitting, also check the tuned gains on fresh random cases:
+
+  ```rust
+  *GAINS.write().unwrap() = best;
+  let extra = suite::random("extra", 12345, 2000);
+  let outcomes = parallel::map(&extra, problem::run::<Tuned>);
+  let failed = outcomes.iter().filter(|o| o.steps().is_none()).count();
+  ```
+
+- **Keep the stored source free of tuning hooks.** A stored solution must not read the
+  environment or any other outside state. Its score has to be reproducible from its source
+  alone.
 
 ## The database
 

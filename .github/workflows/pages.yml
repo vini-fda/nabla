@@ -25,7 +25,8 @@ jobs:
       - name: Install the toolchain from rust-toolchain.toml
         run: rustup toolchain install
 
-      - uses: Swatinem/rust-cache@v2
+      # No Rust cache: it would add another one of over 1 GB, and push CI's caches for main out
+      # of the repository's 10 GB limit. Deploys aren't waited on like CI, so they build cold.
 
       - name: Install trunk
         run: |

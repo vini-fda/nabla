@@ -60,9 +60,11 @@ jobs:
           rustup toolchain install
           rustup target add ${{ matrix.target }}
 
+      # A tag's caches could only ever be restored by runs on that same tag: don't save them.
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
+          save-if: false
 
       - name: System libraries for eframe
         if: runner.os == 'Linux'

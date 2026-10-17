@@ -27,6 +27,12 @@
 //! controls scaled by their limits, with Levenberg–Marquardt damping and a backtracking line
 //! search; an iteration that cannot lower the residual stalls the solve.
 //!
+//! Portability: the planner uses its own model of `step`, built on portable `sin_cos` and
+//! `atan2` (IEEE-exact operations only), and plans from the start state quantized to 32
+//! significant bits. Its plans are then the same on every platform; only their confirmation uses
+//! the platform's `step`. With libm's functions instead, the optimizer amplified their last-bit
+//! differences into scores that differed between macOS and Linux.
+//!
 //! Every buffer is allocated once, in `new`, with room for `max_steps` controls.
 
 use ship2d_optimization::*;
@@ -72,6 +78,163 @@ impl Gains {
 /// Halvings of the line search before an iteration gives up.
 const LINE_SEARCH: usize = 4;
 
+
+// ---------------------------------------------------------------------------------------------
+// Portable math.
+//
+// `f64::sin_cos`, `atan2` and `hypot` come from the platform's libm, whose last bits differ
+// between macOS, Linux and Windows. The planner iterates thousands of times on its own
+// predictions, which amplifies a one-ulp difference into a different plan, and so a different
+// score per platform. So everything the planner computes uses only IEEE-exact operations
+// (`+ − × ÷`, `sqrt`, rounding), which give the same bits everywhere; the crate's `step` and
+// `Task::reached` only confirm plans.
+
+/// `(sin x, cos x)`, within a few ulps: fdlibm's kernels on `[−π/4, π/4]` after a Cody–Waite
+/// reduction by `π/2` (exact for `|x| < 2²⁰ π/2`).
+#[allow(clippy::excessive_precision)]
+pub fn sin_cos(x: f64) -> (f64, f64) {
+    // π/2 in three 33-bit parts, so that `n · PIO2_i` is exact.
+    const PIO2_1: f64 = 1.570_796_326_734_125_614_17;
+    const PIO2_2: f64 = 6.077_100_506_303_965_976_60e-11;
+    const PIO2_3: f64 = 2.022_266_248_711_166_455_80e-21;
+    let n = (x * std::f64::consts::FRAC_2_PI).round();
+    let r = ((x - n * PIO2_1) - n * PIO2_2) - n * PIO2_3;
+    let (s, c) = (kernel_sin(r), kernel_cos(r));
+    match (n as i64).rem_euclid(4) {
+        0 => (s, c),
+        1 => (c, -s),
+        2 => (-s, -c),
+        _ => (-c, s),
+    }
+}
+
+#[allow(clippy::excessive_precision)]
+fn kernel_sin(x: f64) -> f64 {
+    const S1: f64 = -1.666_666_666_666_663_243_48e-01;
+    const S2: f64 = 8.333_333_333_322_489_461_24e-03;
+    const S3: f64 = -1.984_126_982_985_794_931_34e-04;
+    const S4: f64 = 2.755_731_370_707_006_767_89e-06;
+    const S5: f64 = -2.505_076_025_340_686_341_95e-08;
+    const S6: f64 = 1.589_690_995_211_550_102_21e-10;
+    let z = x * x;
+    let r = S2 + z * (S3 + z * (S4 + z * (S5 + z * S6)));
+    x + z * x * (S1 + z * r)
+}
+
+#[allow(clippy::excessive_precision)]
+fn kernel_cos(x: f64) -> f64 {
+    const C1: f64 = 4.166_666_666_666_660_190_37e-02;
+    const C2: f64 = -1.388_888_888_887_410_957_49e-03;
+    const C3: f64 = 2.480_158_728_947_672_941_78e-05;
+    const C4: f64 = -2.755_731_435_139_066_330_35e-07;
+    const C5: f64 = 2.087_572_321_298_174_827_90e-09;
+    const C6: f64 = -1.135_964_755_778_819_482_65e-11;
+    let z = x * x;
+    let r = z * (C1 + z * (C2 + z * (C3 + z * (C4 + z * (C5 + z * C6)))));
+    let hz = 0.5 * z;
+    let w = 1.0 - hz;
+    w + (((1.0 - w) - hz) + z * r)
+}
+
+/// `atan x`, within an ulp or so: fdlibm's reduction to `|x| < 7/16` and odd polynomial.
+#[allow(clippy::excessive_precision)]
+fn atan(x: f64) -> f64 {
+    const HI: [f64; 4] = [
+        4.636_476_090_008_060_935_15e-01,
+        std::f64::consts::FRAC_PI_4,
+        9.827_937_232_473_290_540_82e-01,
+        std::f64::consts::FRAC_PI_2,
+    ];
+    const LO: [f64; 4] = [
+        2.269_877_745_296_168_709_24e-17,
+        3.061_616_997_868_383_017_93e-17,
+        1.390_331_103_123_099_845_16e-17,
+        6.123_233_995_736_766_035_87e-17,
+    ];
+    const T: [f64; 11] = [
+        3.333_333_333_333_293_180_27e-01,
+        -1.999_999_999_987_648_324_76e-01,
+        1.428_571_427_250_346_637_11e-01,
+        -1.111_111_040_546_235_578_80e-01,
+        9.090_887_133_436_506_561_96e-02,
+        -7.691_876_205_044_829_994_95e-02,
+        6.661_073_137_387_531_206_69e-02,
+        -5.833_570_133_790_573_486_45e-02,
+        4.976_877_994_615_932_360_17e-02,
+        -3.653_157_274_421_691_552_70e-02,
+        1.628_582_011_536_578_236_23e-02,
+    ];
+    let (sign, a) = if x < 0.0 { (-1.0, -x) } else { (1.0, x) };
+    if a.is_nan() {
+        return x;
+    }
+    if a > 1e17 {
+        return sign * (HI[3] + LO[3]);
+    }
+    let (id, t) = if a < 0.4375 {
+        (None, a)
+    } else if a < 0.6875 {
+        (Some(0), (2.0 * a - 1.0) / (2.0 + a))
+    } else if a < 1.1875 {
+        (Some(1), (a - 1.0) / (a + 1.0))
+    } else if a < 2.4375 {
+        (Some(2), (a - 1.5) / (1.0 + 1.5 * a))
+    } else {
+        (Some(3), -1.0 / a)
+    };
+    let z = t * t;
+    let w = z * z;
+    let s1 = z * (T[0] + w * (T[2] + w * (T[4] + w * (T[6] + w * (T[8] + w * T[10])))));
+    let s2 = w * (T[1] + w * (T[3] + w * (T[5] + w * (T[7] + w * T[9]))));
+    sign * match id {
+        None => t - t * (s1 + s2),
+        Some(i) => HI[i] - ((t * (s1 + s2) - LO[i]) - t),
+    }
+}
+
+/// `atan2(y, x)` in `(−π, π]`, with `atan2(0, 0) = 0`.
+pub fn atan2(y: f64, x: f64) -> f64 {
+    use std::f64::consts::{FRAC_PI_2, PI};
+    if x > 0.0 {
+        atan(y / x)
+    } else if x < 0.0 {
+        if y >= 0.0 { atan(y / x) + PI } else { atan(y / x) - PI }
+    } else if y > 0.0 {
+        FRAC_PI_2
+    } else if y < 0.0 {
+        -FRAC_PI_2
+    } else {
+        0.0
+    }
+}
+
+/// `√(x² + y²)`, without libm's `hypot`.
+fn norm(x: f64, y: f64) -> f64 {
+    (x * x + y * y).sqrt()
+}
+
+/// `x` rounded to 32 significant bits, so that states that differ only in their last bits (as
+/// computed by different platforms) plan identically.
+fn quantize(x: f64) -> f64 {
+    const DROP: u32 = 20;
+    if !x.is_finite() {
+        return x;
+    }
+    let bits = x.to_bits();
+    f64::from_bits(((bits >> DROP) + ((bits >> (DROP - 1)) & 1)) << DROP)
+}
+
+fn quantize_state(s: &State) -> State {
+    State {
+        x: quantize(s.x),
+        y: quantize(s.y),
+        vx: quantize(s.vx),
+        vy: quantize(s.vy),
+        theta: quantize(s.theta),
+        omega: quantize(s.omega),
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Seed laws: `tolerance_aware_tuned`, with its constants as a parameter.
 
@@ -97,7 +260,8 @@ fn wrap(angle: f64) -> f64 {
     (angle + PI).rem_euclid(2.0 * PI) - PI
 }
 
-/// A seed feedback law. Stateless, so its rollout from any state is reproducible.
+/// A seed feedback law, on the planning model. Stateless, so its rollout from any state is
+/// reproducible.
 struct Baseline {
     task: Task,
     accel: f64,
@@ -119,8 +283,8 @@ impl Baseline {
     fn finishes(&self, s: &State) -> bool {
         let mut s = *s;
         for _ in 0..FINISH_STEPS {
-            s = step(&self.task.params, &s, &self.spin_down(&s));
-            if self.task.reached(&s) {
+            s = model_step(&self.task.params, &s, &self.spin_down(&s));
+            if inside(&self.task, &s) {
                 return true;
             }
         }
@@ -136,16 +300,16 @@ impl Baseline {
         let [brake_fraction, turn_fraction, turn_margin, velocity_steps, heading_steps, align, deadband, relative_deadband] =
             self.law;
         let (rx, ry) = (self.task.goal.x - s.x, self.task.goal.y - s.y);
-        let dist = rx.hypot(ry);
+        let dist = norm(rx, ry);
         let a_brake = brake_fraction * self.accel;
         let t_turn = turn_margin * 2.0 * (PI / (turn_fraction * self.alpha)).sqrt() + 2.0 * h;
         let speed = a_brake * ((t_turn * t_turn + 2.0 * dist / a_brake).sqrt() - t_turn);
         let (vx_des, vy_des) = if dist > 0.0 { (speed * rx / dist, speed * ry / dist) } else { (0.0, 0.0) };
         let (ex, ey) = (vx_des - s.vx, vy_des - s.vy);
-        let v_err = ex.hypot(ey);
+        let v_err = norm(ex, ey);
         let active = v_err > deadband * self.task.tolerance.velocity || v_err > relative_deadband * speed;
         let accel = (v_err / (velocity_steps * h)).min(self.accel);
-        let heading = if active { ey.atan2(ex) } else { s.theta };
+        let heading = if active { atan2(ey, ex) } else { s.theta };
         let err = wrap(heading - s.theta);
         let omega_des = err.signum()
             * (2.0 * turn_fraction * self.alpha * err.abs()).sqrt().min(err.abs() / (heading_steps * h));
@@ -192,8 +356,9 @@ const GL_WEIGHTS: [f64; 8] = [
 /// the `τ` column at rows `θ`, `ω`.
 type Sens = [[f64; 4]; 4];
 
-/// `step` and its sensitivities in one quadrature pass, with the same panels, nodes and
-/// arithmetic as the crate's `step` (so the states agree with it to rounding, usually exactly).
+/// The planning model: `step` and its sensitivities in one quadrature pass, with the same
+/// panels, nodes and arithmetic as the crate's `step`, but the portable [`sin_cos`]. The states
+/// agree with `step` to rounding, and are the same on every platform.
 ///
 /// With `φ(r) = θ + ω r + τ/(2I) r²`, `c = ∫ e(φ)`, `d = ∫ (h − r) e(φ)` and `e⊥ = ∂e/∂φ`:
 /// `∂c/∂θ = ∫ e⊥`, `∂c/∂ω = ∫ r e⊥`, `∂c/∂τ = ∫ r²/(2I) e⊥`, and likewise for `d`.
@@ -210,7 +375,7 @@ fn step_sens(p: &Params, s: &State, u: &Control) -> (State, Sens) {
         for (node, weight) in GL_NODES.iter().zip(GL_WEIGHTS) {
             let r = mid + 0.5 * width * node;
             let w = 0.5 * width * weight;
-            let (sin, cos) = (s.theta + s.omega * r + 0.5 * alpha * r * r).sin_cos();
+            let (sin, cos) = sin_cos(s.theta + s.omega * r + 0.5 * alpha * r * r);
             let (wd, r2) = (w * (h - r), 0.5 * r * r);
             q[0][0] += w * cos;
             q[0][1] += w * sin;
@@ -253,6 +418,19 @@ fn step_sens(p: &Params, s: &State, u: &Control) -> (State, Sens) {
     (next, sens)
 }
 
+/// The planning model's step, without the sensitivities.
+fn model_step(p: &Params, s: &State, u: &Control) -> State {
+    step_sens(p, s, u).0
+}
+
+/// `Task::reached`, with [`norm`] in place of `hypot`.
+fn inside(task: &Task, s: &State) -> bool {
+    let t = &task.tolerance;
+    norm(s.x - task.goal.x, s.y - task.goal.y) <= t.position
+        && norm(s.vx, s.vy) <= t.velocity
+        && s.omega.abs() <= t.omega
+}
+
 // ---------------------------------------------------------------------------------------------
 // The controller.
 
@@ -292,8 +470,10 @@ pub struct Solution {
     best: Vec<Control>,
     head: usize,
     len: usize,
-    /// The state the plan predicts next; anything else invalidates the plan.
+    /// The true state the plan predicts next; anything else invalidates the plan.
     expected: State,
+    /// The planning model's prediction of the current state, from the quantized start state.
+    state: State,
     valid: bool,
     /// Gauss–Newton iterate and line-search trial.
     cand: Track,
@@ -342,7 +522,7 @@ impl Model {
             (s.vx, s.vy, t.velocity, 2),
         ];
         for (ex, ey, eps, i) in groups {
-            let n = ex.hypot(ey);
+            let n = norm(ex, ey);
             let threshold = self.margin * eps;
             if n > threshold {
                 let f = 1.0 - threshold / n;
@@ -363,16 +543,17 @@ impl Model {
         (r, dr)
     }
 
-    /// Predict `track.u[..n]` from `s0`, storing states and sensitivities. A predicted hit is
-    /// confirmed with the crate's `step` before it is reported (once per rollout: if the
-    /// prediction ever disagrees with `step`, later predicted hits are not trusted).
-    fn rollout(&self, track: &mut Track, s0: &State, n: usize) -> Rollout {
+    /// Predict `track.u[..n]` from the model state `s0`, storing states and sensitivities. A
+    /// predicted hit is confirmed from the true state `real` with the crate's `step` before it
+    /// is reported (once per rollout: if the prediction ever disagrees with `step`, later
+    /// predicted hits are not trusted).
+    fn rollout(&self, track: &mut Track, s0: &State, real: &State, n: usize) -> Rollout {
         let p = self.task.params;
         track.s[0] = *s0;
         let mut trusted = true;
         for k in 0..=n {
-            if trusted && self.task.reached(&track.s[k]) {
-                if self.confirm(&track.u, s0, k) {
+            if trusted && inside(&self.task, &track.s[k]) {
+                if self.confirm(&track.u, real, k) {
                     return Rollout::Hit(k);
                 }
                 trusted = false;
@@ -462,6 +643,7 @@ impl Solution {
             head: 0,
             len: 0,
             expected: State::default(),
+            state: State::default(),
             valid: false,
             cand: Track::new(cap),
             trial: Track::new(cap),
@@ -475,14 +657,15 @@ impl Solution {
         }
     }
 
-    /// Correct `cand` over `n` steps from `s0` by projected Gauss–Newton, starting from a fresh
+    /// Correct `cand` over `n` steps from the model state `s0` (true state `real`) by projected
+    /// Gauss–Newton, starting from a fresh
     /// prediction if `fresh`, else from the stored one with residual `work_r`. The first
     /// control stays fixed if `fix_first`. Returns the first step in the target set (of the
     /// exact rollout); otherwise `cand` and `work_r` hold the last accepted iterate.
-    fn solve(&mut self, s0: &State, n: usize, iters: usize, fresh: bool, fix_first: bool) -> Solve {
+    fn solve(&mut self, s0: &State, real: &State, n: usize, iters: usize, fresh: bool, fix_first: bool) -> Solve {
         let p = self.task.params;
         if fresh {
-            match self.model.rollout(&mut self.cand, s0, n) {
+            match self.model.rollout(&mut self.cand, s0, real, n) {
                 Rollout::Hit(m) => return Solve::Hit(m),
                 Rollout::Miss(r) => self.work_r = r,
             }
@@ -561,7 +744,7 @@ impl Solution {
                         torque: (u.torque + t * d[1]).clamp(-p.tau_max, p.tau_max),
                     };
                 }
-                match self.model.rollout(&mut self.trial, s0, n) {
+                match self.model.rollout(&mut self.trial, s0, real, n) {
                     Rollout::Hit(m) => {
                         std::mem::swap(&mut self.cand, &mut self.trial);
                         return Solve::Hit(m);
@@ -612,11 +795,11 @@ impl Solution {
         self.work = 0;
     }
 
-    /// One receding-horizon attempt: a few more Gauss–Newton iterations on the working
-    /// candidate, started from the plan resampled `shorten` steps shorter when there is none.
-    /// Its first control is the plan's, which is applied next either way, so that the
-    /// candidate's prediction stays valid after the step.
-    fn improve(&mut self, s: &State) {
+    /// One receding-horizon attempt from the true state `real`: a few more Gauss–Newton
+    /// iterations on the working candidate, started from the plan resampled `shorten` steps
+    /// shorter when there is none. Its first control is the plan's, which is applied next either
+    /// way, so that the candidate's prediction stays valid after the step.
+    fn improve(&mut self, real: &State) {
         if self.cooldown > 0 {
             self.cooldown -= 1;
             return;
@@ -628,7 +811,8 @@ impl Solution {
             self.resample(self.work);
             self.cand.u[0] = self.plan[self.head];
         }
-        match self.solve(s, self.work, self.gains.step_iters as usize, fresh, true) {
+        let s = self.state;
+        match self.solve(&s, real, self.work, self.gains.step_iters as usize, fresh, true) {
             Solve::Hit(m) if m < l => {
                 self.accept(m);
                 self.shorten *= 2;
@@ -647,18 +831,20 @@ impl Solution {
         }
     }
 
-    /// Plan from scratch: from each seed law, its rollout shortened by a continuation on the
-    /// horizon; keep the shortest.
-    fn init(&mut self, s: &State) {
+    /// Plan from scratch from the true state `real`: from each seed law, its rollout shortened
+    /// by a continuation on the horizon; keep the shortest. The planning starts from `real`
+    /// quantized, so that it does not depend on the last bits of the state.
+    fn init(&mut self, real: &State) {
+        self.state = quantize_state(real);
         let mut best = None;
         for law in SEEDS.iter().take(self.gains.seeds as usize) {
             // The first seed is the fallback: it gets the whole step budget.
             let limit = best.map_or(self.task.max_steps, |b: usize| 2 * b);
             self.baseline.law = *law;
-            if !self.seed(s, limit) {
+            if !self.seed(real, limit) {
                 continue;
             }
-            self.shorten_plan(s);
+            self.shorten_plan(real);
             if best.is_none_or(|b| self.len < b) {
                 std::mem::swap(&mut self.plan, &mut self.best);
                 best = Some(self.len);
@@ -675,26 +861,27 @@ impl Solution {
         }
     }
 
-    /// Make the rollout of the current baseline law from `s` the plan, if it reaches the target
-    /// set within `limit` steps.
-    fn seed(&mut self, s: &State, limit: usize) -> bool {
-        let mut x = *s;
+    /// Make the rollout of the current seed law on the model the plan, if it reaches the target
+    /// set within `limit` steps, as confirmed from the true state `real`.
+    fn seed(&mut self, real: &State, limit: usize) -> bool {
+        let mut x = self.state;
         for k in 0..limit {
-            if self.task.reached(&x) {
+            if inside(&self.task, &x) {
                 (self.head, self.len) = (0, k);
-                return true;
+                return self.model.confirm(&self.plan, real, k);
             }
             let u = self.baseline.control(&x);
             self.plan[k] = u;
-            x = step(&self.task.params, &x, &u);
+            x = model_step(&self.task.params, &x, &u);
         }
         false
     }
 
     /// Shorten the plan by `shorten` steps, doubling it after a success and halving it after a
     /// failure, until a one-step shortening fails or the attempts run out.
-    fn shorten_plan(&mut self, s: &State) {
+    fn shorten_plan(&mut self, real: &State) {
         let iters = self.gains.init_iters as usize;
+        let s = self.state;
         let mut shorten = ((self.gains.init_shorten * self.len as f64) as usize).max(1);
         for _ in 0..self.gains.init_attempts as usize {
             let l = self.len;
@@ -703,7 +890,7 @@ impl Solution {
             }
             let target = l.saturating_sub(shorten).max(1);
             self.resample(target);
-            match self.solve(s, target, iters, true, false) {
+            match self.solve(&s, real, target, iters, true, false) {
                 Solve::Hit(m) if m < l => {
                     self.accept(m);
                     shorten *= 2;
@@ -732,6 +919,7 @@ impl Controller for Solution {
         let u = self.plan[self.head];
         self.head += 1;
         self.expected = step(&self.task.params, s, &u);
+        self.state = model_step(&self.task.params, &self.state, &u);
         // The working candidate continues from the next state, one step shorter.
         if self.work > 1 {
             self.cand.shift(self.work);

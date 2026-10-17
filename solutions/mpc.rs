@@ -343,21 +343,21 @@ impl Model {
         ];
         for (ex, ey, eps, i) in groups {
             let n = ex.hypot(ey);
-            let thr = self.margin * eps;
-            if n > thr {
-                let f = 1.0 - thr / n;
+            let threshold = self.margin * eps;
+            if n > threshold {
+                let f = 1.0 - threshold / n;
                 r[i] = f * ex / eps;
                 r[i + 1] = f * ey / eps;
-                let (ux, uy, g) = (ex / n, ey / n, thr / n);
+                let (ux, uy, g) = (ex / n, ey / n, threshold / n);
                 dr[i][i] = (f + g * ux * ux) / eps;
                 dr[i][i + 1] = g * ux * uy / eps;
                 dr[i + 1][i] = g * ux * uy / eps;
                 dr[i + 1][i + 1] = (f + g * uy * uy) / eps;
             }
         }
-        let thr = self.margin * t.omega;
-        if s.omega.abs() > thr {
-            r[4] = (s.omega - thr * s.omega.signum()) / t.omega;
+        let threshold = self.margin * t.omega;
+        if s.omega.abs() > threshold {
+            r[4] = (s.omega - threshold * s.omega.signum()) / t.omega;
             dr[4][5] = 1.0 / t.omega;
         }
         (r, dr)

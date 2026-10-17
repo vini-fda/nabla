@@ -367,9 +367,10 @@ impl CallbackTrait for ShipCallback {
 }
 
 /// How the 3D view's depth buffer maps distance toward the viewer, so whatever is drawn
-/// depth tested against the ship (see [`crate::sprites`]) agrees with it: depth 0.5 at the
-/// ship's center, 0 (nearest) to 1 (farthest) from the ship's reach in front of it to its
-/// reach behind it.
+/// depth tested against the ship (see [`crate::sprites`]) agrees with it: from 0 (nearest)
+/// at the ship's reach in front of its center to 1 (farthest) at its reach behind it. In
+/// orthographic, depth is linear in distance (0.5 at the ship's center); in perspective, it
+/// is the usual `far / (far - near) * (1 - near / distance)` of the distance from the eye.
 #[derive(Clone, Copy)]
 pub struct DepthMap {
     toward_viewer: Vec3,
@@ -377,22 +378,40 @@ pub struct DepthMap {
     origin: f32,
     /// Distance from the ship's center to its farthest point.
     reach: f32,
+    /// In perspective: the eye's distance toward the viewer, and the near and far planes'
+    /// distances from the eye.
+    perspective: Option<(f32, f32, f32)>,
 }
 
 impl DepthMap {
     /// For the ship of `renderer` at `position` with half length `half_length`, seen
-    /// through `camera`.
+    /// through `camera` in `canvas`.
     pub fn new(
         renderer: &ShipRenderer,
         camera: &Camera,
+        canvas: egui::Rect,
         position: egui::Vec2,
         half_length: f32,
     ) -> Self {
+        Self::with_reach(camera, canvas, position, half_length * renderer.radius)
+    }
+
+    /// For a ship at `position` that reaches `reach` from its center.
+    fn with_reach(camera: &Camera, canvas: egui::Rect, position: egui::Vec2, reach: f32) -> Self {
         let toward_viewer = camera.orbit.toward_viewer();
+        let origin = Vec3::plane(position).dot(toward_viewer);
+        let perspective = camera.eye_distance(canvas).map(|d| {
+            let eye = camera.center.dot(toward_viewer) + d;
+            let distance = eye - origin;
+            // Not behind the eye, if the eye is inside the ship's reach.
+            let near = (distance - reach).max(0.01 * reach);
+            (eye, near, (distance + reach).max(2.0 * near))
+        });
         Self {
             toward_viewer,
-            origin: Vec3::plane(position).dot(toward_viewer),
-            reach: half_length * renderer.radius,
+            origin,
+            reach,
+            perspective,
         }
     }
 
@@ -400,8 +419,46 @@ impl DepthMap {
     /// 0 to 1: anything nearer than the whole ship is in front of it, anything farther,
     /// behind it.
     pub fn depth(&self, p: Vec3, nearer: f32) -> f32 {
-        let distance = p.dot(self.toward_viewer) + nearer - self.origin;
-        (0.5 - distance / (2.0 * self.reach)).clamp(0.0, 1.0)
+        let z = p.dot(self.toward_viewer) + nearer;
+        let depth = match self.perspective {
+            None => 0.5 - (z - self.origin) / (2.0 * self.reach),
+            Some((eye, near, far)) => {
+                let distance = eye - z;
+                if distance <= near {
+                    0.0
+                } else {
+                    far / (far - near) * (1.0 - near / distance)
+                }
+            }
+        };
+        depth.clamp(0.0, 1.0)
+    }
+}
+
+/// An affine function of world points, `w . p + k`.
+#[derive(Clone, Copy)]
+struct Affine {
+    w: Vec3,
+    k: f32,
+}
+
+impl Affine {
+    fn at(self, a: f32) -> Self {
+        Self {
+            w: self.w * a,
+            k: self.k * a,
+        }
+    }
+
+    fn plus(self, other: Self) -> Self {
+        Self {
+            w: self.w + other.w,
+            k: self.k + other.k,
+        }
+    }
+
+    fn constant(k: f32) -> Self {
+        Self { w: Vec3::ZERO, k }
     }
 }
 
@@ -416,14 +473,41 @@ pub fn paint_callback(
     theta: f32,
     half_length: f32,
 ) -> Option<egui::PaintCallback> {
-    // Only the ship's surroundings are drawn into: the model fits in a sphere of radius
-    // `reach`.
-    let depth = DepthMap::new(renderer, camera, position, half_length);
+    let depth = DepthMap::new(renderer, camera, canvas, position, half_length);
     let reach = depth.reach;
-    let center = camera.world_to_screen(position, canvas);
-    let radius = reach * camera.scale * 1.02;
-    let rect =
-        egui::Rect::from_center_size(center, egui::Vec2::splat(2.0 * radius)).intersect(canvas);
+    let k = camera.scale;
+    let eye_distance = camera.eye_distance(canvas);
+
+    // Only the ship's surroundings are drawn into: the model fits in a sphere of radius
+    // `reach`, which projects within a circle around its center's projection.
+    let around = |radius: f32| {
+        let center = camera.world_to_screen(position, canvas)?;
+        Some(egui::Rect::from_center_size(
+            center,
+            egui::Vec2::splat(2.0 * radius),
+        ))
+    };
+    let rect = match (eye_distance, depth.perspective) {
+        (Some(d), Some((eye, _, _))) => {
+            let distance = eye - depth.origin;
+            if distance + reach <= 0.0 {
+                return None;
+            }
+            if distance - reach > 0.0 {
+                // At most the scale of the sphere's nearest point, and spread from the
+                // center of the screen by the difference.
+                let view = camera.view(Vec3::plane(position));
+                let off_axis = view.x.hypot(view.y);
+                let largest = k * d / (distance - reach);
+                around(largest * reach * (1.0 + off_axis / distance) * 1.02)?
+            } else {
+                // The eye is inside the sphere.
+                canvas
+            }
+        }
+        _ => around(reach * k * 1.02)?,
+    }
+    .intersect(canvas);
     if !rect.is_positive() {
         return None;
     }
@@ -432,25 +516,12 @@ pub fn paint_callback(
     let r = rotation(theta);
     let [right, up, toward_viewer] = camera.orbit.basis();
 
-    // Clip coordinates of world point p: across and up the screen through the camera, then
-    // into `rect`; toward the viewer into depth by `depth`.
-    let k = camera.scale;
-    let canvas_center = canvas.center();
-    let s = [
-        2.0 * k / rect.width(),
-        2.0 * k / rect.height(),
-        -1.0 / (2.0 * reach),
-    ];
-    let tx =
-        2.0 * (canvas_center.x - camera.center.dot(right) * k - rect.center().x) / rect.width();
-    let ty = -2.0 * (canvas_center.y + camera.center.dot(up) * k - rect.center().y) / rect.height();
-    let tz = 0.5 + depth.origin / (2.0 * reach);
-    // Column `i` of the world-to-view rotation, rows scaled by `[a, b, c]`.
-    let column = |i: usize, [a, b, c]: [f32; 3]| {
+    let clip_from_world = clip_from_world(camera, canvas, rect, &depth);
+    // Column `i` of the world-to-view rotation.
+    let column = |i: usize| {
         let [r, u, v] = [right, up, toward_viewer].map(|axis| axis.to_array()[i]);
-        [a * r, b * u, c * v, 0.0]
+        [r, u, v, 0.0]
     };
-    let clip_from_world = [column(0, s), column(1, s), column(2, s), [tx, ty, tz, 1.0]];
     let world_from_model = [
         [scale * r[0], scale * r[1], scale * r[2], 0.0],
         [scale * r[3], scale * r[4], scale * r[5], 0.0],
@@ -458,12 +529,7 @@ pub fn paint_callback(
         [position.x, position.y, 0.0, 1.0],
     ];
     // Normals go to view space (right, up, toward the viewer), where the lights are.
-    let view_from_world = [
-        column(0, [1.0; 3]),
-        column(1, [1.0; 3]),
-        column(2, [1.0; 3]),
-        [0.0, 0.0, 0.0, 1.0],
-    ];
+    let view_from_world = [column(0), column(1), column(2), [0.0, 0.0, 0.0, 1.0]];
     let rotation4 = [
         [r[0], r[1], r[2], 0.0],
         [r[3], r[4], r[5], 0.0],
@@ -479,6 +545,72 @@ pub fn paint_callback(
         rect,
         ShipCallback { uniforms },
     ))
+}
+
+/// The matrix (column-major) from world points to clip coordinates for drawing into `rect`
+/// of the canvas `canvas` seen through `camera`, with depth by `depth`.
+fn clip_from_world(
+    camera: &Camera,
+    canvas: egui::Rect,
+    rect: egui::Rect,
+    depth: &DepthMap,
+) -> [[f32; 4]; 4] {
+    let [right, up, toward_viewer] = camera.orbit.basis();
+    let (k, reach) = (camera.scale, depth.reach);
+    let eye_distance = camera.eye_distance(canvas);
+    // Clip coordinates of world point p, as affine functions of it: across and up the
+    // screen through the camera, then into `rect`; toward the viewer into depth by `depth`.
+    let along = |axis: Vec3| Affine {
+        w: axis,
+        k: -camera.center.dot(axis),
+    };
+    let (x, y) = (along(right), along(up));
+    // From the canvas's center to `rect`'s.
+    let shift = canvas.center() - rect.center();
+    let [clip_x, clip_y, clip_z, clip_w] = match (eye_distance, depth.perspective) {
+        (Some(d), Some((eye, near, far))) => {
+            // Distance from the eye: the clip w, which divides the others.
+            let distance = Affine {
+                w: -toward_viewer,
+                k: eye,
+            };
+            [
+                distance
+                    .at(shift.x)
+                    .plus(x.at(k * d))
+                    .at(2.0 / rect.width()),
+                y.at(k * d)
+                    .plus(distance.at(-shift.y))
+                    .at(2.0 / rect.height()),
+                distance
+                    .plus(Affine::constant(-near))
+                    .at(far / (far - near)),
+                distance,
+            ]
+        }
+        _ => [
+            x.at(k)
+                .plus(Affine::constant(shift.x))
+                .at(2.0 / rect.width()),
+            y.at(k)
+                .plus(Affine::constant(-shift.y))
+                .at(2.0 / rect.height()),
+            Affine {
+                w: toward_viewer,
+                k: -depth.origin,
+            }
+            .at(-1.0 / (2.0 * reach))
+            .plus(Affine::constant(0.5)),
+            Affine::constant(1.0),
+        ],
+    };
+    let rows = [clip_x, clip_y, clip_z, clip_w];
+    std::array::from_fn(|column| {
+        rows.map(|row| match column {
+            3 => row.k,
+            i => row.w.to_array()[i],
+        })
+    })
 }
 
 /// The rotation (column-major 3x3) that turns the model's nose (+y) to heading `theta` in
@@ -627,6 +759,53 @@ mod tests {
             let x = apply(&r, [1.0, 0.0, 0.0]);
             let y = apply(&r, [0.0, 1.0, 0.0]);
             assert_near(cross(x, y), apply(&r, [0.0, 0.0, 1.0]));
+        }
+    }
+
+    #[test]
+    fn clip_matrix_agrees_with_the_camera_and_depth_map() {
+        use crate::camera::Orbit;
+        let canvas = egui::Rect::from_min_size(egui::pos2(30.0, 40.0), egui::vec2(900.0, 600.0));
+        let rect = egui::Rect::from_min_size(egui::pos2(300.0, 200.0), egui::vec2(160.0, 120.0));
+        let position = egui::vec2(1.5, -0.5);
+        for perspective in [false, true] {
+            let camera = Camera {
+                center: Vec3::new(1.0, -1.0, 0.2),
+                scale: 40.0,
+                orbit: Orbit {
+                    azimuth: 0.7,
+                    elevation: 0.5,
+                },
+                perspective,
+            };
+            let depth = DepthMap::with_reach(&camera, canvas, position, 1.1);
+            let m = clip_from_world(&camera, canvas, rect, &depth);
+            for offset in [
+                Vec3::ZERO,
+                Vec3::new(0.8, 0.3, -0.4),
+                Vec3::new(-0.5, 0.6, 0.7),
+            ] {
+                let p = Vec3::plane(position) + offset;
+                let clip: [f32; 4] = std::array::from_fn(|row| {
+                    (0..3).map(|i| m[i][row] * p.to_array()[i]).sum::<f32>() + m[3][row]
+                });
+                let ndc = [clip[0] / clip[3], clip[1] / clip[3], clip[2] / clip[3]];
+                let screen = egui::pos2(
+                    rect.left() + f32::midpoint(ndc[0], 1.0) * rect.width(),
+                    rect.top() + f32::midpoint(1.0, -ndc[1]) * rect.height(),
+                );
+                let expected = camera.project(p, canvas).expect("in front of the eye");
+                assert!(
+                    screen.distance(expected) < 1e-2,
+                    "{perspective}: {screen:?} != {expected:?}"
+                );
+                assert!(
+                    (ndc[2] - depth.depth(p, 0.0)).abs() < 1e-4,
+                    "{perspective}: depth {} != {}",
+                    ndc[2],
+                    depth.depth(p, 0.0)
+                );
+            }
         }
     }
 

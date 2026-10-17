@@ -221,36 +221,42 @@ struct View<'a> {
 }
 
 impl View<'_> {
-    /// Adds a sprite at world point `p`, drawn `lift` world units toward the viewer, with
-    /// half axes `a` and `b` on screen.
+    /// Adds a sprite at world point `p`, drawn `lift` world units toward the viewer, with half
+    /// axes of world lengths `[along, across]` along `direction` (in the plane) and across
+    /// it, as [`screen_axes`] sees them; or round, of radius `along`, if `direction` is
+    /// `None`. Sprites not in front of the eye are left out.
     fn sprite(
         &self,
         batch: &mut SpriteBatch,
         p: Vec3,
         lift: f32,
-        a: Vec2,
-        b: Vec2,
+        direction: Option<Vec2>,
+        [along, across]: [f32; 2],
         color: Color32,
     ) {
-        let center = self.camera.project(p, self.canvas);
-        batch.add(center, a, b, self.depth.depth(p, lift), color);
+        let (camera, canvas) = (self.camera, self.canvas);
+        let Some(center) = camera.project(p, canvas) else {
+            return;
+        };
+        let axes = match direction {
+            Some(direction) => screen_axes(camera, canvas, p, direction, [along, across]),
+            None => camera
+                .scale_at(p, canvas)
+                .map(|scale| (Vec2::new(along * scale, 0.0), Vec2::new(0.0, along * scale))),
+        };
+        if let Some((a, b)) = axes {
+            batch.add(center, a, b, self.depth.depth(p, lift), color);
+        }
     }
 
     /// The jets.
     fn jets(&self, batch: &mut SpriteBatch) {
-        let Self {
-            camera,
-            replay,
-            t,
-            l,
-            ..
-        } = *self;
+        let Self { replay, t, l, .. } = *self;
 
         // The main jet's luminous body: a soft cone from the nozzle, and a brighter core.
         let thrust = smoothed(t, |t| replay.thrust_fraction(t));
         if thrust > 0.0 {
             let [nozzle] = main_nozzle(&replay.state_at_time(t), l);
-            let (along, across) = screen_axes(camera, -nozzle.direction, l);
             let [hot, warm, _] = MAIN.colors;
             for (distance, length, width, color, gain) in
                 [(0.9, 1.0, 0.28, warm, 0.22), (0.45, 0.5, 0.11, hot, 0.3)]
@@ -261,8 +267,8 @@ impl View<'_> {
                     batch,
                     nozzle.at(center),
                     0.0,
-                    along * length,
-                    across * width,
+                    Some(-nozzle.direction),
+                    [length * l, width * l],
                     color,
                 );
             }
@@ -300,7 +306,6 @@ impl View<'_> {
             let [nozzle] = main_nozzle(&s, l);
             let p = nozzle.at(nozzle.position);
             let lift = MAIN_GLOW_LIFT * l;
-            let (along, across) = screen_axes(camera, -nozzle.direction, l);
             let [hot, warm, _] = MAIN.colors;
             let white = [255.0, 255.0, 255.0];
             // A wide dim halo, the glowing ring seen edge on, and its white-hot core.
@@ -310,7 +315,8 @@ impl View<'_> {
                 (0.05, 0.12, white, 0.9),
             ] {
                 let color = additive(color, gain * thrust);
-                self.sprite(batch, p, lift, along * length, across * width, color);
+                let axes = [length * l, width * l];
+                self.sprite(batch, p, lift, Some(-nozzle.direction), axes, color);
             }
         }
 
@@ -318,7 +324,7 @@ impl View<'_> {
         let torque = smoothed(t, |t| replay.torque_fraction(t));
         if torque != 0.0 {
             let strength = torque.abs();
-            let r = 0.07 * l * camera.scale * strength.sqrt();
+            let r = 0.07 * l * strength.sqrt();
             let toward_viewer = camera.orbit.toward_viewer();
             for nozzle in rcs_nozzles(&s, torque, l) {
                 if nozzle.outward.dot(toward_viewer) > RCS_MIN_FACING {
@@ -327,8 +333,8 @@ impl View<'_> {
                         batch,
                         nozzle.at(nozzle.position),
                         RCS_GLOW_LIFT * l,
-                        Vec2::new(r, 0.0),
-                        Vec2::new(0.0, r),
+                        None,
+                        [r, r],
                         color,
                     );
                 }
@@ -348,13 +354,7 @@ impl View<'_> {
         strength: impl Fn(f64) -> f64,
         nozzles: impl Fn(&State, f32) -> [Nozzle; N],
     ) {
-        let Self {
-            camera,
-            replay,
-            t,
-            l,
-            ..
-        } = *self;
+        let Self { replay, t, l, .. } = *self;
         let first = ((t - jet.lifetime) * jet.rate).ceil().max(0.0) as u64;
         let last = (t.min(replay.duration()) * jet.rate).floor().max(0.0) as u64;
         for i in first..=last {
@@ -394,9 +394,9 @@ impl View<'_> {
                     jet.gain * power.sqrt() * fade,
                 );
                 let radius = l * (jet.size.0 + jet.size.1 * life) * (1.0 + 0.3 * size);
-                let (along, across) = screen_axes(camera, direction, radius);
                 let streak = 1.0 + (jet.streak - 1.0) * (1.0 - life);
-                self.sprite(batch, nozzle.at(p), 0.0, along * streak, across, color);
+                let axes = [radius * streak, radius];
+                self.sprite(batch, nozzle.at(p), 0.0, Some(direction), axes, color);
             }
         }
     }
@@ -446,17 +446,24 @@ fn smoothed(t: f64, fraction: impl Fn(f64) -> f64) -> f32 {
         / 4.0
 }
 
-/// A sprite's half axes on screen (y down) for world length `length` along `direction` (in
-/// the plane) and across it, seen through `camera`. Seen at a slant, the axis along
-/// `direction` is foreshortened, down to [`MIN_FORESHORTENING`]; the one across it, round
-/// the jet, isn't.
-fn screen_axes(camera: &Camera, direction: Vec2, length: f32) -> (Vec2, Vec2) {
-    let full = length * camera.scale;
-    let along = camera.screen_vector(Vec3::plane(direction) * length);
-    let unit = along.normalized();
+/// A sprite's half axes on screen (y down) for world lengths `[along, across]` along
+/// `direction` (in the plane) and across it, at world point `p` seen through `camera` in
+/// `canvas`. Seen at a slant, the axis along `direction` is foreshortened, down to
+/// [`MIN_FORESHORTENING`]; the one across it, round the jet, isn't. `None` when `p` is not
+/// in front of the eye.
+fn screen_axes(
+    camera: &Camera,
+    canvas: egui::Rect,
+    p: Vec3,
+    direction: Vec2,
+    [along, across]: [f32; 2],
+) -> Option<(Vec2, Vec2)> {
+    let scale = camera.scale_at(p, canvas)?;
+    let projected = camera.screen_vector_at(p, Vec3::plane(direction) * along, canvas)?;
+    let unit = projected.normalized();
     let unit = if unit.is_finite() { unit } else { Vec2::X };
-    let along = unit * along.length().max(MIN_FORESHORTENING * full);
-    (along, unit.rot90() * full)
+    let along = unit * projected.length().max(MIN_FORESHORTENING * along * scale);
+    Some((along, unit.rot90() * across * scale))
 }
 
 /// `rgb` (0 to 255) scaled by `brightness`, with zero alpha, so it adds onto what is below.

@@ -5,6 +5,7 @@
 
 mod app;
 pub mod camera;
+mod canvas_buttons;
 mod formula;
 mod gizmo;
 pub mod grid;

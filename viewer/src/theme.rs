@@ -43,6 +43,10 @@ const LILEX: &[u8] = include_bytes!("../assets/fonts/Lilex-Regular.ttf");
 /// `pyftsubset Phosphor-Fill.ttf --unicodes=U+E138,... --layout-features='' --no-hinting`, with the
 /// font and codepoints from `@phosphor-icons/web@2.1.1` (`src/fill/`). Add a glyph there first.
 const PHOSPHOR: &[u8] = include_bytes!("../assets/fonts/Phosphor-Fill-subset.ttf");
+/// The same, regular (outline) weight, cut down to the glyphs in [`icons::outline`], from
+/// `src/regular/Phosphor.ttf`. The weights share codepoints, so it is a font family of its own:
+/// [`icons::outline::font`].
+const PHOSPHOR_REGULAR: &[u8] = include_bytes!("../assets/fonts/Phosphor-Regular-subset.ttf");
 
 /// Phosphor icon glyphs, usable in any text, so they follow the widget's text color.
 pub mod icons {
@@ -52,6 +56,27 @@ pub mod icons {
     pub const PLAY: &str = "\u{E3D0}";
     pub const SKIP_BACK: &str = "\u{E5A4}";
     pub const SKIP_FORWARD: &str = "\u{E5A6}";
+
+    /// Regular (outline) weight glyphs, in their own font family: draw them with
+    /// [`font`](outline::font).
+    pub mod outline {
+        use egui::{FontFamily, FontId};
+
+        pub const ARROW_COUNTER_CLOCKWISE: &str = "\u{E038}";
+        pub const ARROWS_OUT_CARDINAL: &str = "\u{E0A4}";
+        pub const GRID_FOUR: &str = "\u{E296}";
+        pub const PERSPECTIVE: &str = "\u{EBE6}";
+        pub const ROCKET_LAUNCH: &str = "\u{E3FE}";
+        pub const SPHERE: &str = "\u{EE66}";
+
+        /// Name of the font family with the outline glyphs.
+        pub(crate) const FAMILY: &str = "Phosphor Regular";
+
+        /// The font to draw the outline glyphs with, at `size` points.
+        pub fn font(size: f32) -> FontId {
+            FontId::new(size, FontFamily::Name(FAMILY.into()))
+        }
+    }
 }
 
 /// IBM Plex Sans for the UI (as in Zed) and Lilex for code (as in Zed). The fonts are embedded, so
@@ -84,6 +109,14 @@ fn install_fonts(ctx: &egui::Context) {
             .or_default()
             .insert(1, "Phosphor".to_owned());
     }
+    fonts.font_data.insert(
+        icons::outline::FAMILY.to_owned(),
+        std::sync::Arc::new(egui::FontData::from_static(PHOSPHOR_REGULAR)),
+    );
+    fonts.families.insert(
+        FontFamily::Name(icons::outline::FAMILY.into()),
+        vec![icons::outline::FAMILY.to_owned()],
+    );
     ctx.set_fonts(fonts);
 }
 

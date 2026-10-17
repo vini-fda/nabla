@@ -7,15 +7,19 @@
 use egui::{Color32, Pos2, Rect, Sense, Stroke, Vec2};
 
 use crate::camera::{Camera, Orbit, Vec3};
+use crate::canvas_buttons;
 use crate::theme::palette;
 
 /// Distance from the gizmo's center to an axis's ball, and the ball's radius, in pixels.
 const ARM: f32 = 36.0;
 const BALL: f32 = 10.0;
-/// Space between the gizmo and the canvas's top and right edges. On the right, it clears
-/// a collapsed side panel's title bar.
-const MARGIN_TOP: f32 = 12.0;
-const MARGIN_RIGHT: f32 = 42.0;
+/// Space between the gizmo and the canvas's top edge, and its right edge: room for the
+/// floating buttons in the top right corner, and a gap.
+const MARGIN_TOP: f32 = canvas_buttons::MARGIN_TOP;
+const MARGIN_RIGHT: f32 = canvas_buttons::MARGIN_RIGHT + canvas_buttons::WIDTH + 12.0;
+/// Space between the gizmo and the Top-down view button under it, and the button's height.
+const BUTTON_GAP: f32 = 8.0;
+const BUTTON_HEIGHT: f32 = 20.0;
 /// Radians the camera turns per pixel dragged.
 const ORBIT_PER_PIXEL: f32 = 0.01;
 /// How fast a clicked view is reached: the remaining turn shrinks by `e` this many times a
@@ -80,13 +84,14 @@ impl ViewGizmo {
         room.then_some(center)
     }
 
-    /// Handles the gizmo's input and turns `camera`. Call it before anything is drawn with
-    /// the camera, so the frame shows the new view, and [`Self::paint`] after, so the
+    /// Handles the gizmo's input, if `shown`, and turns `camera`, also while hidden to finish
+    /// a turn under way. Call it before anything is drawn with the camera, so the frame shows
+    /// the new view, and [`Self::paint`] (if shown) after, so the
     /// gizmo is drawn over the scene.
-    pub fn input(&mut self, ui: &egui::Ui, canvas: Rect, camera: &mut Camera) {
+    pub fn input(&mut self, ui: &egui::Ui, canvas: Rect, camera: &mut Camera, shown: bool) {
         self.hovered = None;
         self.active = false;
-        if let Some(center) = Self::center(canvas) {
+        if shown && let Some(center) = Self::center(canvas) {
             let rect = Rect::from_center_size(center, Vec2::splat(2.0 * (ARM + BALL)));
             let response = ui.interact(
                 rect,
@@ -99,13 +104,7 @@ impl ViewGizmo {
             self.active = response.hovered() || response.dragged();
 
             if response.dragged() {
-                self.target = None;
-                let delta = response.drag_delta() * ORBIT_PER_PIXEL;
-                camera.orbit = Orbit {
-                    azimuth: camera.orbit.azimuth - delta.x,
-                    elevation: camera.orbit.elevation + delta.y,
-                }
-                .normalized();
+                self.orbit(camera, response.drag_delta());
                 ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
             } else if self.hovered.is_some() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -119,6 +118,18 @@ impl ViewGizmo {
             }
         }
         self.animate(ui.ctx(), camera);
+    }
+
+    /// Orbits `camera` by a drag of `delta` (screen pixels), on the gizmo or on the canvas: the
+    /// scene turns as if grabbed. Stops any turn under way.
+    pub fn orbit(&mut self, camera: &mut Camera, delta: Vec2) {
+        self.target = None;
+        let delta = delta * ORBIT_PER_PIXEL;
+        camera.orbit = Orbit {
+            azimuth: camera.orbit.azimuth - delta.x,
+            elevation: camera.orbit.elevation + delta.y,
+        }
+        .normalized();
     }
 
     /// Turns `camera` toward the target view, if any.
@@ -203,9 +214,9 @@ impl ViewGizmo {
             }
         }
 
-        let button = Rect::from_center_size(
-            center + Vec2::new(0.0, ARM + BALL + 18.0),
-            Vec2::new(100.0, 20.0),
+        let button = Rect::from_min_size(
+            center + Vec2::new(-50.0, ARM + BALL + BUTTON_GAP),
+            Vec2::new(100.0, BUTTON_HEIGHT),
         );
         let top_down = orbit.is_near(Orbit::TOP, 1e-4) && self.target.is_none();
         let response = ui

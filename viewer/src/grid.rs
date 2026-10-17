@@ -8,7 +8,7 @@
 
 use egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Stroke, Vec2};
 
-use crate::camera::{Camera, Orbit};
+use crate::camera::{Camera, Orbit, Vec3};
 
 pub struct GridStyle {
     pub minor_color: Color32,
@@ -68,6 +68,12 @@ impl ClampOrLow for f32 {
 const MIN_FACING: f32 = 0.05;
 const FULL_FACING: f32 = 0.3;
 
+/// In perspective, the plane stretches to the horizon: the grid covers a square around the
+/// point seen at the canvas's center, out to this many times the eye's distance, fading out
+/// toward its edge (the minor lines halfway), drawn in this many pieces per line to fade.
+const PERSPECTIVE_REACH: f32 = 3.0;
+const PERSPECTIVE_PIECES: usize = 6;
+
 /// The grid of the plane `z = 0`, seen through `camera` in `rect`.
 pub fn draw_grid(painter: &Painter, camera: &Camera, rect: Rect, style: &GridStyle) {
     if !(rect.width() >= 1.0 && rect.height() >= 1.0) {
@@ -81,56 +87,94 @@ pub fn draw_grid(painter: &Painter, camera: &Camera, rect: Rect, style: &GridSty
     let [minor_color, major_color, axis_color] =
         [style.minor_color, style.major_color, style.axis_color].map(|c| c.gamma_multiply(fade));
 
-    // The part of the plane on screen, a parallelogram, and its bounding box.
-    let corners = [
-        rect.left_top(),
-        rect.right_top(),
-        rect.left_bottom(),
-        rect.right_bottom(),
-    ]
-    .map(|c| camera.screen_to_world(c, rect));
-    let Some(corners) = corners.into_iter().collect::<Option<Vec<_>>>() else {
+    let Some((min, max, focus)) = region(camera, rect) else {
         return;
     };
-    let min = corners.iter().copied().fold(Vec2::INFINITY, Vec2::min);
-    let max = corners.iter().copied().fold(-Vec2::INFINITY, Vec2::max);
     let (world_min_x, world_max_x) = (min.x as f64, max.x as f64);
     let (world_min_y, world_max_y) = (min.y as f64, max.y as f64);
 
     // A tilted plane is foreshortened on screen by `facing` across the tilt, and not at all
-    // along it: the spacing is a compromise between the two.
-    let target_world = (style.target_major_spacing_px / (camera.scale * facing.sqrt())) as f64;
+    // along it: the spacing is a compromise between the two. In perspective, it is as at
+    // the focus.
+    let scale = focus
+        .and_then(|(focus, _)| camera.scale_at(Vec3::plane(focus), rect))
+        .unwrap_or(camera.scale);
+    let target_world = (style.target_major_spacing_px / (scale * facing.sqrt())) as f64;
     let major_step = nice_step(target_world);
     let minor_step = major_step / 5.0;
 
-    let x_line = |x: f64, width: f32, color: Color32| {
-        let [a, b] = [world_min_y, world_max_y]
-            .map(|y| camera.world_to_screen(Vec2::new(x as f32, y as f32), rect));
-        painter.line_segment([a, b], Stroke::new(width, color));
+    // The line from `a` to `b`, in perspective cut into pieces that fade with their
+    // distance from the focus, out to `reach`.
+    let line = |a: Vec2, b: Vec2, width: f32, color: Color32, reach: f32| match focus {
+        None => {
+            if let (Some(a), Some(b)) = (
+                camera.world_to_screen(a, rect),
+                camera.world_to_screen(b, rect),
+            ) {
+                painter.line_segment([a, b], Stroke::new(width, color));
+            }
+        }
+        Some((focus, _)) => {
+            for i in 0..PERSPECTIVE_PIECES {
+                let [s, t] = [i, i + 1].map(|j| j as f32 / PERSPECTIVE_PIECES as f32);
+                let (from, to) = (a + (b - a) * s, a + (b - a) * t);
+                let distance = ((from + to) / 2.0 - focus).length() / reach;
+                let strength = 1.0 - distance * distance;
+                if strength <= 0.0 {
+                    continue;
+                }
+                let piece = [Vec3::plane(from), Vec3::plane(to)];
+                for run in camera.project_polyline(piece, rect) {
+                    if let [a, b] = run[..] {
+                        painter.line_segment(
+                            [a, b],
+                            Stroke::new(width, color.gamma_multiply(strength)),
+                        );
+                    }
+                }
+            }
+        }
     };
-    let y_line = |y: f64, width: f32, color: Color32| {
-        let [a, b] = [world_min_x, world_max_x]
-            .map(|x| camera.world_to_screen(Vec2::new(x as f32, y as f32), rect));
-        painter.line_segment([a, b], Stroke::new(width, color));
+    let x_line = |x: f64, width: f32, color: Color32, reach: f32| {
+        let [a, b] = [world_min_y, world_max_y].map(|y| Vec2::new(x as f32, y as f32));
+        line(a, b, width, color, reach);
+    };
+    let y_line = |y: f64, width: f32, color: Color32, reach: f32| {
+        let [a, b] = [world_min_x, world_max_x].map(|x| Vec2::new(x as f32, y as f32));
+        line(a, b, width, color, reach);
     };
 
     // Minors drawn first; majors overlay them at the same x/y, so we don't need
-    // to skip-overlap.
-    for (step, color) in [(minor_step, minor_color), (major_step, major_color)] {
-        for &x in &major_ticks(world_min_x, world_max_x, step) {
-            x_line(x, 1.0, color);
+    // to skip-overlap. In perspective, the minor lines only reach halfway.
+    let reach = focus.map_or(f32::INFINITY, |(_, reach)| reach);
+    for (step, color, reach) in [
+        (minor_step, minor_color, reach / 2.0),
+        (major_step, major_color, reach),
+    ] {
+        let near = |range: (f64, f64), at: f32| {
+            let half = f64::from(reach);
+            (
+                range.0.max(f64::from(at) - half),
+                range.1.min(f64::from(at) + half),
+            )
+        };
+        let center = focus.map_or(Vec2::ZERO, |(focus, _)| focus);
+        let (x0, x1) = near((world_min_x, world_max_x), center.x);
+        let (y0, y1) = near((world_min_y, world_max_y), center.y);
+        for &x in &major_ticks(x0, x1, step) {
+            x_line(x, 1.0, color, reach);
         }
-        for &y in &major_ticks(world_min_y, world_max_y, step) {
-            y_line(y, 1.0, color);
+        for &y in &major_ticks(y0, y1, step) {
+            y_line(y, 1.0, color, reach);
         }
     }
 
     // Axes on top.
     if (world_min_x..=world_max_x).contains(&0.0) {
-        x_line(0.0, 1.5, axis_color);
+        x_line(0.0, 1.5, axis_color, reach);
     }
     if (world_min_y..=world_max_y).contains(&0.0) {
-        y_line(0.0, 1.5, axis_color);
+        y_line(0.0, 1.5, axis_color, reach);
     }
 
     if style.labels {
@@ -138,9 +182,45 @@ pub fn draw_grid(painter: &Painter, camera: &Camera, rect: Rect, style: &GridSty
     }
 }
 
+/// A part of the plane `z = 0`: its corners `(min, max)`, and, in perspective, its focus and
+/// how far it reaches from it.
+type Region = (Vec2, Vec2, Option<(Vec2, f32)>);
+
+/// The part of the plane the grid covers, seen through `camera` in `rect`: in orthographic,
+/// what is on screen (a parallelogram's bounding box), or `None` when the view is edge on;
+/// in perspective, the square around the point seen at the center of `rect`.
+fn region(camera: &Camera, rect: Rect) -> Option<Region> {
+    match camera.eye_distance(rect) {
+        None => {
+            let corners = [
+                rect.left_top(),
+                rect.right_top(),
+                rect.left_bottom(),
+                rect.right_bottom(),
+            ]
+            .map(|c| camera.screen_to_world(c, rect));
+            let corners = corners.into_iter().collect::<Option<Vec<_>>>()?;
+            let min = corners.iter().copied().fold(Vec2::INFINITY, Vec2::min);
+            let max = corners.iter().copied().fold(-Vec2::INFINITY, Vec2::max);
+            Some((min, max, None))
+        }
+        Some(d) => {
+            let focus = camera
+                .screen_to_world(rect.center(), rect)
+                .unwrap_or_else(|| Vec2::new(camera.center.x, camera.center.y));
+            let reach = PERSPECTIVE_REACH * d;
+            Some((
+                focus - Vec2::splat(reach),
+                focus + Vec2::splat(reach),
+                Some((focus, reach)),
+            ))
+        }
+    }
+}
+
 /// Coordinates of the major lines that are `major_step` apart, along the axes. Seen from
-/// straight above, labels of an axis off screen are pinned to the screen's edge; in other
-/// views only the labels of points on screen are drawn.
+/// straight above in orthographic, labels of an axis off screen are pinned to the screen's
+/// edge; in other views only the labels of points on screen are drawn.
 fn draw_labels(
     painter: &Painter,
     camera: &Camera,
@@ -151,9 +231,10 @@ fn draw_labels(
 ) {
     let (world_min_x, world_max_x) = (min.x as f64, max.x as f64);
     let (world_min_y, world_max_y) = (min.y as f64, max.y as f64);
-    let pinned = camera.orbit.is_near(Orbit::TOP, 1e-4);
+    let pinned = !camera.perspective && camera.orbit.is_near(Orbit::TOP, 1e-4);
     // Where the label of the axis point at `p` goes, if anywhere.
-    let place = |p: Pos2| {
+    let place = |p: Option<Pos2>| {
+        let p = p?;
         let inside = Pos2::new(
             p.x.clamp_or_low(rect.left() + 4.0, rect.right() - 4.0),
             p.y.clamp_or_low(rect.top() + 4.0, rect.bottom() - 14.0),

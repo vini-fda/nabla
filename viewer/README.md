@@ -64,6 +64,8 @@ cargo run --release -p ship2d_graphics                        # opens the best s
 cargo run --release -p ship2d_graphics -- path/to/solution.rs # opens this source
 ```
 
+While working on the viewer, use `cargo viewer` (`cargo run --profile fast -p ship2d_graphics`; arguments go after `--` as above). The `fast` profile keeps release's optimization level but skips its link-time optimization, so after an edit the viewer rebuilds in seconds instead of about a minute.
+
 On macOS, `viewer/macos/bundle.sh` builds `target/release/Nabla.app`, an app bundle with the layered Icon Composer icon (`viewer/macos/nabla_macOS.icon`), which macOS 26 renders with Liquid Glass. It needs Xcode, for `actool`. `cargo run` on macOS goes through this bundle automatically (cargo runner in `.cargo/config.toml`, `viewer/macos/run-bundled.sh`); a bare executable can only show a flat rounded icon.
 
 ```sh

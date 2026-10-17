@@ -1,3 +1,7 @@
 [target.'cfg(target_os = "macos")']
 # Wrap the viewer in an app bundle on `cargo run`, so the Dock shows the Liquid Glass icon.
 runner = "viewer/macos/run-bundled.sh"
+
+[alias]
+# The viewer, built with the `fast` profile (see Cargo.toml): quick rebuilds while iterating.
+viewer = "run --profile fast -p ship2d_graphics"

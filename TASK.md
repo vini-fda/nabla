@@ -246,6 +246,7 @@ matches its current source and score. Do not edit stored files by hand. Resubmit
 | `flip_and_burn_tuned` | same, constants tuned by coordinate descent |
 | `tolerance_aware` | same, plus a coasting spin-down finisher and an `ε_v` deadband, retuned |
 | `tolerance_aware_tuned` | `tolerance_aware` retuned in-process, with validation cases (`tune-controller` skill) |
+| `mpc` | shrinking-horizon MPC on the exact model: seed plans from the feedback laws, shortened by projected Gauss–Newton on the 5 terminal residuals, re-solved every step; every plan verified with `step` |
 
 `cargo xtask leaderboard` shows their current scores.
 

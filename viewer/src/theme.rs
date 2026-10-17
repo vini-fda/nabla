@@ -39,9 +39,24 @@ pub mod palette {
 
 const PLEX: &[u8] = include_bytes!("../assets/fonts/IBMPlexSans-Regular.ttf");
 const LILEX: &[u8] = include_bytes!("../assets/fonts/Lilex-Regular.ttf");
+/// Phosphor Icons, fill weight (<https://phosphoricons.com>), cut down to the glyphs in [`icons`]:
+/// `pyftsubset Phosphor-Fill.ttf --unicodes=U+E138,... --layout-features='' --no-hinting`, with the
+/// font and codepoints from `@phosphor-icons/web@2.1.1` (`src/fill/`). Add a glyph there first.
+const PHOSPHOR: &[u8] = include_bytes!("../assets/fonts/Phosphor-Fill-subset.ttf");
+
+/// Phosphor icon glyphs, usable in any text, so they follow the widget's text color.
+pub mod icons {
+    pub const CARET_LEFT: &str = "\u{E138}";
+    pub const CARET_RIGHT: &str = "\u{E13A}";
+    pub const PAUSE: &str = "\u{E39E}";
+    pub const PLAY: &str = "\u{E3D0}";
+    pub const SKIP_BACK: &str = "\u{E5A4}";
+    pub const SKIP_FORWARD: &str = "\u{E5A6}";
+}
 
 /// IBM Plex Sans for the UI (as in Zed) and Lilex for code (as in Zed). The fonts are embedded, so
-/// the look is the same on every platform. egui's default fonts stay as glyph fallbacks.
+/// the look is the same on every platform. Phosphor comes next, for the [`icons`], and egui's
+/// default fonts stay as glyph fallbacks.
 fn install_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
     for (name, bytes, family) in [
@@ -57,6 +72,17 @@ fn install_fonts(ctx: &egui::Context) {
             .entry(family)
             .or_default()
             .insert(0, name.to_owned());
+    }
+    fonts.font_data.insert(
+        "Phosphor".to_owned(),
+        std::sync::Arc::new(egui::FontData::from_static(PHOSPHOR)),
+    );
+    for family in [FontFamily::Proportional, FontFamily::Monospace] {
+        fonts
+            .families
+            .entry(family)
+            .or_default()
+            .insert(1, "Phosphor".to_owned());
     }
     ctx.set_fonts(fonts);
 }

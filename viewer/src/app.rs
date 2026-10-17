@@ -21,7 +21,7 @@ use crate::replay::{MAX_SUBDIVISIONS, Playback, Replay, Series};
 use crate::ship3d::{self, SHIP_GLB, ShipModel, ShipRenderer};
 use crate::sound::Sound;
 use crate::source::{self, Runner, SolutionSource, Status};
-use crate::theme::{self, palette};
+use crate::theme::{self, icons, palette};
 use crate::timeline::{TimelineView, timeline_ui};
 
 const TRIANGLE_STROKE_WIDTH: f32 = 2.0;
@@ -866,23 +866,23 @@ impl ViewerApp {
         let playback = &mut self.playback;
         ui.horizontal_wrapped(|ui| {
             if ui
-                .button("\u{23EE}")
+                .button(icons::SKIP_BACK)
                 .on_hover_text("Start (Home)")
                 .clicked()
             {
                 playback.seek_start();
             }
             if ui
-                .button("|\u{25C0}")
+                .button(icons::CARET_LEFT)
                 .on_hover_text("Previous controller sample (Shift+Left)")
                 .clicked()
             {
                 playback.previous_sample(last);
             }
             let play = if playback.playing {
-                "\u{23F8}"
+                icons::PAUSE
             } else {
-                "\u{25B6}"
+                icons::PLAY
             };
             if ui
                 .button(play)
@@ -892,13 +892,17 @@ impl ViewerApp {
                 playback.toggle(last);
             }
             if ui
-                .button("\u{25B6}|")
+                .button(icons::CARET_RIGHT)
                 .on_hover_text("Next controller sample (Shift+Right)")
                 .clicked()
             {
                 playback.next_sample(last);
             }
-            if ui.button("\u{23ED}").on_hover_text("End (End)").clicked() {
+            if ui
+                .button(icons::SKIP_FORWARD)
+                .on_hover_text("End (End)")
+                .clicked()
+            {
                 playback.seek_end(last);
             }
             ui.separator();

@@ -10,8 +10,9 @@ edition = "2024"
 registry = []
 
 [workspace]
-# The core crate (this package) and the egui viewer / web app.
-members = ["viewer"]
+# The core crate (this package), the egui viewer / web app, and the development tasks
+# (`cargo xtask`).
+members = ["viewer", "xtask"]
 
 [profile.release]
 opt-level = 2 # fast and small wasm
@@ -20,7 +21,7 @@ codegen-units = 1
 strip = true
 
 # For iterating on the viewer: `cargo viewer` (alias in .cargo/config.toml), or
-# `cargo run --profile fast -p ship2d_graphics`. As optimized as release, but without its
+# `cargo run --profile fast -p ship2d_graphics` for the bare binary. As optimized as release, but without its
 # whole-program LTO and single codegen unit, and incremental: a small edit to the viewer
 # rebuilds in about 2 s instead of about 50 s. Not for shipping (larger binary, no LTO).
 [profile.fast]

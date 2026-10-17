@@ -64,12 +64,12 @@ cargo run --release -p ship2d_graphics                        # opens the best s
 cargo run --release -p ship2d_graphics -- path/to/solution.rs # opens this source
 ```
 
-While working on the viewer, use `cargo viewer` (`cargo run --profile fast -p ship2d_graphics`; arguments go after `--` as above). The `fast` profile keeps release's optimization level but skips its link-time optimization, so after an edit the viewer rebuilds in seconds instead of about a minute.
+While working on the viewer, use `cargo viewer` (arguments go after `--` as above). It builds with the `fast` profile, which keeps release's optimization level but skips its link-time optimization, so after an edit the viewer rebuilds in seconds instead of about a minute.
 
-On macOS, `viewer/macos/bundle.sh` builds `target/release/Nabla.app`, an app bundle with the layered Icon Composer icon (`viewer/macos/nabla_macOS.icon`), which macOS 26 renders with Liquid Glass. It needs Xcode, for `actool`. `cargo run` on macOS goes through this bundle automatically (cargo runner in `.cargo/config.toml`, `viewer/macos/run-bundled.sh`); a bare executable can only show a flat rounded icon.
+On macOS, `cargo viewer` (`cargo xtask run --profile fast`) runs the viewer inside an app bundle, `Nabla.app`, with the layered Icon Composer icon (`viewer/macos/nabla_macOS.icon`) that macOS 26 renders with Liquid Glass; a bare executable, as from `cargo run`, can only show a flat rounded icon. `cargo xtask bundle` builds `target/release/Nabla.app` on its own. The Liquid Glass icon needs Xcode 26, for `actool`; without it the bundle gets a flat icon. See `cargo xtask help`.
 
 ```sh
-viewer/macos/bundle.sh && open "target/release/Nabla.app"
+cargo xtask bundle && open "target/release/Nabla.app"
 ```
 
 On Linux you may need:

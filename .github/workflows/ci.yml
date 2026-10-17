@@ -127,11 +127,12 @@ jobs:
           sudo xcode-select -s "$xcode"
           xcodebuild -version
 
+      # Bundles the binary built in the step above (same profile and target): no rebuild.
       - name: Build the macOS app bundle
         if: runner.os == 'macOS'
         run: |
-          viewer/macos/bundle.sh
-          test -f "target/release/Nabla.app/Contents/Resources/Assets.car"
+          cargo xtask bundle --target ${{ matrix.target }}
+          test -f "target/${{ matrix.target }}/release/Nabla.app/Contents/Resources/Assets.car"
 
   # The web app: compile for wasm and run the exact trunk build that gets deployed.
   web:

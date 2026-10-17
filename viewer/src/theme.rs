@@ -57,7 +57,8 @@ pub mod icons {
     pub const SKIP_BACK: &str = "\u{E5A4}";
     pub const SKIP_FORWARD: &str = "\u{E5A6}";
 
-    /// Regular (outline) weight glyphs, in their own font family: draw them with [`font`].
+    /// Regular (outline) weight glyphs, in their own font family: draw them with
+    /// [`font`](outline::font).
     pub mod outline {
         use egui::{FontFamily, FontId};
 

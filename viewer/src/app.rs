@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use egui::IdSalt;
-use egui_plot::{Legend, Line, Plot, PlotPoint, VLine};
+use egui_plot::{AxisHints, GridInput, GridMark, Legend, Line, Plot, PlotPoint, VLine};
 use ship2d_optimization::State;
 use ship2d_optimization::db::Entry;
 use ship2d_optimization::problem::{Case, Outcome, Trajectory};
@@ -29,6 +29,12 @@ use crate::timeline::{TimelineView, timeline_ui};
 const TRIANGLE_STROKE_WIDTH: f32 = 2.0;
 
 const PLOT_HEIGHT: f32 = 110.0;
+/// Pixels between neighboring tick labels at which the plots' axes start showing them, dim,
+/// and at which they show them at full strength. Each axis has grid lines at three steps
+/// (see [`plot_grid`]), so the labels of the finer steps show dimmed between those of the
+/// coarser ones, in the text color.
+const X_LABEL_SPACING: (f32, f32) = (24.0, 75.0);
+const Y_LABEL_SPACING: (f32, f32) = (12.0, 45.0);
 const CONTROLS_PANEL: SidePanel = SidePanel {
     dock: Dock::Left,
     id: "config_panel",
@@ -1770,13 +1776,56 @@ fn fit_camera(camera: &mut Camera, bounds: ([f64; 2], [f64; 2]), rect: egui::Rec
 }
 
 fn make_plot(id: &str) -> Plot<'static> {
+    let (x_min, x_max) = X_LABEL_SPACING;
+    let (y_min, y_max) = Y_LABEL_SPACING;
     Plot::new(id.to_owned())
         .height(PLOT_HEIGHT)
         .legend(Legend::default())
+        .x_grid_spacer(plot_grid)
+        .y_grid_spacer(plot_grid)
+        .custom_x_axes(vec![
+            AxisHints::new_x()
+                .label_spacing(x_min..=x_max)
+                .formatter(tick_label),
+        ])
+        .custom_y_axes(vec![
+            AxisHints::new_y()
+                .label_spacing(y_min..=y_max)
+                .formatter(tick_label),
+        ])
         .allow_zoom(false)
         .allow_drag(false)
         .allow_scroll(false)
         .allow_boxed_zoom(false)
+}
+
+/// Grid lines (and tick labels) at three steps, alternating between ones and fives: the
+/// smallest of `1 * 10^k` and `5 * 10^k` at least the plot's base step apart, and the next
+/// two above it (1, 5, 10 or 5, 10, 50). The labels of the finer steps fill in, dimmed,
+/// between those of the round numbers.
+fn plot_grid(input: GridInput) -> Vec<GridMark> {
+    let base = input.base_step_size.abs();
+    // A degenerate transform, as egui_plot's own spacers handle it.
+    if base < f64::EPSILON {
+        return Vec::new();
+    }
+    let decade = 10f64.powf(base.log10().floor());
+    let steps = if base <= decade {
+        [decade, 5.0 * decade, 10.0 * decade]
+    } else if base <= 5.0 * decade {
+        [5.0 * decade, 10.0 * decade, 50.0 * decade]
+    } else {
+        [10.0 * decade, 50.0 * decade, 100.0 * decade]
+    };
+    egui_plot::uniform_grid_spacer(|_| steps)(input)
+}
+
+/// A tick label, with as many decimals as its step needs: `0.5` for a step of 0.5, where
+/// `egui_plot`'s own labels would round it to `0`.
+fn tick_label(mark: GridMark, _range: &std::ops::RangeInclusive<f64>) -> String {
+    // The epsilon keeps `log10(0.1)` from landing just below -1.
+    let decimals = (-(mark.step_size.log10() + 1e-9).floor()).max(0.0) as usize;
+    egui::emath::format_with_decimals_in_range(mark.value, decimals..=decimals)
 }
 
 /// Playback speeds offered by the compact layout's speed menu.

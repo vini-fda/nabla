@@ -140,12 +140,10 @@ const RCS_PODS: [(f32, f32); 3] = [(0.866_025_4, 0.5), (-0.866_025_4, 0.5), (0.0
 /// the silhouette.
 const RCS_MIN_FACING: f32 = -0.1;
 
-/// How far toward the viewer the glows at the nozzles are drawn, in `L`, past the hull
-/// right around them: the main nozzle's over the engine bell and the tail, as when seen from
-/// above, and the reaction control ones off the hull's tips. The hull farther in front still
-/// hides them.
-const MAIN_GLOW_LIFT: f32 = 0.45;
-const RCS_GLOW_LIFT: f32 = 0.1;
+/// How far toward the viewer the reaction control nozzles' flashes are drawn, in `L`: just
+/// off the surface the nozzles sit on, so it doesn't cut them in half. The main nozzle's
+/// glow is drawn where it is, in the bell, so the hull hides it wherever it is in front.
+const RCS_GLOW_LIFT: f32 = 0.03;
 
 /// The least a sprite is foreshortened along its axis, as a fraction of its length, so the
 /// round cross-section of a jet seen end on still shows.
@@ -325,7 +323,6 @@ impl View<'_> {
         if thrust > 0.0 {
             let [nozzle] = main_nozzle(&s, l);
             let p = nozzle.position;
-            let lift = MAIN_GLOW_LIFT * l;
             let [hot, warm, _] = MAIN.colors;
             let white = [255.0, 255.0, 255.0];
             // A wide dim halo, the glowing ring seen edge on, and its white-hot core.
@@ -336,7 +333,7 @@ impl View<'_> {
             ] {
                 let color = additive(color, gain * thrust);
                 let axes = [length * l, width * l];
-                self.sprite(batch, p, lift, Some(-nozzle.direction), axes, color);
+                self.sprite(batch, p, 0.0, Some(-nozzle.direction), axes, color);
             }
         }
 

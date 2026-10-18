@@ -29,10 +29,12 @@ Viewer:
       Build and run the viewer. On macOS it runs inside the app bundle, so the Dock shows the
       Liquid Glass icon; an unchanged bundle is only refreshed with the new binary.
       `cargo viewer` is `cargo xtask run --profile fast`.
-  bundle [--profile <name>] [--target <triple>] [--flat-icon]
+  bundle [--profile <name>] [--target <triple>] [--flat-icon] [--sign <identity>]
       Build the viewer and wrap it in a macOS app bundle, `Nabla.app`, next to the binary
       (`target/release/Nabla.app` by default). macOS only; needs Xcode, for `actool`.
       --flat-icon skips the Liquid Glass icon (Assets.car) and uses only the flat .icns.
+      --sign signs with a keychain identity (name or SHA-1), with the hardened runtime and a
+      secure timestamp, as notarization requires. Without it, the signature is ad-hoc.
   The profile defaults to `release`.
 
 Repository:
@@ -120,6 +122,7 @@ fn viewer(sh: &Shell, task: &str, args: Vec<String>) -> Result<ExitCode> {
         target: None,
     };
     let mut flat_icon = false;
+    let mut identity = None;
     let mut passthrough = Vec::new();
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
@@ -127,6 +130,9 @@ fn viewer(sh: &Shell, task: &str, args: Vec<String>) -> Result<ExitCode> {
             "--profile" => build.profile = args.next().context("--profile needs a name")?,
             "--target" => build.target = Some(args.next().context("--target needs a triple")?),
             "--flat-icon" if task == "bundle" => flat_icon = true,
+            "--sign" if task == "bundle" => {
+                identity = Some(args.next().context("--sign needs an identity")?);
+            }
             "--" if task == "run" => passthrough.extend(args.by_ref()),
             _ => bail!("unexpected argument `{arg}`\n\n{HELP}"),
         }
@@ -137,7 +143,7 @@ fn viewer(sh: &Shell, task: &str, args: Vec<String>) -> Result<ExitCode> {
     }
     let mut bin = build.run(sh)?;
     if task == "bundle" {
-        bundle::create(sh, &bin, flat_icon)?;
+        bundle::create(sh, &bin, flat_icon, identity.as_deref())?;
         return Ok(ExitCode::SUCCESS);
     }
     if cfg!(target_os = "macos") {

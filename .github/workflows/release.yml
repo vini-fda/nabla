@@ -82,10 +82,81 @@ jobs:
           sudo xcode-select -s "$xcode"
           xcodebuild -version
 
-      - name: Build and package (macOS app bundle)
+      # Developer ID signing and notarization, when the repository has the secrets (see
+      # README.md). Without them, the app is signed ad-hoc and Gatekeeper blocks its first launch.
+      - name: Is Developer ID signing set up?
+        if: runner.os == 'macOS'
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+        run: |
+          if [ -n "$MACOS_CERTIFICATE" ]; then
+            echo "SIGN=1" >> "$GITHUB_ENV"
+          else
+            echo "::warning::No MACOS_CERTIFICATE secret: the macOS app is signed ad-hoc and not notarized"
+          fi
+
+      # Compile before the certificate is in a keychain, so no build script runs while it is.
+      - name: Build (macOS)
         if: runner.os == 'macOS'
         run: |
-          cargo xtask bundle --target ${{ matrix.target }}
+          cargo build --release -p ship2d_graphics --target ${{ matrix.target }}
+          cargo build -p xtask
+
+      - name: Import the Developer ID certificate
+        if: runner.os == 'macOS' && env.SIGN == '1'
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password="$(openssl rand -base64 24)"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" \
+            -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/certificate.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          identity="$(security find-identity -v -p codesigning "$keychain" \
+            | awk '/"Developer ID Application: / { print $2; exit }')"
+          if [ -z "$identity" ]; then
+            echo "::error::MACOS_CERTIFICATE holds no Developer ID Application identity"
+            exit 1
+          fi
+          echo "SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
+
+      - name: Bundle (macOS)
+        if: runner.os == 'macOS'
+        run: cargo xtask bundle --target ${{ matrix.target }} ${SIGN_IDENTITY:+--sign "$SIGN_IDENTITY"}
+
+      - name: Notarize and staple
+        if: runner.os == 'macOS' && env.SIGN == '1'
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          app="target/${{ matrix.target }}/release/Nabla.app"
+          key="$RUNNER_TEMP/AuthKey.p8"
+          printf '%s\n' "$APPLE_API_KEY" > "$key"
+          auth=(--key "$key" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER_ID")
+          ditto -c -k --keepParent "$app" "$RUNNER_TEMP/notarize.zip"
+          result="$(xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" "${auth[@]}" \
+            --wait --timeout 30m --output-format json)"
+          echo "$result"
+          if [ "$(jq -r .status <<< "$result")" != Accepted ]; then
+            xcrun notarytool log "$(jq -r .id <<< "$result")" "${auth[@]}"
+            echo "::error::Notarization failed"
+            exit 1
+          fi
+          xcrun stapler staple "$app"
+          spctl --assess --type exec -vv "$app"
+
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: |
           mkdir -p dist
           ditto -c -k --keepParent "target/${{ matrix.target }}/release/Nabla.app" "dist/$NAME.zip"
 
@@ -130,10 +201,15 @@ jobs:
       - name: Checksums
         run: cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
 
+      # The notes keep the macOS line marked `<!-- notarized -->` or `<!-- unsigned -->`, as the
+      # build job signed it: it notarizes whenever MACOS_CERTIFICATE is set, or fails.
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
         run: |
-          sed "s/{{TAG}}/$GITHUB_REF_NAME/g" .github/release-notes.md > notes.md
+          if [ -n "$MACOS_CERTIFICATE" ]; then keep=notarized drop=unsigned; else keep=unsigned drop=notarized; fi
+          sed -e "s/{{TAG}}/$GITHUB_REF_NAME/g" -e "/<!-- $drop -->/d" -e "s/ <!-- $keep -->\$//" \
+            .github/release-notes.md > notes.md
           gh release create "$GITHUB_REF_NAME" dist/* \
             --title "$GITHUB_REF_NAME" --notes-file notes.md --generate-notes --verify-tag

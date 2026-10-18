@@ -19,8 +19,9 @@ fn app_path(bin: &Path) -> PathBuf {
     bin.with_file_name("Nabla.app")
 }
 
-/// Build the bundle from scratch next to `bin`, and return its path.
-pub fn create(sh: &Shell, bin: &Path, flat_icon: bool) -> Result<PathBuf> {
+/// Build the bundle from scratch next to `bin`, and return its path. `identity`: the keychain
+/// identity to sign with; `None` signs ad-hoc.
+pub fn create(sh: &Shell, bin: &Path, flat_icon: bool, identity: Option<&str>) -> Result<PathBuf> {
     let app = app_path(bin);
     if app.exists() {
         sh.remove_path(&app)?;
@@ -38,7 +39,7 @@ pub fn create(sh: &Shell, bin: &Path, flat_icon: bool) -> Result<PathBuf> {
         app.join("Contents/Info.plist"),
         info_plist(&viewer_version()?, layered),
     )?;
-    sign(sh, &app)?;
+    sign(sh, &app, identity)?;
     Ok(app)
 }
 
@@ -49,9 +50,9 @@ pub fn refresh(sh: &Shell, bin: &Path) -> Result<PathBuf> {
     let app = app_path(bin);
     if is_current(&app)? {
         sh.copy_file(bin, app.join("Contents/MacOS").join(EXECUTABLE))?;
-        sign(sh, &app)?;
+        sign(sh, &app, None)?;
     } else {
-        create(sh, bin, false)?;
+        create(sh, bin, false, None)?;
     }
     Ok(app.join("Contents/MacOS").join(EXECUTABLE))
 }
@@ -156,9 +157,22 @@ fn compile_flat_icon(sh: &Shell, resources: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Ad-hoc signature, so the bundle runs on Apple Silicon.
-fn sign(sh: &Shell, app: &Path) -> Result<()> {
-    cmd!(sh, "codesign --force --sign - {app}").quiet().run()?;
+/// Sign the bundle with `identity`, or ad-hoc without one, which is enough to run on Apple
+/// silicon but not for Gatekeeper. Notarization needs a Developer ID identity, the hardened
+/// runtime and a secure timestamp. The viewer needs no entitlements: it only spawns `cargo`
+/// and the binaries it builds, which the hardened runtime allows.
+fn sign(sh: &Shell, app: &Path, identity: Option<&str>) -> Result<()> {
+    match identity {
+        None => cmd!(sh, "codesign --force --sign - {app}").quiet().run()?,
+        Some(identity) => {
+            cmd!(
+                sh,
+                "codesign --force --options runtime --timestamp --sign {identity} {app}"
+            )
+            .run()?;
+            cmd!(sh, "codesign --verify --strict --verbose=2 {app}").run()?;
+        }
+    }
     Ok(())
 }
 

@@ -992,7 +992,7 @@ impl ViewerApp {
             return;
         };
         let t = self.playback.time(replay.h());
-        ui.label("Click a plot to jump to that time.");
+        ui.heading("State plots");
         let seek = egui::ScrollArea::vertical()
             .show(ui, |ui| {
                 [

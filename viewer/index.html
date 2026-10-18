@@ -138,6 +138,12 @@
                 navigator.serviceWorker.register('sw.js');
             });
         }
+
+        // iOS mutes Web Audio while the ring/silent switch is on, unless the page says it plays
+        // media (as <video> does): the thruster sounds are playback, not alerts.
+        if ('audioSession' in navigator) {
+            navigator.audioSession.type = 'playback';
+        }
     </script>
 </body>
 

@@ -7,6 +7,7 @@
 //! is after the page has been interacted with, as autoplay rules require. The app hands the
 //! audio callback its controls through atomics, and bumps a heartbeat every frame: when the
 //! frames stop (a hidden tab, a minimized window), the callback goes quiet on its own.
+//! `index.html` sets the page's audio session to "playback", so iOS plays it in silent mode.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering::Relaxed};

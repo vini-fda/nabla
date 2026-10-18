@@ -3,13 +3,15 @@
 //! thrusters, as strong as the torque.
 //!
 //! The ship's cross-section is an equilateral triangle, and the reaction control thrusters
-//! are three pods at the corners of the tail, each with a nozzle blowing straight out from
-//! the ship's axis: two at the top corners, 30 degrees above the sides, and one under the
-//! hull. Their three directions, 120 degrees apart, span the cross-section, so mixing two of
-//! them pushes the tail any way across the ship. To turn the ship counterclockwise the tail
-//! has to go to its right: the upper left pod fires, and the bottom one at half strength
-//! cancels its downward push (and the other way round to turn it clockwise). The pods also
-//! push the ship sideways, which the planar simulation leaves out.
+//! come in two sets of three, each nozzle blowing straight out from the ship's axis: pods at
+//! the corners of the tail, and small nozzles in the nose. In each set two are on the upper
+//! sides, 30 degrees above the horizontal, and one is underneath. Their three directions,
+//! 120 degrees apart, span the cross-section, so mixing two of them pushes the tail (or the
+//! nose) any way across the ship. To turn the ship counterclockwise the tail goes to its
+//! right and the nose to its left: in the tail the upper left pod fires, and the bottom one
+//! at half strength cancels its downward push; in the nose the upper right nozzle and the
+//! bottom one, the same way (and the other way round to turn it clockwise). The two sets
+//! push equally and oppositely, a couple that turns the ship without pushing it.
 //!
 //! The plumes are particle systems without state: each frame recomputes the particles
 //! emitted during the last moments from the trajectory itself, so they stay consistent with
@@ -104,13 +106,33 @@ const RCS: Jet = Jet {
 /// ship's center, in `L`.
 const MAIN_NOZZLE: f32 = 0.86;
 
-/// Distance of the reaction control nozzles behind the ship's center, and out from its axis,
-/// in `L`: on the outer faces of the pods, halfway along them.
-const RCS_BACK: f32 = 0.9;
-const RCS_OUT: f32 = 0.43;
+/// The two sets of reaction control nozzles: how far they are in front of the ship's center
+/// (behind it if negative) and out from its axis, in `L`, and how big their jets are,
+/// relative to the [`RCS`] jet. In the tail, on the outer faces of the pods, halfway along
+/// them; in the nose, small rings near its tip.
+const RCS_SETS: [RcsSet; 2] = [
+    RcsSet {
+        forward: -0.9,
+        out: 0.43,
+        scale: 1.0,
+    },
+    RcsSet {
+        forward: 0.96,
+        out: 0.11,
+        scale: 0.6,
+    },
+];
 
-/// The reaction control pods' outward directions across the ship, as (to its right, up out
-/// of the plane): at 30, 150 and 270 degrees from its right, round the axis.
+/// One set of three reaction control nozzles round the axis: see [`RCS_SETS`].
+struct RcsSet {
+    forward: f32,
+    out: f32,
+    scale: f32,
+}
+
+/// The reaction control nozzles' outward directions across the ship, as (to its right, up
+/// out of the plane): at 30, 150 and 270 degrees from its right, round the axis. The same in
+/// both sets.
 const RCS_PODS: [(f32, f32); 3] = [(0.866_025_4, 0.5), (-0.866_025_4, 0.5), (0.0, -1.0)];
 
 /// How far round the hull from the viewer a tip may be, as the cosine of the angle between
@@ -142,6 +164,8 @@ struct Nozzle {
     across: [Vec3; 2],
     /// Fraction of the jet's strength the nozzle fires at (0 to 1).
     share: f32,
+    /// Size of the nozzle and its jet, relative to the jet's own.
+    scale: f32,
 }
 
 /// Draws the plumes, as soft sprites depth tested against the 3D ship.
@@ -323,7 +347,7 @@ impl View<'_> {
             for nozzle in rcs_nozzles(&s, torque, l) {
                 let strength = torque.abs() * nozzle.share;
                 if strength > 0.0 && nozzle.outward.dot(toward_viewer) > RCS_MIN_FACING {
-                    let r = 0.07 * l * strength.sqrt();
+                    let r = 0.07 * l * nozzle.scale * strength.sqrt();
                     let color = additive(RCS.colors[0], 0.9 * strength);
                     self.sprite(
                         batch,
@@ -366,6 +390,8 @@ impl View<'_> {
 
             for (j, nozzle) in nozzles(&s, signed).into_iter().enumerate() {
                 let power = power * nozzle.share;
+                // A smaller nozzle's jet is smaller all over, and as long-lived.
+                let l = l * nozzle.scale;
                 let [gate, lateral, angle, speed, size, lateral2, angle2] =
                     random((i * N as u64 + j as u64) ^ (salt << 56));
                 // Fewer particles at lower strength.
@@ -418,36 +444,41 @@ fn main_nozzle(s: &State, l: f32) -> [Nozzle; 1] {
         direction: -nose,
         across: [right, Vec3::Z],
         share: 1.0,
+        scale: 1.0,
     }]
 }
 
-/// The reaction control thrusters in state `s` under torque fraction `torque`: each pod
-/// blowing straight out from the axis, as hard as [`rcs_mix`] has it to push the tail to the
-/// ship's right for a counterclockwise (positive) torque, and to its left for a clockwise
-/// one.
-fn rcs_nozzles(s: &State, torque: f32, l: f32) -> [Nozzle; 3] {
+/// The reaction control thrusters in state `s` under torque fraction `torque`, the tail's
+/// three and then the nose's: each nozzle blowing straight out from the axis, as hard as
+/// [`rcs_mix`] has it to push the tail to the ship's right and the nose to its left for a
+/// counterclockwise (positive) torque, and the other way round for a clockwise one.
+fn rcs_nozzles(s: &State, torque: f32, l: f32) -> [Nozzle; 6] {
     let [nose, right] = ship_axes(s);
-    let shares = rcs_mix([torque.signum(), 0.0]);
-    let center = Vec3::plane(position(s)) - nose * (RCS_BACK * l);
     std::array::from_fn(|i| {
-        let (x, z) = RCS_PODS[i];
+        let set = &RCS_SETS[i / 3];
+        // The recoil across the ship, to its right for the tail turning counterclockwise.
+        let recoil = torque.signum() * -set.forward.signum();
+        let (x, z) = RCS_PODS[i % 3];
         let outward = right * x + Vec3::Z * z;
+        let center = Vec3::plane(position(s)) + nose * (set.forward * l);
         Nozzle {
-            position: center + outward * (RCS_OUT * l),
+            position: center + outward * (set.out * l),
             outward,
             direction: outward,
             across: [nose, outward.cross(nose)],
-            share: shares[i],
+            share: rcs_mix([recoil, 0.0])[i % 3],
+            scale: set.scale,
         }
     })
 }
 
-/// How hard each reaction control pod fires (0 to 1) for the tail to recoil along `recoil`,
-/// a unit vector across the ship as (to its right, up): the least thrust whose recoils add up
-/// to that direction, scaled for the pod working hardest to fire at full strength.
+/// How hard each of a set of reaction control nozzles fires (0 to 1) for the set to recoil
+/// along `recoil`, a unit vector across the ship as (to its right, up): the least thrust
+/// whose recoils add up to that direction, scaled for the nozzle working hardest to fire at
+/// full strength.
 fn rcs_mix(recoil: [f32; 2]) -> [f32; 3] {
-    // Each pod recoils against its outward direction. The three directions add up to zero,
-    // so adding the same to every pod's share changes nothing: starting from the mix that
+    // Each nozzle recoils against its outward direction. The three directions add up to
+    // zero, so adding the same to every share changes nothing: starting from the mix that
     // spreads the work evenly, add just enough for none to pull.
     let even = RCS_PODS.map(|(x, z)| -2.0 / 3.0 * (recoil[0] * x + recoil[1] * z));
     let least = even.into_iter().fold(f32::INFINITY, f32::min);
@@ -606,11 +637,11 @@ mod tests {
         assert!((mean - 0.5).abs() < 0.05, "mean {mean}");
     }
 
-    /// The reaction control jets' recoil (opposite to the exhaust) must push the tail
-    /// sideways, neither up nor down nor along the ship, to turn the ship the way the torque
-    /// does.
+    /// The reaction control jets' recoil (opposite to the exhaust) must make a couple that
+    /// turns the ship the way the torque does, without pushing it: the tail and the nose are
+    /// each pushed sideways, neither up nor down nor along the ship, oppositely.
     #[test]
-    fn rcs_jets_push_the_tail_across_to_turn_the_ship() {
+    fn rcs_jets_make_a_pure_couple_with_the_torque() {
         let s = State {
             x: 1.0,
             y: -2.0,
@@ -619,19 +650,24 @@ mod tests {
         };
         let [nose, right] = ship_axes(&s);
         for torque in [1.0, -0.5] {
+            let nozzles = rcs_nozzles(&s, torque, 1.0);
             let (mut force, mut moment) = (Vec3::ZERO, 0.0);
-            for n in rcs_nozzles(&s, torque, 1.0) {
-                let recoil = -n.direction * n.share;
-                let r = n.position - Vec3::plane(position(&s));
-                force = force + recoil;
-                moment += r.x * recoil.y - r.y * recoil.x;
+            for (set, nozzles) in nozzles.chunks(3).enumerate() {
+                let mut set_force = Vec3::ZERO;
+                for n in nozzles {
+                    let recoil = -n.direction * n.share;
+                    let r = n.position - Vec3::plane(position(&s));
+                    set_force = set_force + recoil;
+                    moment += r.x * recoil.y - r.y * recoil.x;
+                }
+                assert!(set_force.z.abs() < 1e-5, "vertical force {set_force:?}");
+                assert!(set_force.dot(nose).abs() < 1e-5, "along {set_force:?}");
+                // The tail (set 0) to the right for a counterclockwise torque.
+                let side = if set == 0 { 1.0 } else { -1.0 };
+                assert!(set_force.dot(right) * torque * side > 0.0, "{set_force:?}");
+                force = force + set_force;
             }
-            assert!(force.z.abs() < 1e-5, "vertical force {force:?}");
-            assert!(
-                force.dot(nose).abs() < 1e-5,
-                "force along the ship {force:?}"
-            );
-            assert!(force.dot(right) * torque > 0.0, "force {force:?}");
+            assert!(force.length() < 1e-5, "net force {force:?}");
             assert!(
                 moment * torque > 0.0,
                 "moment {moment} against torque {torque}"
@@ -649,20 +685,22 @@ mod tests {
         assert!(near(rcs_mix([0.0, 1.0]), [0.0, 0.0, 1.0]));
     }
 
-    /// The nozzles sit on the pods: out from the axis by the same distance, 120 degrees
-    /// apart, at the tail.
+    /// Each set of nozzles sits round the axis: out from it by the same distance, 120 degrees
+    /// apart, at the tail or the nose.
     #[test]
-    fn rcs_nozzles_are_at_the_tail_corners() {
+    fn rcs_nozzles_are_round_the_axis() {
         let s = State::default();
         let nozzles = rcs_nozzles(&s, 1.0, 1.0);
-        for n in nozzles {
-            let axis = Vec3::new(n.position.x, 0.0, 0.0);
-            assert!((n.position.x + RCS_BACK).abs() < 1e-5);
-            assert!(((n.position - axis).length() - RCS_OUT).abs() < 1e-5);
-        }
-        for (a, b) in [(0, 1), (1, 2), (2, 0)] {
-            let cos = nozzles[a].outward.dot(nozzles[b].outward);
-            assert!((cos + 0.5).abs() < 1e-5, "{cos}");
+        for (set, nozzles) in RCS_SETS.iter().zip(nozzles.chunks(3)) {
+            for n in nozzles {
+                let axis = Vec3::new(n.position.x, 0.0, 0.0);
+                assert!((n.position.x - set.forward).abs() < 1e-5);
+                assert!(((n.position - axis).length() - set.out).abs() < 1e-5);
+            }
+            for (a, b) in [(0, 1), (1, 2), (2, 0)] {
+                let cos = nozzles[a].outward.dot(nozzles[b].outward);
+                assert!((cos + 0.5).abs() < 1e-5, "{cos}");
+            }
         }
     }
 }

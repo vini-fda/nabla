@@ -724,41 +724,46 @@ impl ViewerApp {
                 ui.monospace(value);
                 ui.end_row();
             };
-            row(&formula::MASS, "mass", format!("{:.3}", p.mass));
+            row(&formula::MASS, "mass", format!("{:.3} kg", p.mass));
             row(
                 &formula::INERTIA,
                 "moment of inertia",
-                format!("{:.3}", p.inertia),
+                format!("{:.3} kg m^2", p.inertia),
             );
             row(
-                &formula::LIMITS,
-                "maximum thrust and torque",
-                format!("{:.3}, {:.3}", p.f_max, p.tau_max),
+                &formula::F_MAX,
+                "maximum thrust",
+                format!("{:.3} N", p.f_max),
+            );
+            row(
+                &formula::TAU_MAX,
+                "maximum torque",
+                format!("{:.3} N m", p.tau_max),
             );
             row(
                 &formula::INITIAL_POSITION,
                 "initial position",
-                format!("({:.2}, {:.2})", s.x, s.y),
+                format!("({:.2}, {:.2}) m", s.x, s.y),
             );
             row(
                 &formula::INITIAL_VELOCITY,
                 "initial velocity",
-                format!("({:.2}, {:.2})", s.vx, s.vy),
+                format!("({:.2}, {:.2}) m/s", s.vx, s.vy),
             );
             row(
                 &formula::INITIAL_THETA,
                 "initial heading angle",
-                format!("{:.2}", s.theta),
+                format!("{:.2} rad", s.theta),
             );
             row(
                 &formula::INITIAL_OMEGA,
                 "initial angular velocity",
-                format!("{:.2}", s.omega),
+                format!("{:.2} rad/s", s.omega),
             );
             row(
                 &formula::GOAL,
                 "goal",
-                format!("({:.2}, {:.2})", task.goal.x, task.goal.y),
+                format!("({:.2}, {:.2}) m", task.goal.x, task.goal.y),
             );
         });
         let Some(replay) = &self.replay else {
@@ -803,28 +808,36 @@ impl ViewerApp {
             row(
                 &formula::POSITION,
                 "position",
-                format!("({:.3}, {:.3})", s.x, s.y),
+                format!("({:.3}, {:.3}) m", s.x, s.y),
             );
             row(
                 &formula::VELOCITY,
                 "velocity",
-                format!("({:.3}, {:.3})", s.vx, s.vy),
+                format!("({:.3}, {:.3}) m/s", s.vx, s.vy),
             );
-            row(&formula::THETA, "heading angle", format!("{:.3}", s.theta));
+            row(
+                &formula::THETA,
+                "heading angle",
+                format!("{:.3} rad", s.theta),
+            );
             row(
                 &formula::OMEGA,
                 "angular velocity",
-                format!("{:.3}", s.omega),
+                format!("{:.3} rad/s", s.omega),
             );
             row(
                 &formula::DISTANCE,
                 "distance to the goal B",
-                format!("{:.4}", (s.x - goal.x).hypot(s.y - goal.y)),
+                format!("{:.4} m", (s.x - goal.x).hypot(s.y - goal.y)),
             );
-            row(&formula::SPEED, "speed", format!("{:.4}", s.vx.hypot(s.vy)));
+            row(
+                &formula::SPEED,
+                "speed",
+                format!("{:.4} m/s", s.vx.hypot(s.vy)),
+            );
             let control = replay.control(k).map_or_else(
                 || "- (final state)".to_owned(),
-                |u| format!("{:.3}, {:.3}", u.thrust, u.torque),
+                |u| format!("({:.3} N, {:.3} N m)", u.thrust, u.torque),
             );
             row(&formula::CONTROL, "control: thrust and torque", control);
         });
@@ -980,6 +993,7 @@ impl ViewerApp {
                     time_plot(
                         ui,
                         "Position",
+                        "m",
                         &formula::POSITION,
                         t,
                         &[("x", &plots.x, POS_X_COLOR), ("y", &plots.y, POS_Y_COLOR)],
@@ -987,6 +1001,7 @@ impl ViewerApp {
                     time_plot(
                         ui,
                         "Velocity",
+                        "m/s",
                         &formula::VELOCITY,
                         t,
                         &[
@@ -997,6 +1012,7 @@ impl ViewerApp {
                     time_plot(
                         ui,
                         "Heading angle",
+                        "rad",
                         &formula::THETA,
                         t,
                         &[("theta", &plots.theta, THETA_COLOR)],
@@ -1004,6 +1020,7 @@ impl ViewerApp {
                     time_plot(
                         ui,
                         "Angular velocity",
+                        "rad/s",
                         &formula::OMEGA,
                         t,
                         &[("omega", &plots.omega, OMEGA_COLOR)],
@@ -1011,6 +1028,7 @@ impl ViewerApp {
                     time_plot(
                         ui,
                         "Thrust",
+                        "N",
                         &formula::THRUST,
                         t,
                         &[("F", &plots.thrust, THRUST_COLOR)],
@@ -1018,6 +1036,7 @@ impl ViewerApp {
                     time_plot(
                         ui,
                         "Torque",
+                        "N m",
                         &formula::TORQUE,
                         t,
                         &[("tau", &plots.torque, TORQUE_COLOR)],
@@ -1806,11 +1825,12 @@ fn paint_gauge(painter: &egui::Painter, rect: egui::Rect, color: egui::Color32) 
     painter.circle_filled(center, 1.5, color);
 }
 
-/// Plot `lines` against time with a cursor at `t`, titled "`title` `symbol`". Returns the
-/// clicked time, if any.
+/// Plot `lines` against time with a cursor at `t`, titled "`title` `symbol` [`unit`]". Returns
+/// the clicked time, if any.
 fn time_plot(
     ui: &mut egui::Ui,
     title: &str,
+    unit: &str,
     symbol: &Formula,
     t: f64,
     lines: &[(&str, &Vec<PlotPoint>, egui::Color32)],
@@ -1819,11 +1839,16 @@ fn time_plot(
         ui.spacing_mut().item_spacing.x = 0.0;
         ui.label(format!("{title} "));
         symbol.ui(ui, &egui::TextStyle::Body.resolve(ui.style()));
+        ui.label(format!(" [{unit}]"));
     });
     make_plot(title)
         .show(ui, |plot_ui| {
             for &(name, series, color) in lines {
-                plot_ui.line(Line::new(name, series.as_slice()).color(color));
+                plot_ui.line(
+                    Line::new(name, series.as_slice())
+                        .color(color)
+                        .allow_band(false),
+                );
             }
             plot_ui.vline(VLine::new("", t).color(CURSOR_COLOR));
             let clicked = plot_ui.response().clicked() || plot_ui.response().dragged();

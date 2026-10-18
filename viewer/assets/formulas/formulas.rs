@@ -22,11 +22,18 @@ pub const INERTIA: Formula = Formula {
     width: 0.5250,
 };
 
-/// `$F_max, tau_max$`
-pub const LIMITS: Formula = Formula {
-    uri: "bytes://formula/limits.svg",
-    svg: include_bytes!("limits.svg"),
-    width: 4.1321,
+/// `$F_max$`
+pub const F_MAX: Formula = Formula {
+    uri: "bytes://formula/f_max.svg",
+    svg: include_bytes!("f_max.svg"),
+    width: 1.8917,
+};
+
+/// `$tau_max$`
+pub const TAU_MAX: Formula = Formula {
+    uri: "bytes://formula/tau_max.svg",
+    svg: include_bytes!("tau_max.svg"),
+    width: 1.7957,
 };
 
 /// `$mathbf(p)_0$`

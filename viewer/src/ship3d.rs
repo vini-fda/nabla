@@ -24,6 +24,12 @@ pub const SHIP_GLB: &[u8] = include_bytes!("../assets/nabla_starship.glb");
 /// is +y.
 const MODEL_TOP: [f32; 3] = [0.0, 0.0, 1.0];
 
+/// How far the hull's axis is above the model's origin, along [`MODEL_TOP`], in model units:
+/// the main engine's bell and the three reaction control pods at the corners of the tail are
+/// centered there. The model is moved down by it when loaded, so the ship's axis lies in the
+/// plane of its trajectory.
+const MODEL_AXIS_HEIGHT: f32 = 0.074;
+
 /// An RGBA8 image.
 #[derive(Clone)]
 pub struct Image {
@@ -71,6 +77,10 @@ impl ShipModel {
             .read_indices()
             .ok_or("no indices")?
             .into_u32()
+            .collect();
+        let positions: Vec<[f32; 3]> = positions
+            .iter()
+            .map(|&p| std::array::from_fn(|i| p[i] - MODEL_AXIS_HEIGHT * MODEL_TOP[i]))
             .collect();
         let vertices = positions
             .iter()
@@ -816,6 +826,31 @@ mod tests {
         assert_eq!(model.indices.len() % 3, 0);
         assert!((model.half_length - 1.0).abs() < 0.01);
         assert_eq!(model.base_color.pixels.len(), 2048 * 2048 * 4);
+    }
+
+    /// The three reaction control pods at the corners of the tail, 120 degrees apart round
+    /// the axis, stick out equally far from it: the model is centered on its axis.
+    #[test]
+    fn the_hull_axis_is_on_the_origin() {
+        let model = ShipModel::load(SHIP_GLB).expect("the embedded model loads");
+        let tail: Vec<[f32; 3]> = model
+            .vertices
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|v| [v[0], v[1], v[2]])
+            .filter(|p| p[1] < -0.7)
+            .collect();
+        let reach = |degrees: f32| {
+            let (sin, cos) = degrees.to_radians().sin_cos();
+            tail.iter()
+                .map(|p| p[0] * cos + p[2] * sin)
+                .fold(f32::MIN, f32::max)
+        };
+        let reaches = [reach(30.0), reach(150.0), reach(270.0)];
+        for r in reaches {
+            assert!((r - reaches[0]).abs() < 0.02, "{reaches:?}");
+        }
     }
 
     #[test]

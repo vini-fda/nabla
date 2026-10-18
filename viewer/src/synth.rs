@@ -18,13 +18,13 @@ const CONTROL_PERIOD: u32 = 32;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum IonSound {
     /// A low electric drone whose filter opens up with the thrust.
-    #[default]
     Hum,
     /// A high, glassy whine that rises in pitch with the thrust.
     Whine,
     /// Roaring plasma: filtered noise that brightens with the thrust.
     Hiss,
     /// A deep engine throb, pulsing faster with the thrust.
+    #[default]
     Thrum,
     /// Discrete plasma discharges, crackling faster with the thrust.
     Pulsed,

@@ -1,12 +1,15 @@
-//! Thruster plumes in the 3D view: a blue jet out of the main (ion) thruster at the center
-//! of the tail, as strong as the thrust, and white puffs out of the reaction control
-//! thrusters at the ship's six tips, as strong as the torque.
+//! Thruster plumes in the 3D view: a blue jet out of the main (ion) thruster's bell at the
+//! center of the tail, as strong as the thrust, and white puffs out of the reaction control
+//! thrusters, as strong as the torque.
 //!
-//! The ship's cross-section is an equilateral triangle, so there are three tips at the nose
-//! and three at the tail; seen from above, one of each three is under the hull (on the
-//! center line) and the other two are on its edges. To turn the ship counterclockwise the
-//! nose thrusters blow to the right and the tail thrusters to the left (and the other way
-//! round to turn it clockwise), a couple that turns the ship without pushing it.
+//! The ship's cross-section is an equilateral triangle, and the reaction control thrusters
+//! are three pods at the corners of the tail, each with a nozzle blowing straight out from
+//! the ship's axis: two at the top corners, 30 degrees above the sides, and one under the
+//! hull. Their three directions, 120 degrees apart, span the cross-section, so mixing two of
+//! them pushes the tail any way across the ship. To turn the ship counterclockwise the tail
+//! has to go to its right: the upper left pod fires, and the bottom one at half strength
+//! cancels its downward push (and the other way round to turn it clockwise). The pods also
+//! push the ship sideways, which the planar simulation leaves out.
 //!
 //! The plumes are particle systems without state: each frame recomputes the particles
 //! emitted during the last moments from the trajectory itself, so they stay consistent with
@@ -97,21 +100,18 @@ const RCS: Jet = Jet {
     ],
 };
 
-/// Distance of the main nozzle behind the ship's center, in `L`.
-const MAIN_NOZZLE: f32 = 0.98;
+/// Distance of the main nozzle (the rim of the engine's bell, set into the tail) behind the
+/// ship's center, in `L`.
+const MAIN_NOZZLE: f32 = 0.86;
 
-/// The reaction control thrusters, in model coordinates (`L`; x to the ship's right, y to
-/// its nose, z up out of the plane). The tips are the corners of equilateral triangles: of
-/// circumradius 0.14 at the nose and 0.38 at the tail, one corner under the hull and two at
-/// +-30 degrees above it.
-const RCS_NOZZLES: [(f32, f32, f32); 6] = [
-    (0.0, 0.92, -0.14),
-    (0.121, 0.92, 0.07),
-    (-0.121, 0.92, 0.07),
-    (0.0, -0.96, -0.38),
-    (0.329, -0.96, 0.19),
-    (-0.329, -0.96, 0.19),
-];
+/// Distance of the reaction control nozzles behind the ship's center, and out from its axis,
+/// in `L`: on the outer faces of the pods, halfway along them.
+const RCS_BACK: f32 = 0.9;
+const RCS_OUT: f32 = 0.43;
+
+/// The reaction control pods' outward directions across the ship, as (to its right, up out
+/// of the plane): at 30, 150 and 270 degrees from its right, round the axis.
+const RCS_PODS: [(f32, f32); 3] = [(0.866_025_4, 0.5), (-0.866_025_4, 0.5), (0.0, -1.0)];
 
 /// How far round the hull from the viewer a tip may be, as the cosine of the angle between
 /// its direction from the ship's axis and the view, for its flash to show: a little past
@@ -129,23 +129,19 @@ const RCS_GLOW_LIFT: f32 = 0.1;
 /// round cross-section of a jet seen end on still shows.
 const MIN_FORESHORTENING: f32 = 0.35;
 
-/// A nozzle at an instant: where it is (world), and which way its exhaust goes (in the
-/// plane).
+/// A nozzle at an instant: where it is (world), which way its exhaust goes, and how hard it
+/// fires.
 #[derive(Clone, Copy)]
 struct Nozzle {
-    position: Vec2,
-    /// Height above the plane.
-    z: f32,
-    /// Direction of the tip from the ship's axis, as a unit vector across it.
+    position: Vec3,
+    /// Which way the nozzle faces out of the hull, a unit vector.
     outward: Vec3,
-    direction: Vec2,
-}
-
-impl Nozzle {
-    /// The world point at `p` in the plane of the nozzle's height.
-    fn at(&self, p: Vec2) -> Vec3 {
-        Vec3::new(p.x, p.y, self.z)
-    }
+    /// Which way the exhaust leaves, a unit vector.
+    direction: Vec3,
+    /// Two unit vectors across `direction` and each other, which the jet spreads along.
+    across: [Vec3; 2],
+    /// Fraction of the jet's strength the nozzle fires at (0 to 1).
+    share: f32,
 }
 
 /// Draws the plumes, as soft sprites depth tested against the 3D ship.
@@ -222,15 +218,15 @@ struct View<'a> {
 
 impl View<'_> {
     /// Adds a sprite at world point `p`, drawn `lift` world units toward the viewer, with half
-    /// axes of world lengths `[along, across]` along `direction` (in the plane) and across
-    /// it, as [`screen_axes`] sees them; or round, of radius `along`, if `direction` is
-    /// `None`. Sprites not in front of the eye are left out.
+    /// axes of world lengths `[along, across]` along `direction` and across it, as
+    /// [`screen_axes`] sees them; or round, of radius `along`, if `direction` is `None`.
+    /// Sprites not in front of the eye are left out.
     fn sprite(
         &self,
         batch: &mut SpriteBatch,
         p: Vec3,
         lift: f32,
-        direction: Option<Vec2>,
+        direction: Option<Vec3>,
         [along, across]: [f32; 2],
         color: Color32,
     ) {
@@ -253,19 +249,19 @@ impl View<'_> {
     fn jets(&self, batch: &mut SpriteBatch) {
         let Self { replay, t, l, .. } = *self;
 
-        // The main jet's luminous body: a soft cone from the nozzle, and a brighter core.
+        // The main jet's luminous body: a soft cone from the nozzle, and a brighter core,
+        // each centered half its length downstream, so it is already bright where it
+        // leaves the tail.
         let thrust = smoothed(t, |t| replay.thrust_fraction(t));
         if thrust > 0.0 {
             let [nozzle] = main_nozzle(&replay.state_at_time(t), l);
             let [hot, warm, _] = MAIN.colors;
-            for (distance, length, width, color, gain) in
-                [(0.9, 1.0, 0.28, warm, 0.22), (0.45, 0.5, 0.11, hot, 0.3)]
-            {
-                let center = nozzle.position + nozzle.direction * distance * l;
+            for (length, width, color, gain) in [(1.0, 0.28, warm, 0.22), (0.5, 0.11, hot, 0.3)] {
+                let center = nozzle.position + nozzle.direction * (0.55 * length * l);
                 let color = additive(color, gain * thrust);
                 self.sprite(
                     batch,
-                    nozzle.at(center),
+                    center,
                     0.0,
                     Some(-nozzle.direction),
                     [length * l, width * l],
@@ -304,7 +300,7 @@ impl View<'_> {
         let thrust = smoothed(t, |t| replay.thrust_fraction(t));
         if thrust > 0.0 {
             let [nozzle] = main_nozzle(&s, l);
-            let p = nozzle.at(nozzle.position);
+            let p = nozzle.position;
             let lift = MAIN_GLOW_LIFT * l;
             let [hot, warm, _] = MAIN.colors;
             let white = [255.0, 255.0, 255.0];
@@ -323,15 +319,15 @@ impl View<'_> {
         // A flash at each visible reaction control nozzle that is firing.
         let torque = smoothed(t, |t| replay.torque_fraction(t));
         if torque != 0.0 {
-            let strength = torque.abs();
-            let r = 0.07 * l * strength.sqrt();
             let toward_viewer = camera.orbit.toward_viewer();
             for nozzle in rcs_nozzles(&s, torque, l) {
-                if nozzle.outward.dot(toward_viewer) > RCS_MIN_FACING {
+                let strength = torque.abs() * nozzle.share;
+                if strength > 0.0 && nozzle.outward.dot(toward_viewer) > RCS_MIN_FACING {
+                    let r = 0.07 * l * strength.sqrt();
                     let color = additive(RCS.colors[0], 0.9 * strength);
                     self.sprite(
                         batch,
-                        nozzle.at(nozzle.position),
+                        nozzle.position,
                         RCS_GLOW_LIFT * l,
                         None,
                         [r, r],
@@ -369,26 +365,37 @@ impl View<'_> {
             let s = replay.state_at_time(emitted);
 
             for (j, nozzle) in nozzles(&s, signed).into_iter().enumerate() {
-                let [gate, lateral, angle, speed, size] =
+                let power = power * nozzle.share;
+                let [gate, lateral, angle, speed, size, lateral2, angle2] =
                     random((i * N as u64 + j as u64) ^ (salt << 56));
                 // Fewer particles at lower strength.
                 if gate >= power {
                     continue;
                 }
-                let across = nozzle.direction.rot90();
-                let start = nozzle.position + across * lateral * jet.nozzle_radius * l;
+                let [across, across2] = nozzle.across;
+                let start = nozzle.position
+                    + (across * lateral + across2 * lateral2) * (jet.nozzle_radius * l);
                 // Off-axis particles lean outward, which opens the jet into a cone.
-                let direction =
-                    rotate(nozzle.direction, jet.spread * (0.6 * angle + 0.4 * lateral));
+                let lean =
+                    |angle: f32, lateral: f32| (jet.spread * (0.6 * angle + 0.4 * lateral)).tan();
+                let direction = unit(
+                    nozzle.direction
+                        + across * lean(angle, lateral)
+                        + across2 * lean(angle2, lateral2),
+                );
                 let exhaust = jet.speed * l * (0.55 + 0.45 * power) * (1.0 + 0.15 * speed);
-                let mut p = start + (velocity_at(&s, start) + direction * exhaust) * age;
-                // Flapping across the jet, and bunching along it, half as much.
-                let seed = (salt << 8) + 2 * j as u64;
+                let velocity = Vec3::plane(velocity_at(&s, Vec2::new(start.x, start.y)));
+                let mut p = start + (velocity + direction * exhaust) * age;
+                // Flapping across the jet, both ways, and bunching along it, half as much.
+                let seed = (salt << 8) + 3 * j as u64;
                 let growth = jet.turbulence * l * life.powf(1.5);
-                p += across * flap(emitted, jet.flap_rate, seed) * growth;
-                p += nozzle.direction * flap(emitted, jet.flap_rate, seed + 1) * 0.5 * growth;
+                p = p
+                    + across * (flap(emitted, jet.flap_rate, seed) * growth)
+                    + across2 * (flap(emitted, jet.flap_rate, seed + 2) * growth)
+                    + nozzle.direction * (flap(emitted, jet.flap_rate, seed + 1) * 0.5 * growth);
 
-                let fade = (1.0 - life).powi(2) * (life * 12.0).min(1.0);
+                // Fades in over the first moments only, so the jet is bright at the nozzle.
+                let fade = (1.0 - life).powi(2) * (life * 40.0).min(1.0);
                 let color = additive(
                     life_color(&jet.colors, life),
                     jet.gain * power.sqrt() * fade,
@@ -396,45 +403,77 @@ impl View<'_> {
                 let radius = l * (jet.size.0 + jet.size.1 * life) * (1.0 + 0.3 * size);
                 let streak = 1.0 + (jet.streak - 1.0) * (1.0 - life);
                 let axes = [radius * streak, radius];
-                self.sprite(batch, nozzle.at(p), 0.0, Some(direction), axes, color);
+                self.sprite(batch, p, 0.0, Some(direction), axes, color);
             }
         }
     }
 }
 
-/// The main thruster in state `s`: behind the tail, blowing backward.
+/// The main thruster in state `s`: in the tail, on the axis, blowing backward.
 fn main_nozzle(s: &State, l: f32) -> [Nozzle; 1] {
-    let heading = Vec2::angled(s.theta as f32);
+    let [nose, right] = ship_axes(s);
     [Nozzle {
-        position: position(s) - heading * MAIN_NOZZLE * l,
-        z: 0.0,
-        outward: Vec3::plane(-heading),
-        direction: -heading,
+        position: Vec3::plane(position(s)) - nose * (MAIN_NOZZLE * l),
+        outward: -nose,
+        direction: -nose,
+        across: [right, Vec3::Z],
+        share: 1.0,
     }]
 }
 
-/// The reaction control thrusters in state `s` under torque fraction `torque`: the nose
-/// ones blowing to the ship's right and the tail ones to its left for a counterclockwise
-/// (positive) torque, the other way round for a clockwise one.
-fn rcs_nozzles(s: &State, torque: f32, l: f32) -> [Nozzle; 6] {
+/// The reaction control thrusters in state `s` under torque fraction `torque`: each pod
+/// blowing straight out from the axis, as hard as [`rcs_mix`] has it to push the tail to the
+/// ship's right for a counterclockwise (positive) torque, and to its left for a clockwise
+/// one.
+fn rcs_nozzles(s: &State, torque: f32, l: f32) -> [Nozzle; 3] {
+    let [nose, right] = ship_axes(s);
+    let shares = rcs_mix([torque.signum(), 0.0]);
+    let center = Vec3::plane(position(s)) - nose * (RCS_BACK * l);
+    std::array::from_fn(|i| {
+        let (x, z) = RCS_PODS[i];
+        let outward = right * x + Vec3::Z * z;
+        Nozzle {
+            position: center + outward * (RCS_OUT * l),
+            outward,
+            direction: outward,
+            across: [nose, outward.cross(nose)],
+            share: shares[i],
+        }
+    })
+}
+
+/// How hard each reaction control pod fires (0 to 1) for the tail to recoil along `recoil`,
+/// a unit vector across the ship as (to its right, up): the least thrust whose recoils add up
+/// to that direction, scaled for the pod working hardest to fire at full strength.
+fn rcs_mix(recoil: [f32; 2]) -> [f32; 3] {
+    // Each pod recoils against its outward direction. The three directions add up to zero,
+    // so adding the same to every pod's share changes nothing: starting from the mix that
+    // spreads the work evenly, add just enough for none to pull.
+    let even = RCS_PODS.map(|(x, z)| -2.0 / 3.0 * (recoil[0] * x + recoil[1] * z));
+    let least = even.into_iter().fold(f32::INFINITY, f32::min);
+    let mix = even.map(|share| share - least);
+    let most = mix.into_iter().fold(0.0, f32::max);
+    if most > 0.0 {
+        mix.map(|share| share / most)
+    } else {
+        mix
+    }
+}
+
+/// The ship's nose and its right in state `s`, unit vectors in the plane.
+fn ship_axes(s: &State) -> [Vec3; 2] {
     let heading = Vec2::angled(s.theta as f32);
     // `rot90` turns +x to -y: clockwise in the world (y up), so to the ship's right.
-    let right = heading.rot90();
-    let sign = torque.signum();
-    RCS_NOZZLES.map(|(x, y, z)| Nozzle {
-        position: position(s) + (heading * y + right * x) * l,
-        z: z * l,
-        outward: {
-            let r = x.hypot(z);
-            Vec3::plane(right * (x / r)) + Vec3::Z * (z / r)
-        },
-        // At the nose (y > 0) to the right for positive torque, at the tail to the left.
-        direction: right * sign * y.signum(),
-    })
+    [Vec3::plane(heading), Vec3::plane(heading.rot90())]
 }
 
 fn position(s: &State) -> Vec2 {
     Vec2::new(s.x as f32, s.y as f32)
+}
+
+/// `v` scaled to unit length.
+fn unit(v: Vec3) -> Vec3 {
+    v * (1.0 / v.length())
 }
 
 /// `fraction` averaged over the last moments before `t`, so glows don't snap from one
@@ -447,7 +486,7 @@ fn smoothed(t: f64, fraction: impl Fn(f64) -> f64) -> f32 {
 }
 
 /// A sprite's half axes on screen (y down) for world lengths `[along, across]` along
-/// `direction` (in the plane) and across it, at world point `p` seen through `camera` in
+/// `direction` and across it, at world point `p` seen through `camera` in
 /// `canvas`. Seen at a slant, the axis along `direction` is foreshortened, down to
 /// [`MIN_FORESHORTENING`]; the one across it, round the jet, isn't. `None` when `p` is not
 /// in front of the eye.
@@ -455,11 +494,11 @@ fn screen_axes(
     camera: &Camera,
     canvas: egui::Rect,
     p: Vec3,
-    direction: Vec2,
+    direction: Vec3,
     [along, across]: [f32; 2],
 ) -> Option<(Vec2, Vec2)> {
     let scale = camera.scale_at(p, canvas)?;
-    let projected = camera.screen_vector_at(p, Vec3::plane(direction) * along, canvas)?;
+    let projected = camera.screen_vector_at(p, direction * along, canvas)?;
     let unit = projected.normalized();
     let unit = if unit.is_finite() { unit } else { Vec2::X };
     let along = unit * projected.length().max(MIN_FORESHORTENING * along * scale);
@@ -483,11 +522,6 @@ fn life_color(colors: &[[f32; 3]; 3], life: f32) -> [f32; 3] {
     std::array::from_fn(|i| from[i] + (to[i] - from[i]) * f)
 }
 
-fn rotate(v: Vec2, angle: f32) -> Vec2 {
-    let (sin, cos) = angle.sin_cos();
-    Vec2::new(cos * v.x - sin * v.y, sin * v.x + cos * v.y)
-}
-
 /// Velocity of the ship's point `point` (world) in state `s`: the ship's velocity plus
 /// `omega x r` of its spin, `r` from the ship's center to the point.
 fn velocity_at(s: &State, point: Vec2) -> Vec2 {
@@ -501,7 +535,7 @@ fn velocity_at(s: &State, point: Vec2) -> Vec2 {
 fn flap(emitted: f64, rate: f64, seed: u64) -> f32 {
     // Relative frequencies (not multiples of each other) and amplitudes.
     const PARTS: [(f64, f32); 3] = [(1.0, 0.55), (2.31, 0.3), (5.17, 0.15)];
-    let [_, a, b, c, _] = random(seed.wrapping_mul(0x5851_F42D_4C95_7F2D));
+    let [_, a, b, c, ..] = random(seed.wrapping_mul(0x5851_F42D_4C95_7F2D));
     PARTS
         .iter()
         .zip([a, b, c])
@@ -512,8 +546,8 @@ fn flap(emitted: f64, rate: f64, seed: u64) -> f32 {
         .sum()
 }
 
-/// Five numbers for particle `i`: the first in [0, 1), the others in [-1, 1).
-fn random(i: u64) -> [f32; 5] {
+/// Seven numbers for particle `i`: the first in [0, 1), the others in [-1, 1).
+fn random(i: u64) -> [f32; 7] {
     // splitmix64
     let mut state = i.wrapping_mul(0x9E37_79B9_7F4A_7C15);
     std::array::from_fn(|n| {
@@ -560,7 +594,7 @@ mod tests {
 
     #[test]
     fn random_numbers_are_in_range_and_vary() {
-        let all: Vec<[f32; 5]> = (0..1000).map(random).collect();
+        let all: Vec<[f32; 7]> = (0..1000).map(random).collect();
         assert!(all.iter().all(|r| (0.0..1.0).contains(&r[0])));
         assert!(
             all.iter()
@@ -572,27 +606,63 @@ mod tests {
         assert!((mean - 0.5).abs() < 0.05, "mean {mean}");
     }
 
-    /// The reaction control jets' recoil (opposite to the exhaust) must turn the ship the
-    /// way the torque does, and cancel out as a net force.
+    /// The reaction control jets' recoil (opposite to the exhaust) must push the tail
+    /// sideways, neither up nor down nor along the ship, to turn the ship the way the torque
+    /// does.
     #[test]
-    fn rcs_jets_make_a_pure_couple_with_the_torque() {
+    fn rcs_jets_push_the_tail_across_to_turn_the_ship() {
         let s = State {
+            x: 1.0,
+            y: -2.0,
             theta: 0.8,
             ..State::default()
         };
+        let [nose, right] = ship_axes(&s);
         for torque in [1.0, -0.5] {
-            let nozzles = rcs_nozzles(&s, torque, 1.0);
-            let (mut force, mut moment) = (Vec2::ZERO, 0.0);
-            for n in nozzles {
-                let recoil = -n.direction;
-                force += recoil;
-                moment += n.position.x * recoil.y - n.position.y * recoil.x;
+            let (mut force, mut moment) = (Vec3::ZERO, 0.0);
+            for n in rcs_nozzles(&s, torque, 1.0) {
+                let recoil = -n.direction * n.share;
+                let r = n.position - Vec3::plane(position(&s));
+                force = force + recoil;
+                moment += r.x * recoil.y - r.y * recoil.x;
             }
-            assert!(force.length() < 1e-5, "net force {force:?}");
+            assert!(force.z.abs() < 1e-5, "vertical force {force:?}");
+            assert!(
+                force.dot(nose).abs() < 1e-5,
+                "force along the ship {force:?}"
+            );
+            assert!(force.dot(right) * torque > 0.0, "force {force:?}");
             assert!(
                 moment * torque > 0.0,
                 "moment {moment} against torque {torque}"
             );
+        }
+    }
+
+    /// One top pod fires at full strength, the bottom one at half, the other top one not.
+    #[test]
+    fn rcs_mix_fires_two_pods() {
+        let near = |a: [f32; 3], b: [f32; 3]| a.iter().zip(b).all(|(a, b)| (a - b).abs() < 1e-5);
+        assert!(near(rcs_mix([1.0, 0.0]), [0.0, 1.0, 0.5]));
+        assert!(near(rcs_mix([-1.0, 0.0]), [1.0, 0.0, 0.5]));
+        // Straight up: the bottom pod alone.
+        assert!(near(rcs_mix([0.0, 1.0]), [0.0, 0.0, 1.0]));
+    }
+
+    /// The nozzles sit on the pods: out from the axis by the same distance, 120 degrees
+    /// apart, at the tail.
+    #[test]
+    fn rcs_nozzles_are_at_the_tail_corners() {
+        let s = State::default();
+        let nozzles = rcs_nozzles(&s, 1.0, 1.0);
+        for n in nozzles {
+            let axis = Vec3::new(n.position.x, 0.0, 0.0);
+            assert!((n.position.x + RCS_BACK).abs() < 1e-5);
+            assert!(((n.position - axis).length() - RCS_OUT).abs() < 1e-5);
+        }
+        for (a, b) in [(0, 1), (1, 2), (2, 0)] {
+            let cos = nozzles[a].outward.dot(nozzles[b].outward);
+            assert!((cos + 0.5).abs() < 1e-5, "{cos}");
         }
     }
 }

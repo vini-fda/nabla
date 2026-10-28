@@ -17,7 +17,7 @@ jobs:
     name: Tag matches the Cargo versions
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Compare versions
         run: |
           for manifest in Cargo.toml viewer/Cargo.toml; do
@@ -53,7 +53,7 @@ jobs:
     env:
       NAME: ship2d-viewer-${{ github.ref_name }}-${{ matrix.target }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install the toolchain from rust-toolchain.toml
         run: |
@@ -111,7 +111,7 @@ jobs:
           (cd dist && 7z a -tzip "$NAME.zip" "$NAME" >/dev/null)
           rm -r "dist/$NAME"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.target }}
           path: dist/*
@@ -144,7 +144,7 @@ jobs:
             echo "::warning::No MACOS_CERTIFICATE secret in the release environment: the macOS app is signed ad-hoc and not notarized"
           fi
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         if: steps.check.outputs.signed == 'true'
         with:
           name: ${{ env.ARTIFACT }}
@@ -215,7 +215,7 @@ jobs:
           ditto -c -k --keepParent Nabla.app "dist/$NAME.zip"
 
       # Replaces the build job's ad-hoc artifact, so the release job picks up the signed one.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: steps.check.outputs.signed == 'true'
         with:
           name: ${{ env.ARTIFACT }}
@@ -228,9 +228,9 @@ jobs:
     needs: [build, sign-macos]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true

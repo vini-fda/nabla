@@ -82,6 +82,8 @@ jobs:
           sudo xcode-select -s "$xcode"
           xcodebuild -version
 
+      # Signed ad-hoc here: the `sign-macos` job re-signs it with the Developer ID, away from
+      # cargo and the build's actions.
       - name: Build and package (macOS app bundle)
         if: runner.os == 'macOS'
         run: |
@@ -115,9 +117,115 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  # Developer ID signing and notarization of the macOS build, when the `release` environment
+  # has the secrets (see README.md). The environment only deploys version tags, and this job runs
+  # no repository code: it checks nothing out, builds nothing, and uses only actions/*.
+  # Without the secrets, the ad-hoc build ships as is and Gatekeeper blocks its first launch.
+  sign-macos:
+    name: Sign and notarize the macOS app
+    needs: build
+    runs-on: macos-latest
+    environment: release
+    outputs:
+      signed: ${{ steps.check.outputs.signed }}
+    env:
+      ARTIFACT: aarch64-apple-darwin
+      NAME: ship2d-viewer-${{ github.ref_name }}-aarch64-apple-darwin
+    steps:
+      - name: Is Developer ID signing set up?
+        id: check
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+        run: |
+          if [ -n "$MACOS_CERTIFICATE" ]; then
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::No MACOS_CERTIFICATE secret in the release environment: the macOS app is signed ad-hoc and not notarized"
+          fi
+
+      - uses: actions/download-artifact@v4
+        if: steps.check.outputs.signed == 'true'
+        with:
+          name: ${{ env.ARTIFACT }}
+          path: unsigned
+
+      - name: Unpack
+        if: steps.check.outputs.signed == 'true'
+        run: ditto -x -k "unsigned/$NAME.zip" .
+
+      - name: Import the Developer ID certificate
+        if: steps.check.outputs.signed == 'true'
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password="$(openssl rand -base64 24)"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" \
+            -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/certificate.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          identity="$(security find-identity -v -p codesigning "$keychain" \
+            | awk '/"Developer ID Application: / { print $2; exit }')"
+          if [ -z "$identity" ]; then
+            echo "::error::MACOS_CERTIFICATE holds no Developer ID Application identity"
+            exit 1
+          fi
+          echo "SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
+
+      # The signature `cargo xtask bundle --sign` makes: hardened runtime and secure timestamp.
+      - name: Sign
+        if: steps.check.outputs.signed == 'true'
+        run: |
+          codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" Nabla.app
+          codesign --verify --strict --verbose=2 Nabla.app
+
+      - name: Notarize and staple
+        if: steps.check.outputs.signed == 'true'
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          key="$RUNNER_TEMP/AuthKey.p8"
+          printf '%s\n' "$APPLE_API_KEY" > "$key"
+          auth=(--key "$key" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER_ID")
+          ditto -c -k --keepParent Nabla.app "$RUNNER_TEMP/notarize.zip"
+          result="$(xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" "${auth[@]}" \
+            --wait --timeout 30m --output-format json)"
+          echo "$result"
+          if [ "$(jq -r .status <<< "$result")" != Accepted ]; then
+            xcrun notarytool log "$(jq -r .id <<< "$result")" "${auth[@]}"
+            echo "::error::Notarization failed"
+            exit 1
+          fi
+          xcrun stapler staple Nabla.app
+          spctl --assess --type exec -vv Nabla.app
+
+      - name: Package
+        if: steps.check.outputs.signed == 'true'
+        run: |
+          mkdir -p dist
+          ditto -c -k --keepParent Nabla.app "dist/$NAME.zip"
+
+      # Replaces the build job's ad-hoc artifact, so the release job picks up the signed one.
+      - uses: actions/upload-artifact@v4
+        if: steps.check.outputs.signed == 'true'
+        with:
+          name: ${{ env.ARTIFACT }}
+          path: dist/*
+          if-no-files-found: error
+          overwrite: true
+
   release:
     name: Publish the release
-    needs: build
+    needs: [build, sign-macos]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -130,10 +238,14 @@ jobs:
       - name: Checksums
         run: cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
 
+      # The notes keep the macOS line marked `<!-- notarized -->` or `<!-- unsigned -->`.
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
+          SIGNED: ${{ needs.sign-macos.outputs.signed }}
         run: |
-          sed "s/{{TAG}}/$GITHUB_REF_NAME/g" .github/release-notes.md > notes.md
+          if [ "$SIGNED" = true ]; then keep=notarized drop=unsigned; else keep=unsigned drop=notarized; fi
+          sed -e "s/{{TAG}}/$GITHUB_REF_NAME/g" -e "/<!-- $drop -->/d" -e "s/ <!-- $keep -->\$//" \
+            .github/release-notes.md > notes.md
           gh release create "$GITHUB_REF_NAME" dist/* \
             --title "$GITHUB_REF_NAME" --notes-file notes.md --generate-notes --verify-tag

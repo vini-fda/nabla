@@ -1,6 +1,6 @@
 [package]
 name = "ship2d_graphics"
-version = "0.7.1"
+version = "0.8.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 include = ["LICENSE-APACHE", "LICENSE-MIT", "**/*.rs", "Cargo.toml", "assets/fonts/*", "assets/formulas/*"]

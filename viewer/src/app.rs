@@ -1407,16 +1407,11 @@ impl ViewerApp {
         if self.compact_view != CompactView::Controls {
             egui::Panel::bottom("timeline_panel").show(ui, |ui| self.timeline_ui(ui, true));
         }
+        // No heading above the controls or plots: the selected tab already names the view.
         egui::CentralPanel::default().show(ui, |ui| match self.compact_view {
             CompactView::Canvas => self.canvas_ui(ui, 0.0),
-            CompactView::Controls => {
-                ui.heading(CONTROLS_PANEL.title);
-                self.controls_ui(ui);
-            }
-            CompactView::Plots => {
-                ui.heading(PLOTS_PANEL.title);
-                self.plots_ui(ui);
-            }
+            CompactView::Controls => self.controls_ui(ui),
+            CompactView::Plots => self.plots_ui(ui),
         });
     }
 }

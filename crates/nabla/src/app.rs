@@ -200,6 +200,8 @@ pub struct ViewerApp {
     /// Show the thrusters' plumes in the 3D view.
     show_plume: bool,
     follow_ship: bool,
+    /// Show the keyboard and mouse help over the canvas.
+    show_help: bool,
     playback: Playback,
     /// Name of the selected test case.
     case: Option<String>,
@@ -260,6 +262,7 @@ impl Default for ViewerApp {
             show_grid: true,
             show_plume: true,
             follow_ship: false,
+            show_help: false,
             playback: Playback::default(),
             case: Some(DEFAULT_CASE.to_owned()),
             h: suite::H,
@@ -1184,7 +1187,7 @@ impl ViewerApp {
         if self.show_gizmo {
             self.gizmo.paint(ui, &painter, corner, &self.camera);
         }
-        canvas_buttons::show(
+        let buttons = canvas_buttons::show(
             ui,
             &painter,
             corner,
@@ -1218,8 +1221,53 @@ impl ViewerApp {
                         "Perspective view. Click for orthographic",
                     ],
                 ),
+                Button::toggle(
+                    icons::outline::SEAL_QUESTION,
+                    &mut self.show_help,
+                    "Keyboard and mouse help",
+                )
+                .color(palette::YELLOW),
             ],
         );
+        if self.show_help {
+            self.help_ui(ui, rect, buttons);
+        }
+    }
+
+    /// The keyboard and mouse help, over the `canvas`, left of its `buttons` and level with
+    /// their top. Where the canvas is too small for it, it shrinks, keeping its proportions, so
+    /// it always shows whole. Escape closes it, as does its button.
+    fn help_ui(&mut self, ui: &egui::Ui, canvas: egui::Rect, buttons: egui::Rect) {
+        const GAP: f32 = 8.0;
+        // Laid out at its full size at the layer's origin, unclipped, then scaled and moved into
+        // place by the layer's transform, which applies to its input too.
+        let area = egui::Area::new(ui.scope_id().with("help"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(egui::Pos2::ZERO)
+            .constrain_to(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::Vec2::splat(1.0e4),
+            ))
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style()).show(ui, Self::user_inputs_ui);
+            });
+        let size = area.response.rect.size();
+        let top_right = egui::pos2(buttons.left() - GAP, buttons.top());
+        let room = egui::vec2(
+            top_right.x - canvas.left() - GAP,
+            canvas.bottom() - top_right.y - GAP,
+        );
+        let scale = (room / size).min_elem().clamp(0.1, 1.0);
+        ui.ctx().set_transform_layer(
+            area.response.layer_id,
+            egui::emath::TSTransform::new(
+                egui::vec2(top_right.x - scale * size.x, top_right.y),
+                scale,
+            ),
+        );
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.show_help = false;
+        }
     }
 
     /// Everything on the canvas but the gizmo.
@@ -1459,8 +1507,6 @@ impl ViewerApp {
             self.display_ui(ui);
             ui.separator();
             self.sound.ui(ui);
-            ui.separator();
-            Self::user_inputs_ui(ui);
         });
     }
 

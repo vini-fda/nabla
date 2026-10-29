@@ -72,6 +72,7 @@ pub mod icons {
         pub const MOUSE_SCROLL: &str = "\u{E332}";
         pub const PERSPECTIVE: &str = "\u{EBE6}";
         pub const ROCKET_LAUNCH: &str = "\u{E3FE}";
+        pub const SEAL_QUESTION: &str = "\u{E608}";
         pub const SPHERE: &str = "\u{EE66}";
 
         /// Name of the font family with the outline glyphs.

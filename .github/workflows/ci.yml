@@ -102,8 +102,9 @@ jobs:
 
       # Release mode keeps the solution tests fast. Overflow checks and debug assertions stay
       # on, so arithmetic bugs that release builds would hide still fail the tests. They are on
-      # for this workspace's crates only: the dependencies build exactly as in the release build
-      # below, which then reuses them instead of compiling everything again.
+      # for this workspace's crates only: the dependencies build exactly as in a release build.
+      # The release app itself (whole-program LTO) and the macOS bundle are built by
+      # release.yml, on version tags only.
       # Includes the stored-solution tests (every solution still solves every case and matches
       # its index entry), a real compile of a solution source by the app, and the ASCII lint
       # for the app sources.
@@ -118,25 +119,6 @@ jobs:
           --config 'profile.release.package.nabla-solutions.overflow-checks=true'
           --config 'profile.release.package.nabla.debug-assertions=true'
           --config 'profile.release.package.nabla.overflow-checks=true'
-
-      # The app binary builds exactly as it is released.
-      - name: Build the app (release)
-        run: cargo build $CARGO_FLAGS --release -p nabla --target ${{ matrix.target }}
-
-      # The Liquid Glass icon needs Xcode 26 (see release.yml).
-      - name: Select the newest Xcode
-        if: runner.os == 'macOS'
-        run: |
-          xcode="$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
-          sudo xcode-select -s "$xcode"
-          xcodebuild -version
-
-      # Bundles the binary built in the step above (same profile and target): no rebuild.
-      - name: Build the macOS app bundle
-        if: runner.os == 'macOS'
-        run: |
-          cargo xtask bundle --target ${{ matrix.target }}
-          test -f "target/${{ matrix.target }}/release/Nabla.app/Contents/Resources/Assets.car"
 
   # The web app: compile for wasm and run the exact trunk build that gets deployed.
   web:

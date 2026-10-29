@@ -1,6 +1,9 @@
-//! Lint: the viewer's sources contain only ASCII. LLM-written text tends to pick up Unicode
+//! Lint: the app's sources contain only ASCII. LLM-written text tends to pick up Unicode
 //! (Greek letters, arrows, math symbols, typographic dashes). Spell these out instead
 //! (`theta`, `->`, `<=`, `-`, `...`): it keeps UI text independent of the font's glyph coverage.
+//!
+//! A unit test rather than an integration test: a package with integration tests makes
+//! `cargo test` build its binary too, which in release mode means a slow whole-program LTO.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -39,7 +42,7 @@ fn suggestion(c: char) -> &'static str {
 fn viewer_sources_are_ascii() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut files = Vec::new();
-    for dir in ["src", "tests", "assets"] {
+    for dir in ["src", "assets"] {
         collect(&root.join(dir), &mut files);
     }
     files.push(root.join("index.html"));

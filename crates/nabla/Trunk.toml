@@ -1,2 +1,22 @@
 [build]
 filehash = false
+
+# The thruster sounds' synthesizer, built alone for the AudioWorklet that plays it
+# (assets/synth-worklet.js, src/sound/web.rs): a wasm module with no imports, which
+# index.html copies next to the app. Always optimized, since it runs on the browser's audio
+# thread; it builds in seconds.
+[[hooks]]
+stage = "pre_build"
+command = "cargo"
+command_arguments = [
+  "rustc",
+  "--quiet",
+  "--package",
+  "nabla-synth",
+  "--lib",
+  "--release",
+  "--target",
+  "wasm32-unknown-unknown",
+  "--crate-type",
+  "cdylib",
+]

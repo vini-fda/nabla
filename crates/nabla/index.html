@@ -24,6 +24,11 @@
     <link data-trunk rel="copy-file" href="assets/nabla-logo.svg" data-target-path="assets"/>
 
 
+    <!-- The thruster sounds' AudioWorklet, and the synthesizer it runs, which the pre_build hook
+         of Trunk.toml builds (into the workspace's target directory). -->
+    <link data-trunk rel="copy-file" href="assets/synth-worklet.js"/>
+    <link data-trunk rel="copy-file" href="../../target/wasm32-unknown-unknown/release/nabla_synth.wasm"/>
+
     <link data-trunk rel="copy-file" href="assets/sw.js"/>
     <link data-trunk rel="copy-file" href="assets/manifest.json"/>
     <link data-trunk rel="copy-file" href="assets/favicon-192x192.png" data-target-path="assets"/>

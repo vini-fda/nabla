@@ -4,6 +4,8 @@ var filesToCache = [
   './index.html',
   './nabla.js',
   './nabla_bg.wasm',
+  './synth-worklet.js',
+  './nabla_synth.wasm',
 ];
 
 /* Cache the app's content for offline use */

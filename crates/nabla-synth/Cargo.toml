@@ -1,0 +1,9 @@
+[package]
+name = "nabla-synth"
+version.workspace = true
+edition.workspace = true
+description = "The thruster sounds' synthesizer: native audio calls it, and the web app's AudioWorklet runs it as a wasm module of its own."
+publish = false
+
+[lints]
+workspace = true

@@ -1,10 +1,10 @@
 [alias]
-# Development tasks, in the `xtask` crate: `cargo xtask help`. Several `cargo xtask` calls
-# started at the same instant can race (see TASK.md, "How evaluation runs").
-xtask = "run -q -p xtask --"
 # The app, built with the `fast` profile (see Cargo.toml): quick rebuilds while iterating.
 # On macOS it runs inside the app bundle, for the Liquid Glass Dock icon.
 nabla = "run -q -p xtask -- run --profile fast"
+# Development tasks, in the `xtask` crate: `cargo xtask help`. Several `cargo xtask` calls
+# started at the same instant can race (see TASK.md, "How evaluation runs").
+xtask = "run -q -p xtask --"
 
 # Linux links with mold (https://github.com/rui314/mold), much faster than the default
 # linker. Needs mold and clang installed. Clang is the linker driver because it always

@@ -1,7 +1,8 @@
-//! Keyboard and mouse hints drawn as keycaps, as in a Mac menu: a key is a small grey cap
-//! with its symbol (an arrow, Shift) or its name ("space", "F") on it. Keys differ between
-//! platforms: Shift is its symbol on macOS and its name elsewhere, and a Mac laptop has no
-//! Home or End keys (fn+Left and fn+Right send them).
+//! Keyboard, mouse and touch hints. Keys are drawn as keycaps, as in a Mac menu: a key is a
+//! small grey cap with its symbol (an arrow, Shift) or its name ("space", "F") on it. Keys
+//! differ between platforms: Shift is its symbol on macOS and its name elsewhere, and a Mac
+//! laptop has no Home or End keys (fn+Left and fn+Right send them). Phones and tablets get
+//! touch gestures instead.
 
 use egui::{FontFamily, FontId, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Vec2};
 
@@ -16,9 +17,9 @@ const PADDING_X: f32 = 5.0;
 const LIP: f32 = 2.0;
 const WORD_SIZE: f32 = 11.5;
 const GLYPH_SIZE: f32 = 13.0;
-/// Size of a mouse glyph, and of the action word next to it.
-const MOUSE_GLYPH_SIZE: f32 = 15.0;
-const MOUSE_WORD_SIZE: f32 = 12.0;
+/// Size of a gesture's glyph, and of the action word next to it.
+pub const GESTURE_GLYPH_SIZE: f32 = 15.0;
+const GESTURE_WORD_SIZE: f32 = 12.0;
 
 /// The face of a keycap: a key's name, or its symbol from the outline icon font.
 #[derive(Clone, Copy)]
@@ -38,13 +39,22 @@ const FN: Key = Key::Word("fn");
 #[derive(Clone, Copy)]
 pub struct Keys {
     mac: bool,
+    touch: bool,
 }
 
 impl Keys {
     pub fn new(ctx: &egui::Context) -> Self {
+        use egui::os::OperatingSystem;
+        let os = ctx.os();
         Self {
-            mac: ctx.os() == egui::os::OperatingSystem::Mac,
+            mac: os == OperatingSystem::Mac,
+            touch: matches!(os, OperatingSystem::Android | OperatingSystem::IOS),
         }
+    }
+
+    /// A phone or tablet, used by touch rather than with a keyboard and mouse.
+    pub fn touch(self) -> bool {
+        self.touch
     }
 
     /// Shift: its symbol on macOS (U+21E7 in the system's menus), its name elsewhere.
@@ -114,16 +124,16 @@ pub fn joiner(ui: &mut egui::Ui, text: &str) {
     ui.label(RichText::new(text).size(WORD_SIZE).color(palette::OVERLAY0));
 }
 
-/// A mouse action: the mouse `glyph` and the action's name, without a cap, so it doesn't
-/// look like a key.
-pub fn mouse(ui: &mut egui::Ui, glyph: &str, action: &str) {
+/// A mouse or touch action: its `glyph` (a mouse, a hand) and the action's name, without a
+/// cap, so it doesn't look like a key.
+pub fn gesture(ui: &mut egui::Ui, glyph: &str, action: &str) {
     let spacing = std::mem::replace(&mut ui.spacing_mut().item_spacing.x, 3.0);
     ui.label(
         RichText::new(glyph)
-            .font(outline::font(MOUSE_GLYPH_SIZE))
+            .font(outline::font(GESTURE_GLYPH_SIZE))
             .color(palette::WHITE),
     );
-    ui.label(RichText::new(action).size(MOUSE_WORD_SIZE));
+    ui.label(RichText::new(action).size(GESTURE_WORD_SIZE));
     ui.spacing_mut().item_spacing.x = spacing;
 }
 

@@ -887,16 +887,22 @@ impl ViewerApp {
         });
     }
 
-    /// The keyboard and mouse inputs, in groups, the keys drawn as keycaps left of what they do.
+    /// The user inputs help: touch gestures on a phone or tablet, keyboard and mouse elsewhere.
     fn user_inputs_ui(ui: &mut egui::Ui) {
-        use icons::outline::{
-            ARROW_COUNTER_CLOCKWISE, ARROWS_OUT_CARDINAL, MOUSE_LEFT_CLICK, MOUSE_SCROLL,
-            ROCKET_LAUNCH,
-        };
-        use keys::{F, LEFT, RIGHT, Run, SPACE, caps, joiner, label_with_icons, mouse};
-
         let k = keys::Keys::new(ui.ctx());
         ui.heading("User inputs");
+        if k.touch() {
+            Self::touch_inputs_ui(ui);
+        } else {
+            Self::keyboard_mouse_inputs_ui(ui, k);
+        }
+    }
+
+    /// The keyboard and mouse inputs, in groups, the keys drawn as keycaps left of what they do.
+    fn keyboard_mouse_inputs_ui(ui: &mut egui::Ui, k: keys::Keys) {
+        use icons::outline::{MOUSE_LEFT_CLICK, MOUSE_SCROLL, ROCKET_LAUNCH};
+        use keys::{F, LEFT, RIGHT, Run, SPACE, caps, gesture, joiner, label_with_icons};
+
         input_group(ui, "Playback", |ui| {
             input_row(ui, |ui| caps(ui, &[SPACE]), |ui| ui.label("Play / pause"));
             input_row(
@@ -940,29 +946,108 @@ impl ViewerApp {
         input_group(ui, "View", |ui| {
             input_row(
                 ui,
-                |ui| mouse(ui, MOUSE_LEFT_CLICK, "drag"),
-                |ui| {
-                    label_with_icons(
-                        ui,
-                        &[
-                            Run::Text("Pan (when "),
-                            Run::Icon(ARROWS_OUT_CARDINAL),
-                            Run::Text(") or rotate (when "),
-                            Run::Icon(ARROW_COUNTER_CLOCKWISE),
-                            Run::Text(")"),
-                        ],
-                    );
-                },
+                |ui| gesture(ui, MOUSE_LEFT_CLICK, "drag"),
+                drag_action_ui,
             );
             input_row(
                 ui,
-                |ui| mouse(ui, MOUSE_SCROLL, "scroll"),
+                |ui| gesture(ui, MOUSE_SCROLL, "scroll"),
                 |ui| ui.label("Zoom"),
             );
             input_row(
                 ui,
-                |ui| mouse(ui, MOUSE_LEFT_CLICK, "drag axes"),
+                |ui| gesture(ui, MOUSE_LEFT_CLICK, "drag axes"),
                 |ui| ui.label("Orbit; click one to view along it"),
+            );
+        });
+    }
+
+    /// The touch gestures, and what the playback buttons do, since a touch screen shows no
+    /// tooltips.
+    fn touch_inputs_ui(ui: &mut egui::Ui) {
+        use icons::outline::{ARROWS_OUT_SIMPLE, HAND_SWIPE_RIGHT, HAND_TAP, ROCKET_LAUNCH};
+        use keys::{GESTURE_GLYPH_SIZE, gesture, joiner};
+
+        let button = |ui: &mut egui::Ui, glyph: &str| {
+            ui.label(
+                egui::RichText::new(glyph)
+                    .size(GESTURE_GLYPH_SIZE)
+                    .color(palette::WHITE),
+            );
+        };
+        input_group(ui, "Playback", |ui| {
+            input_row(
+                ui,
+                |ui| button(ui, icons::PLAY),
+                |ui| ui.label("Play / pause"),
+            );
+            input_row(
+                ui,
+                |ui| {
+                    button(ui, icons::CARET_LEFT);
+                    joiner(ui, "/");
+                    button(ui, icons::CARET_RIGHT);
+                },
+                |ui| ui.label("Previous / next sample"),
+            );
+            input_row(
+                ui,
+                |ui| {
+                    button(ui, icons::SKIP_BACK);
+                    joiner(ui, "/");
+                    button(ui, icons::SKIP_FORWARD);
+                },
+                |ui| ui.label("Start / end"),
+            );
+            input_row(
+                ui,
+                |ui| {
+                    ui.label(
+                        egui::RichText::new(ROCKET_LAUNCH)
+                            .font(icons::outline::font(GESTURE_GLYPH_SIZE))
+                            .color(palette::WHITE),
+                    )
+                },
+                |ui| ui.label("Follow the ship"),
+            );
+        });
+        input_group(ui, "View", |ui| {
+            input_row(
+                ui,
+                |ui| gesture(ui, HAND_SWIPE_RIGHT, "drag"),
+                drag_action_ui,
+            );
+            input_row(
+                ui,
+                |ui| gesture(ui, ARROWS_OUT_SIMPLE, "pinch"),
+                |ui| ui.label("Zoom"),
+            );
+            input_row(
+                ui,
+                |ui| gesture(ui, HAND_SWIPE_RIGHT, "drag axes"),
+                |ui| ui.label("Orbit"),
+            );
+            input_row(
+                ui,
+                |ui| gesture(ui, HAND_TAP, "tap an axis"),
+                |ui| ui.label("View along it"),
+            );
+        });
+        input_group(ui, "Timeline", |ui| {
+            input_row(
+                ui,
+                |ui| gesture(ui, HAND_TAP, "tap / drag"),
+                |ui| ui.label("Seek"),
+            );
+            input_row(
+                ui,
+                |ui| gesture(ui, ARROWS_OUT_SIMPLE, "pinch"),
+                |ui| ui.label("Zoom"),
+            );
+            input_row(
+                ui,
+                |ui| gesture(ui, HAND_TAP, "double-tap"),
+                |ui| ui.label("Show the whole run"),
             );
         });
     }
@@ -1966,6 +2051,22 @@ fn input_group(ui: &mut egui::Ui, name: &str, rows: impl FnOnce(&mut egui::Ui)) 
         .num_columns(2)
         .min_col_width(INPUTS_COLUMN_WIDTH)
         .show(ui, rows);
+}
+
+/// What dragging the canvas does, pointing at the pan/rotate canvas button's two icons.
+fn drag_action_ui(ui: &mut egui::Ui) {
+    use icons::outline::{ARROW_COUNTER_CLOCKWISE, ARROWS_OUT_CARDINAL};
+    use keys::Run;
+    keys::label_with_icons(
+        ui,
+        &[
+            Run::Text("Pan (when "),
+            Run::Icon(ARROWS_OUT_CARDINAL),
+            Run::Text(") or rotate (when "),
+            Run::Icon(ARROW_COUNTER_CLOCKWISE),
+            Run::Text(")"),
+        ],
+    );
 }
 
 /// A row of an [`input_group`]: the `inputs`, then what they do.

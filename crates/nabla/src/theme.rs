@@ -67,7 +67,10 @@ pub mod icons {
         pub const ARROW_LEFT: &str = "\u{E058}";
         pub const ARROW_RIGHT: &str = "\u{E06C}";
         pub const ARROWS_OUT_CARDINAL: &str = "\u{E0A4}";
+        pub const ARROWS_OUT_SIMPLE: &str = "\u{E0A6}";
         pub const GRID_FOUR: &str = "\u{E296}";
+        pub const HAND_SWIPE_RIGHT: &str = "\u{EC92}";
+        pub const HAND_TAP: &str = "\u{EC90}";
         pub const MOUSE_LEFT_CLICK: &str = "\u{E334}";
         pub const MOUSE_SCROLL: &str = "\u{E332}";
         pub const PERSPECTIVE: &str = "\u{EBE6}";

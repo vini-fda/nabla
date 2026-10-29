@@ -35,7 +35,7 @@
 //!
 //! Every buffer is allocated once, in `new`, with room for `max_steps` controls.
 
-use ship2d_optimization::*;
+use nabla_core::*;
 use std::f64::consts::PI;
 
 /// The tunable constants.

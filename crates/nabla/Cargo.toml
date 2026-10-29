@@ -1,0 +1,38 @@
+[package]
+name = "nabla"
+description = "Nabla: replays, plots and compiles control policies of the 2D ship, natively and on the web."
+version.workspace = true
+edition.workspace = true
+license = "MIT OR Apache-2.0"
+include = ["LICENSE-APACHE", "LICENSE-MIT", "**/*.rs", "Cargo.toml", "assets/fonts/*", "assets/formulas/*"]
+rust-version = "1.99"
+
+[package.metadata.docs.rs]
+all-features = true
+targets = ["x86_64-unknown-linux-gnu", "wasm32-unknown-unknown"]
+
+[dependencies]
+egui = "0.37.0"
+egui_plot = { git = "https://github.com/emilk/egui_plot", rev = "aead78045a529884eac5ad267251caa73bd832aa" }
+eframe = { version = "0.37.0", features = ["wgpu"] }
+log = "0.4.34"
+nabla-core.workspace = true
+nabla-optimization.workspace = true
+nabla-solutions = { workspace = true, features = ["registry"] }
+gltf = { version = "1.4.1", default-features = false, features = ["utils"] }
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
+egui_extras = { version = "0.37.0", default-features = false, features = ["svg"] }
+cpal = { version = "0.18.2", features = ["wasm-bindgen"] }
+
+# native:
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+env_logger = "0.11.11"
+rfd = "0.17.2"
+
+# web:
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen-futures = "0.4.79"
+web-sys = "0.3.106"             # to access the DOM (to hide the loading text)
+
+[lints]
+workspace = true

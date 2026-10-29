@@ -1,0 +1,8 @@
+[package]
+name = "nabla-core"
+description = "The 2D ship's state-space model and the control problem to solve."
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]

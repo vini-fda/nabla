@@ -1,6 +1,6 @@
 name: Release
 
-# Publishes a GitHub Release with native builds of the viewer for every version tag `vX.Y.Z`.
+# Publishes a GitHub Release with native builds of the app for every version tag `vX.Y.Z`.
 # Pushes to main never release. To release, bump the versions and push a tag (see README.md).
 on:
   push:
@@ -14,13 +14,13 @@ env:
 
 jobs:
   version:
-    name: Tag matches the Cargo versions
+    name: Tag matches the workspace version
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - name: Compare versions
         run: |
-          for manifest in Cargo.toml viewer/Cargo.toml; do
+          for manifest in Cargo.toml; do
             version="$(sed -n 's/^version = "\(.*\)"/\1/p' "$manifest" | head -1)"
             if [ "v$version" != "$GITHUB_REF_NAME" ]; then
               echo "::error file=$manifest::version is $version, but the tag is $GITHUB_REF_NAME"
@@ -51,7 +51,7 @@ jobs:
       run:
         shell: bash
     env:
-      NAME: ship2d-viewer-${{ github.ref_name }}-${{ matrix.target }}
+      NAME: nabla-${{ github.ref_name }}-${{ matrix.target }}
     steps:
       - uses: actions/checkout@v7
 
@@ -94,20 +94,20 @@ jobs:
       - name: Build and package (Linux)
         if: runner.os == 'Linux'
         run: |
-          cargo build --release -p ship2d_graphics --target ${{ matrix.target }}
+          cargo build --release -p nabla --target ${{ matrix.target }}
           mkdir -p "dist/$NAME"
-          cp "target/${{ matrix.target }}/release/ship2d_graphics" viewer/README.md \
-            viewer/LICENSE-MIT viewer/LICENSE-APACHE "dist/$NAME/"
+          cp "target/${{ matrix.target }}/release/nabla" crates/nabla/README.md \
+            crates/nabla/LICENSE-MIT crates/nabla/LICENSE-APACHE "dist/$NAME/"
           tar -C dist -czf "dist/$NAME.tar.gz" "$NAME"
           rm -r "dist/$NAME"
 
       - name: Build and package (Windows)
         if: runner.os == 'Windows'
         run: |
-          cargo build --release -p ship2d_graphics --target ${{ matrix.target }}
+          cargo build --release -p nabla --target ${{ matrix.target }}
           mkdir -p "dist/$NAME"
-          cp "target/${{ matrix.target }}/release/ship2d_graphics.exe" viewer/README.md \
-            viewer/LICENSE-MIT viewer/LICENSE-APACHE "dist/$NAME/"
+          cp "target/${{ matrix.target }}/release/nabla.exe" crates/nabla/README.md \
+            crates/nabla/LICENSE-MIT crates/nabla/LICENSE-APACHE "dist/$NAME/"
           (cd dist && 7z a -tzip "$NAME.zip" "$NAME" >/dev/null)
           rm -r "dist/$NAME"
 
@@ -130,7 +130,7 @@ jobs:
       signed: ${{ steps.check.outputs.signed }}
     env:
       ARTIFACT: aarch64-apple-darwin
-      NAME: ship2d-viewer-${{ github.ref_name }}-aarch64-apple-darwin
+      NAME: nabla-${{ github.ref_name }}-aarch64-apple-darwin
     steps:
       - name: Is Developer ID signing set up?
         id: check

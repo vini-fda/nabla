@@ -1,0 +1,14 @@
+[package]
+name = "nabla-solutions"
+description = "The stored control policies (`solutions/` at the workspace root) and their database."
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+nabla-core.workspace = true
+nabla-optimization.workspace = true
+
+[features]
+# Compile every stored solution into the library (`registry` module), for tools like the app.
+registry = []

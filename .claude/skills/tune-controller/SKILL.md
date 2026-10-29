@@ -1,6 +1,6 @@
 ---
 name: tune-controller
-description: Tune the constants of a ship2d_optimization controller (gains, margins, thresholds, time constants, any `const` that shapes the control law) to lower its score, by fast in-process search instead of re-running `cargo xtask eval` per value. Use this whenever the user wants to tune, optimize, sweep, calibrate or "find the best value of" a parameter of a solution in this repo — e.g. "tune alpha", "optimize the gains of flip_and_burn", "can we squeeze a better score by adjusting the constants", "run coordinate descent on my controller", "sweep BRAKE_FRACTION" — even if they don't say "tune" explicitly.
+description: Tune the constants of a Nabla controller (gains, margins, thresholds, time constants, any `const` that shapes the control law) to lower its score, by fast in-process search instead of re-running `cargo xtask eval` per value. Use this whenever the user wants to tune, optimize, sweep, calibrate or "find the best value of" a parameter of a solution in this repo — e.g. "tune alpha", "optimize the gains of flip_and_burn", "can we squeeze a better score by adjusting the constants", "run coordinate descent on my controller", "sweep BRAKE_FRACTION" — even if they don't say "tune" explicitly.
 ---
 
 # Tuning a controller's constants
@@ -21,7 +21,7 @@ ready tuner (`assets/tune.rs`) and the workflow around it.
 
 Work on a copy, not on `solutions/<name>.rs` itself: `cargo test` checks stored files against
 `solutions/index.tsv`, so editing one in place breaks the tests until it is resubmitted. Copy it
-to `tuning/<new_name>.rs` (gitignored, like `examples/tune_*.rs`).
+to `tuning/<new_name>.rs` (gitignored, like `crates/nabla-optimization/examples/tune_*.rs`).
 
 Tune the constants the user named. If they named none, pick the ones that shape the control law
 (their doc comments usually say so: fractions, margins, time constants, thresholds). Leave alone
@@ -65,10 +65,11 @@ different controller than the user thinks.
 
 ### 3. Create the tuner from the template
 
-Copy `assets/tune.rs` (next to this file) to `examples/tune_<name>.rs` and fill in its three
+Copy `assets/tune.rs` (next to this file) to `crates/nabla-optimization/examples/tune_<name>.rs` and fill in its three
 `TODO`s:
 
-1. `#[path = "..."]`: the working file, relative to `examples/` (e.g. `../tuning/<new_name>.rs`).
+1. `#[path = "..."]`: the working file, relative to that `examples/` directory (e.g.
+   `../../../tuning/<new_name>.rs`).
 2. `FIELDS`: one `("name", |g| &mut g.name)` entry per tunable field.
 3. Optionally the budget: `STEP`, `MIN_STEP`, `MAX_EVALS`, and the random case sets
    (`VALIDATION_*`, `CHECK_*`).
@@ -84,7 +85,7 @@ of **check** cases that the search never saw, and prints a `DEFAULT` line to pas
 ### 4. Run it
 
 ```sh
-cargo run --profile fast --example tune_<name>
+cargo run --profile fast -p nabla-optimization --example tune_<name>
 ```
 
 The `fast` profile skips the release profile's whole-program LTO, so the tuner builds in seconds.
@@ -121,7 +122,7 @@ The stored source must stay free of tuning hooks: no environment variables, no s
 
 ### 7. Clean up and report
 
-`examples/tune_<name>.rs` and `tuning/` are scratch, and gitignored: say where they are, and
+`crates/nabla-optimization/examples/tune_<name>.rs` and `tuning/` are scratch, and gitignored: say where they are, and
 leave them unless the user asks to keep or delete them. Report:
 
 - the constants tuned, with old → new values;

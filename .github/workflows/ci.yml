@@ -58,7 +58,7 @@ jobs:
       - name: Cargo.lock is up to date
         run: cargo metadata $CARGO_FLAGS --format-version 1 >/dev/null
 
-  # Lint, build and test the native viewer on every platform that gets a release build.
+  # Lint, build and test the native app on every platform that gets a release build.
   test:
     name: Test (${{ matrix.target }})
     strategy:
@@ -105,19 +105,23 @@ jobs:
       # for this workspace's crates only: the dependencies build exactly as in the release build
       # below, which then reuses them instead of compiling everything again.
       # Includes the stored-solution tests (every solution still solves every case and matches
-      # its index entry), a real compile of a solution source by the viewer, and the ASCII lint
-      # for the viewer sources.
+      # its index entry), a real compile of a solution source by the app, and the ASCII lint
+      # for the app sources.
       - name: Test
         run: >-
           cargo test $CARGO_FLAGS --workspace --release --target ${{ matrix.target }}
-          --config 'profile.release.package.ship2d_optimization.debug-assertions=true'
-          --config 'profile.release.package.ship2d_optimization.overflow-checks=true'
-          --config 'profile.release.package.ship2d_graphics.debug-assertions=true'
-          --config 'profile.release.package.ship2d_graphics.overflow-checks=true'
+          --config 'profile.release.package.nabla-core.debug-assertions=true'
+          --config 'profile.release.package.nabla-core.overflow-checks=true'
+          --config 'profile.release.package.nabla-optimization.debug-assertions=true'
+          --config 'profile.release.package.nabla-optimization.overflow-checks=true'
+          --config 'profile.release.package.nabla-solutions.debug-assertions=true'
+          --config 'profile.release.package.nabla-solutions.overflow-checks=true'
+          --config 'profile.release.package.nabla.debug-assertions=true'
+          --config 'profile.release.package.nabla.overflow-checks=true'
 
-      # The viewer binary builds exactly as it is released.
-      - name: Build the viewer (release)
-        run: cargo build $CARGO_FLAGS --release -p ship2d_graphics --target ${{ matrix.target }}
+      # The app binary builds exactly as it is released.
+      - name: Build the app (release)
+        run: cargo build $CARGO_FLAGS --release -p nabla --target ${{ matrix.target }}
 
       # The Liquid Glass icon needs Xcode 26 (see release.yml).
       - name: Select the newest Xcode
@@ -150,7 +154,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Clippy (wasm32)
-        run: cargo clippy $CARGO_FLAGS -p ship2d_graphics --lib --target wasm32-unknown-unknown
+        run: cargo clippy $CARGO_FLAGS -p nabla --lib --target wasm32-unknown-unknown
 
       - name: Install trunk
         run: |
@@ -159,14 +163,14 @@ jobs:
           trunk --version
 
       - name: Trunk build
-        working-directory: viewer
+        working-directory: crates/nabla
         run: trunk build --release
 
       - name: The build contains everything index.html refers to
         run: |
-          for file in index.html manifest.json sw.js favicon.ico ship2d_graphics.js \
-              ship2d_graphics_bg.wasm assets/favicon.svg assets/nabla-logo.svg \
+          for file in index.html manifest.json sw.js favicon.ico nabla.js \
+              nabla_bg.wasm assets/favicon.svg assets/nabla-logo.svg \
               assets/favicon-192x192.png assets/favicon-512x512.png \
               assets/maskable-512x512.png assets/apple-touch-icon.png; do
-            test -s "viewer/dist/$file" || { echo "::error::viewer/dist/$file is missing"; exit 1; }
+            test -s "crates/nabla/dist/$file" || { echo "::error::crates/nabla/dist/$file is missing"; exit 1; }
           done

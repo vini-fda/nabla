@@ -2,6 +2,6 @@
 # Development tasks, in the `xtask` crate: `cargo xtask help`. Several `cargo xtask` calls
 # started at the same instant can race (see TASK.md, "How evaluation runs").
 xtask = "run -q -p xtask --"
-# The viewer, built with the `fast` profile (see Cargo.toml): quick rebuilds while iterating.
+# The app, built with the `fast` profile (see Cargo.toml): quick rebuilds while iterating.
 # On macOS it runs inside the app bundle, for the Liquid Glass Dock icon.
-viewer = "run -q -p xtask -- run --profile fast"
+nabla = "run -q -p xtask -- run --profile fast"

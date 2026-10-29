@@ -1,20 +1,22 @@
 //! Tune the constants of one solution by coordinate descent, in a single process.
 //!
-//! Copy to `examples/tune_<name>.rs`, fill in the three `TODO`s, then run:
+//! Copy to `crates/nabla-optimization/examples/tune_<name>.rs`, fill in the three `TODO`s, then
+//! run:
 //!
-//!     cargo run --profile fast --example tune_<name>
+//!     cargo run --profile fast -p nabla-optimization --example tune_<name>
 //!
 //! See TASK.md, "Tuning parameters".
 
-// TODO 1: the solution file, relative to this file (`examples/`).
-#[path = "../path/to/solution.rs"]
+// TODO 1: the solution file, relative to this file (`crates/nabla-optimization/examples/`).
+#[path = "../../../path/to/solution.rs"]
 mod solution;
 
-use ship2d_optimization::{
-    Control, Controller, State, Task, eval, parallel,
+use nabla_core::{
+    Control, Controller, State, Task,
     problem::{Case, run},
     suite,
 };
+use nabla_optimization::{eval, parallel};
 use solution::{Gains, Solution};
 use std::sync::RwLock;
 use std::time::Instant;

@@ -1,18 +1,24 @@
-[package]
-name = "ship2d_optimization"
-version = "0.8.1"
+# Nabla: optimal control of a 2D ship.
+#
+# * `nabla-core`: the ship's state-space model and the problem to solve (the test cases).
+# * `nabla-optimization`: evaluating, compiling and searching for control policies.
+# * `nabla-solutions`: the stored policies (`solutions/`) and their database.
+# * `nabla`: the app (native and web) that replays and plots them.
+# * `xtask`: development tasks (`cargo xtask`).
+[workspace]
+members = ["crates/*", "xtask"]
+resolver = "3"
+
+[workspace.package]
+# One version for the whole workspace: released binaries build candidates against the git tag
+# `v{version}` of `nabla-core` and `nabla-optimization`.
+version = "0.9.0"
 edition = "2024"
 
-[dependencies]
-
-[features]
-# Compile every stored solution into the library (`registry` module), for tools like the viewer.
-registry = []
-
-[workspace]
-# The core crate (this package), the egui viewer / web app, and the development tasks
-# (`cargo xtask`).
-members = ["viewer", "xtask"]
+[workspace.dependencies]
+nabla-core = { path = "crates/nabla-core" }
+nabla-optimization = { path = "crates/nabla-optimization" }
+nabla-solutions = { path = "crates/nabla-solutions" }
 
 [profile.release]
 opt-level = 2 # fast and small wasm
@@ -20,9 +26,9 @@ lto = true
 codegen-units = 1
 strip = true
 
-# For iterating on the viewer: `cargo viewer` (alias in .cargo/config.toml), or
-# `cargo run --profile fast -p ship2d_graphics` for the bare binary. As optimized as release, but without its
-# whole-program LTO and single codegen unit, and incremental: a small edit to the viewer
+# For iterating on the app: `cargo nabla` (alias in .cargo/config.toml), or
+# `cargo run --profile fast -p nabla` for the bare binary. As optimized as release, but without its
+# whole-program LTO and single codegen unit, and incremental: a small edit to the app
 # rebuilds in about 2 s instead of about 50 s. Not for shipping (larger binary, no LTO).
 [profile.fast]
 inherits = "release"
@@ -33,10 +39,16 @@ strip = false
 
 # This workspace's crates are the ones that change: many small codegen units, so an edit
 # recompiles only the few it touches.
-[profile.fast.package.ship2d_graphics]
+[profile.fast.package.nabla]
 codegen-units = 256
 
-[profile.fast.package.ship2d_optimization]
+[profile.fast.package.nabla-core]
+codegen-units = 256
+
+[profile.fast.package.nabla-optimization]
+codegen-units = 256
+
+[profile.fast.package.nabla-solutions]
 codegen-units = 256
 
 # Optimize all dependencies even in debug builds:
@@ -44,7 +56,7 @@ codegen-units = 256
 opt-level = 2
 
 # ----------------------------------------------------------------------------------------
-# Lints, opted into by the viewer (`[lints] workspace = true`).
+# Lints, opted into by the app and xtask (`[lints] workspace = true`).
 
 [workspace.lints.rust]
 unsafe_code = "deny"

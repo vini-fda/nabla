@@ -13,7 +13,7 @@
 //! reaches that setpoint in one step when not saturated. Thrust is only applied when the heading
 //! is within `ALIGN` of the desired acceleration.
 
-use ship2d_optimization::*;
+use nabla_core::*;
 use std::f64::consts::PI;
 
 /// Fraction of full thrust assumed available for braking.

@@ -131,12 +131,21 @@ pub fn timeline_ui(
         }
     }
 
-    draw(ui, rect, view, h, t_now);
-
+    // A pinch's fingers would seek as they move, as drags: no seeking from the moment a second
+    // finger lands until every finger has lifted.
+    let pinch_id = response.id.with("pinch");
+    let (two_fingers, touching) = ui.input(|i| (i.multi_touch().is_some(), i.any_touches()));
+    let was_pinching = ui.data(|d| d.get_temp(pinch_id)).unwrap_or(false);
+    ui.data_mut(|d| d.insert_temp(pinch_id, two_fingers || (was_pinching && touching)));
     let seek = (response.clicked() || response.dragged())
         .then(|| response.interact_pointer_pos())
         .flatten()
+        .filter(|_| !two_fingers && !was_pinching)
         .map(|pos| view.x_to_t(pos.x, rect).clamp(0.0, duration));
+
+    // The playhead at the time sought, at once: a touch screen, with no pointer moving after the
+    // finger lifts, may draw no other frame until the next touch.
+    draw(ui, rect, view, h, seek.unwrap_or(t_now));
     response.on_hover_text(
         "Click/drag: seek   Scroll/pinch: zoom   Shift+scroll: pan   Double-click: whole run\n\
          Yellow marks: controller samples t = k*h",

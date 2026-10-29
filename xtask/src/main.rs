@@ -164,17 +164,20 @@ fn check(sh: &Shell) -> Result<()> {
         "{cargo} clippy --locked --quiet --workspace --all-targets"
     )
     .run()?;
-    cmd!(
-        sh,
-        "{cargo} clippy --locked --quiet -p nabla --lib --target wasm32-unknown-unknown"
-    )
-    .run()?;
+    for package in ["nabla", "nabla-synth"] {
+        cmd!(
+            sh,
+            "{cargo} clippy --locked --quiet -p {package} --lib --target wasm32-unknown-unknown"
+        )
+        .run()?;
+    }
     // As in CI: release mode, with debug assertions and overflow checks on for this
     // workspace's crates.
     let checks = [
         "nabla-core",
         "nabla-optimization",
         "nabla-solutions",
+        "nabla-synth",
         "nabla",
     ]
     .iter()

@@ -147,6 +147,8 @@ jobs:
           --config 'profile.release.package.nabla-optimization.overflow-checks=true'
           --config 'profile.release.package.nabla-solutions.debug-assertions=true'
           --config 'profile.release.package.nabla-solutions.overflow-checks=true'
+          --config 'profile.release.package.nabla-synth.debug-assertions=true'
+          --config 'profile.release.package.nabla-synth.overflow-checks=true'
           --config 'profile.release.package.nabla.debug-assertions=true'
           --config 'profile.release.package.nabla.overflow-checks=true'
 
@@ -166,7 +168,9 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Clippy (wasm32)
-        run: cargo clippy $CARGO_FLAGS -p nabla --lib --target wasm32-unknown-unknown
+        run: |
+          cargo clippy $CARGO_FLAGS -p nabla --lib --target wasm32-unknown-unknown
+          cargo clippy $CARGO_FLAGS -p nabla-synth --lib --target wasm32-unknown-unknown
 
       - name: Install trunk
         run: |
@@ -181,7 +185,8 @@ jobs:
       - name: The build contains everything index.html refers to
         run: |
           for file in index.html manifest.json sw.js favicon.ico nabla.js \
-              nabla_bg.wasm assets/favicon.svg assets/nabla-logo.svg \
+              nabla_bg.wasm synth-worklet.js nabla_synth.wasm \
+              assets/favicon.svg assets/nabla-logo.svg \
               assets/favicon-192x192.png assets/favicon-512x512.png \
               assets/maskable-512x512.png assets/apple-touch-icon.png; do
             test -s "crates/nabla/dist/$file" || { echo "::error::crates/nabla/dist/$file is missing"; exit 1; }

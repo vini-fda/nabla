@@ -3,6 +3,8 @@
 # * `nabla-core`: the ship's state-space model and the problem to solve (the test cases).
 # * `nabla-optimization`: evaluating, compiling and searching for control policies.
 # * `nabla-solutions`: the stored policies (`solutions/`) and their database.
+# * `nabla-synth`: the thruster sounds' synthesizer, also built alone for the web app's
+#   AudioWorklet.
 # * `nabla`: the app (native and web) that replays and plots them.
 # * `xtask`: development tasks (`cargo xtask`).
 [workspace]
@@ -19,6 +21,7 @@ edition = "2024"
 nabla-core = { path = "crates/nabla-core" }
 nabla-optimization = { path = "crates/nabla-optimization" }
 nabla-solutions = { path = "crates/nabla-solutions" }
+nabla-synth = { path = "crates/nabla-synth" }
 
 # ----------------------------------------------------------------------------------------
 # Lints, opted into by the app and xtask (`[lints] workspace = true`).
@@ -272,4 +275,7 @@ codegen-units = 256
 codegen-units = 256
 
 [profile.fast.package.nabla-solutions]
+codegen-units = 256
+
+[profile.fast.package.nabla-synth]
 codegen-units = 256

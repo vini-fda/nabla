@@ -1,26 +1,33 @@
-//! Thruster sounds: plays [`crate::synth`] on the default audio output (natively, or with Web
-//! Audio in the browser), following the replay's thrust and torque while it plays, and the
-//! "Sound" section of the controls panel: the ion thruster's sound, volume knobs, and
-//! buttons to hear each thruster on its own.
+//! Thruster sounds: plays the [`nabla_synth`] synthesizer on the default audio output,
+//! following the replay's thrust and torque while it plays, and the "Sound" section of the
+//! controls panel: the ion thruster's sound, volume knobs, and buttons to hear each thruster
+//! on its own.
 //!
-//! The audio device is opened the first time there is something to play, which in a browser
-//! is after the page has been interacted with, as autoplay rules require. The app hands the
-//! audio callback its controls through atomics, and bumps a heartbeat every frame: when the
-//! frames stop (a hidden tab, a minimized window), the callback goes quiet on its own.
-//! `index.html` sets the page's audio session to "playback", so iOS plays it in silent mode.
+//! Natively, cpal calls the synthesizer on the operating system's audio thread
+//! (`sound/native.rs`). In the browser, an `AudioWorklet` runs it on the browser's audio
+//! rendering thread (`sound/web.rs`): the page's main thread, which also draws the frames,
+//! only posts it the controls, so slow frames cannot starve the audio. See
+//! `docs/audio_worklet.typ`.
+//!
+//! The audio output is opened the first time there is something to play, which in a browser
+//! is after the page has been interacted with, as autoplay rules require. The app publishes
+//! the controls every frame; when the frames stop for a second (a hidden tab, a minimized
+//! window), the thrusters go quiet on their own. `index.html` sets the page's audio session
+//! to "playback", so iOS plays it in silent mode.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
+#[cfg(not(target_arch = "wasm32"))]
+mod native;
+#[cfg(target_arch = "wasm32")]
+mod web;
 
-use cpal::traits::{DeviceTrait as _, HostTrait as _, StreamTrait as _};
-use cpal::{FromSample, SampleFormat, SizedSample, StreamConfig};
 use egui::{Pos2, Response, Sense, Stroke, Ui, Vec2, vec2};
+use nabla_synth::{Controls, IonSound};
 
-use crate::synth::{Controls, IonSound, Synth};
+#[cfg(not(target_arch = "wasm32"))]
+use self::native::Output;
+#[cfg(target_arch = "wasm32")]
+use self::web::Output;
 use crate::theme::palette;
-
-/// Seconds without a frame after which the audio callback goes quiet.
-const HEARTBEAT_TIMEOUT: f32 = 0.25;
 
 /// Default knob positions: master, ion thruster, reaction control thrusters.
 const DEFAULT_VOLUMES: [f32; 3] = [0.7, 0.8, 0.25];
@@ -34,8 +41,7 @@ pub struct Sound {
     /// Whether a "test" button is held this frame.
     test_ion: bool,
     test_rcs: bool,
-    shared: Arc<Shared>,
-    stream: Option<cpal::Stream>,
+    output: Option<Output>,
     /// Why the output could not be opened; not retried until sound is turned back on.
     error: Option<String>,
 }
@@ -48,8 +54,7 @@ impl Default for Sound {
             volumes: DEFAULT_VOLUMES,
             test_ion: false,
             test_rcs: false,
-            shared: Arc::default(),
-            stream: None,
+            output: None,
             error: None,
         }
     }
@@ -62,7 +67,7 @@ impl Sound {
         let test_ion = std::mem::take(&mut self.test_ion);
         let test_rcs = std::mem::take(&mut self.test_rcs);
         if !self.enabled {
-            self.stream = None;
+            self.output = None;
             return;
         }
         let (mut thrust, mut torque) = levels.unwrap_or_default();
@@ -73,40 +78,24 @@ impl Sound {
             torque = 1.0;
         }
         if test_ion || test_rcs {
-            // Keep the heartbeat going while a button is held still.
+            // Keep publishing while a button is held still, or the sound goes quiet.
             ctx.request_repaint();
         }
         let wanted = levels.is_some() || test_ion || test_rcs;
-        if wanted && self.stream.is_none() && self.error.is_none() {
-            match open(Arc::clone(&self.shared)) {
-                Ok(stream) => self.stream = Some(stream),
-                Err(e) => {
-                    log::warn!("No sound: {e}");
-                    self.error = Some(e);
-                }
+        if wanted && self.output.is_none() && self.error.is_none() {
+            match Output::open() {
+                Ok(output) => self.output = Some(output),
+                Err(e) => self.fail(e),
             }
         }
-        // A browser keeps audio suspended until the page is interacted with: should the
-        // output have been opened before that, resume it on the next click or key press.
-        if cfg!(target_arch = "wasm32")
-            && let Some(stream) = &self.stream
-            && ctx.input(|i| {
-                i.events.iter().any(|e| {
-                    matches!(
-                        e,
-                        egui::Event::PointerButton { pressed: true, .. }
-                            | egui::Event::Key { pressed: true, .. }
-                            | egui::Event::Touch { .. }
-                    )
-                })
-            })
-            && let Err(e) = stream.play()
-        {
-            log::warn!("Audio output: {e}");
-        }
+        #[cfg(target_arch = "wasm32")]
+        self.browser_events(ctx);
+        let Some(output) = &self.output else {
+            return;
+        };
         // Knob positions to gains: squaring is close to how loudness is heard.
         let [master, ion, rcs] = self.volumes.map(|v| v * v);
-        self.shared.publish(&Controls {
+        output.publish(&Controls {
             thrust,
             torque,
             ion: self.ion,
@@ -114,6 +103,40 @@ impl Sound {
             rcs_gain: rcs,
             master_gain: master,
         });
+    }
+
+    /// Closes the output, and shows why until sound is turned back on.
+    fn fail(&mut self, e: String) {
+        log::warn!("No sound: {e}");
+        self.error = Some(e);
+        self.output = None;
+    }
+
+    /// In the browser, the output loads in the background, and may fail then. And audio stays
+    /// suspended until the page is interacted with: should the output have been opened before
+    /// that, resume it on the next click or key press.
+    #[cfg(target_arch = "wasm32")]
+    fn browser_events(&mut self, ctx: &egui::Context) {
+        let Some(output) = &self.output else {
+            return;
+        };
+        if let Some(e) = output.take_error() {
+            self.fail(e);
+            return;
+        }
+        let gesture = ctx.input(|i| {
+            i.events.iter().any(|e| {
+                matches!(
+                    e,
+                    egui::Event::PointerButton { pressed: true, .. }
+                        | egui::Event::Key { pressed: true, .. }
+                        | egui::Event::Touch { .. }
+                )
+            })
+        });
+        if gesture {
+            output.resume();
+        }
     }
 
     /// The "Sound" section of the controls panel.
@@ -154,110 +177,6 @@ impl Sound {
             ui.colored_label(palette::RED, format!("No sound: {e}"));
         }
     }
-}
-
-/// The audio callback's inputs, written by the app every frame.
-#[derive(Default)]
-struct Shared {
-    /// `f32` bits of [`Controls`]' fields, and the ion sound's index in [`IonSound::ALL`].
-    thrust: AtomicU32,
-    torque: AtomicU32,
-    ion: AtomicU32,
-    gains: [AtomicU32; 3],
-    /// Bumped every frame.
-    heartbeat: AtomicU32,
-}
-
-impl Shared {
-    fn publish(&self, c: &Controls) {
-        let ion = IonSound::ALL.iter().position(|&s| s == c.ion).unwrap_or(0);
-        self.thrust.store(c.thrust.to_bits(), Relaxed);
-        self.torque.store(c.torque.to_bits(), Relaxed);
-        self.ion.store(ion as u32, Relaxed);
-        for (gain, value) in self
-            .gains
-            .iter()
-            .zip([c.ion_gain, c.rcs_gain, c.master_gain])
-        {
-            gain.store(value.to_bits(), Relaxed);
-        }
-        self.heartbeat.fetch_add(1, Relaxed);
-    }
-
-    fn controls(&self) -> Controls {
-        let f = |a: &AtomicU32| f32::from_bits(a.load(Relaxed));
-        let ion = IonSound::ALL
-            .get(self.ion.load(Relaxed) as usize)
-            .copied()
-            .unwrap_or_default();
-        Controls {
-            thrust: f(&self.thrust),
-            torque: f(&self.torque),
-            ion,
-            ion_gain: f(&self.gains[0]),
-            rcs_gain: f(&self.gains[1]),
-            master_gain: f(&self.gains[2]),
-        }
-    }
-}
-
-/// Opens the default output and starts playing the synthesizer on it.
-fn open(shared: Arc<Shared>) -> Result<cpal::Stream, String> {
-    let device = cpal::default_host()
-        .default_output_device()
-        .ok_or("no audio output device")?;
-    let config = device.default_output_config().map_err(|e| e.to_string())?;
-    let format = config.sample_format();
-    let config = StreamConfig::from(config);
-    match format {
-        SampleFormat::F32 => play::<f32>(&device, &config, shared),
-        SampleFormat::I16 => play::<i16>(&device, &config, shared),
-        SampleFormat::U16 => play::<u16>(&device, &config, shared),
-        SampleFormat::I32 => play::<i32>(&device, &config, shared),
-        other => Err(format!("unsupported sample format {other}")),
-    }
-}
-
-fn play<T: SizedSample + FromSample<f32>>(
-    device: &cpal::Device,
-    config: &StreamConfig,
-    shared: Arc<Shared>,
-) -> Result<cpal::Stream, String> {
-    let channels = usize::from(config.channels);
-    let rate = config.sample_rate as f32;
-    let mut synth = Synth::new(rate);
-    let mut buffer = Vec::new();
-    let mut heartbeat = 0;
-    let mut quiet_frames = 0.0;
-    let stream = device
-        .build_output_stream(
-            *config,
-            move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
-                let mut controls = shared.controls();
-                let beat = shared.heartbeat.load(Relaxed);
-                if beat == heartbeat {
-                    quiet_frames += (data.len() / channels.max(1)) as f32;
-                } else {
-                    heartbeat = beat;
-                    quiet_frames = 0.0;
-                }
-                if quiet_frames > HEARTBEAT_TIMEOUT * rate {
-                    controls.thrust = 0.0;
-                    controls.torque = 0.0;
-                }
-                synth.set(controls);
-                buffer.resize(data.len(), 0.0);
-                synth.render(&mut buffer, channels);
-                for (out, &sample) in data.iter_mut().zip(&buffer) {
-                    *out = T::from_sample(sample);
-                }
-            },
-            |e| log::warn!("Audio output: {e}"),
-            None,
-        )
-        .map_err(|e| e.to_string())?;
-    stream.play().map_err(|e| e.to_string())?;
-    Ok(stream)
 }
 
 /// A rotary knob for a volume from 0 to 1, labeled underneath. Drag up or right to turn it
@@ -323,26 +242,4 @@ fn knob(ui: &mut Ui, value: &mut f32, default: f32, label: &str) -> Response {
         ))
     })
     .inner
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn controls_round_trip_through_the_shared_atomics() {
-        let shared = Shared::default();
-        for ion in IonSound::ALL {
-            let controls = Controls {
-                thrust: 0.25,
-                torque: -0.5,
-                ion,
-                ion_gain: 0.1,
-                rcs_gain: 0.2,
-                master_gain: 0.3,
-            };
-            shared.publish(&controls);
-            assert_eq!(shared.controls(), controls, "{ion:?}");
-        }
-    }
 }

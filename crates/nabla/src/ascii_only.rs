@@ -42,7 +42,8 @@ fn suggestion(c: char) -> &'static str {
 fn viewer_sources_are_ascii() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut files = Vec::new();
-    for dir in ["src", "assets"] {
+    // With the synthesizer, which the web app also runs in an AudioWorklet.
+    for dir in ["src", "assets", "../nabla-synth/src"] {
         collect(&root.join(dir), &mut files);
     }
     files.push(root.join("index.html"));

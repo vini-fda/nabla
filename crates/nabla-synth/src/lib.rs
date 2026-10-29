@@ -1,13 +1,17 @@
 //! Thruster sounds, synthesized sample by sample: the main (ion) thruster in one of several
 //! styles ([`IonSound`]), and the reaction control thrusters (RCS) as hisses of cold gas.
 //!
-//! This is only the signal processing, with no audio device: [`crate::sound`] feeds the
-//! synthesizer the thrust and torque of the replay and plays what it renders.
+//! This is only the signal processing, with no audio device: the app feeds the synthesizer
+//! the thrust and torque of the replay and plays what it renders. Natively it calls [`Synth`]
+//! directly; in the browser, an `AudioWorklet` runs this crate as a wasm module of its own,
+//! through the functions of [`worklet`].
 //!
 //! Everything a voice does once per sample is cheap (oscillators, noise, filters); what
 //! needs `tan`, `powf` or `exp` (filter tuning, loudness curves) runs at a control rate,
-//! once every [`CONTROL_PERIOD`] samples. Levels and gains are smoothed, so steps in the
+//! once every `CONTROL_PERIOD` samples. Levels and gains are smoothed, so steps in the
 //! thrust, torque, volumes or sound never click.
+
+pub mod worklet;
 
 use std::f32::consts::{FRAC_PI_4, PI, SQRT_2, TAU};
 
@@ -171,7 +175,7 @@ impl Synth {
         }
     }
 
-    /// The slow parameters, once every [`CONTROL_PERIOD`] samples.
+    /// The slow parameters, once every `CONTROL_PERIOD` samples.
     fn control(&mut self) {
         let thrust = self.thrust.value;
         self.ion.control(self.playing, thrust, &mut self.noise);

@@ -22,6 +22,8 @@ cargo run --release -p nabla             # the app, natively
 
 Development tasks are in the `xtask` crate (`cargo xtask help`). `cargo xtask check` runs the same checks as CI, plus the web build. Every push to `main` deploys the web app.
 
+On Linux, builds link with [mold](https://github.com/rui314/mold) through clang (see `.cargo/config.toml`), so both need to be installed: `sudo apt install mold clang` on Debian and Ubuntu.
+
 ## Releasing
 
 Pushing a version tag `vX.Y.Z` builds the native app and publishes a [GitHub Release](https://github.com/vini-fda/nabla/releases). The builds are for macOS on Apple silicon (an app bundle), Linux x86-64 and Windows 64-bit. Pushes to `main` only run CI and deploy the web app; they never release.

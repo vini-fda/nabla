@@ -5,3 +5,12 @@ xtask = "run -q -p xtask --"
 # The app, built with the `fast` profile (see Cargo.toml): quick rebuilds while iterating.
 # On macOS it runs inside the app bundle, for the Liquid Glass Dock icon.
 nabla = "run -q -p xtask -- run --profile fast"
+
+# Linux links with mold (https://github.com/rui314/mold), much faster than the default
+# linker. Needs mold and clang installed. Clang is the linker driver because it always
+# accepts `-fuse-ld=mold` (GCC only from 12.1). mold links only ELF: macOS and Windows keep
+# their own linkers. A `RUSTFLAGS` variable replaces these flags (as in CI and
+# `cargo xtask check`), and the link falls back to the default linker.
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]

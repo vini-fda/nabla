@@ -1,4 +1,4 @@
-Native builds of Nabla, the viewer for the 2D ship's control policies. The web version is at https://vini-fda.github.io/ship2d_optimization/
+Native builds of Nabla, the viewer for the 2D ship's control policies. The web version is at https://vini-fda.github.io/nabla/
 
 | Platform | File |
 |---|---|

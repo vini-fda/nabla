@@ -119,13 +119,16 @@ jobs:
           --config 'profile.release.package.nabla.debug-assertions=true'
           --config 'profile.release.package.nabla.overflow-checks=true'
 
-      # The app binary builds exactly as it is released.
+      # The app binary builds exactly as it is released. Its whole-program LTO takes minutes, so
+      # pull requests skip this and the bundle: they run on main, and before every release
+      # (release.yml runs this workflow first).
       - name: Build the app (release)
+        if: github.event_name != 'pull_request'
         run: cargo build $CARGO_FLAGS --release -p nabla --target ${{ matrix.target }}
 
       # The Liquid Glass icon needs Xcode 26 (see release.yml).
       - name: Select the newest Xcode
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && github.event_name != 'pull_request'
         run: |
           xcode="$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
           sudo xcode-select -s "$xcode"
@@ -133,7 +136,7 @@ jobs:
 
       # Bundles the binary built in the step above (same profile and target): no rebuild.
       - name: Build the macOS app bundle
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && github.event_name != 'pull_request'
         run: |
           cargo xtask bundle --target ${{ matrix.target }}
           test -f "target/${{ matrix.target }}/release/Nabla.app/Contents/Resources/Assets.car"

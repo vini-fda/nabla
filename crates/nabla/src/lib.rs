@@ -4,6 +4,8 @@
 #![warn(clippy::all, rust_2018_idioms)]
 
 mod app;
+#[cfg(test)]
+mod ascii_only;
 pub mod camera;
 mod canvas_buttons;
 mod formula;

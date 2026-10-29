@@ -63,8 +63,13 @@ pub mod icons {
         use egui::{FontFamily, FontId};
 
         pub const ARROW_COUNTER_CLOCKWISE: &str = "\u{E038}";
+        pub const ARROW_FAT_UP: &str = "\u{E52E}";
+        pub const ARROW_LEFT: &str = "\u{E058}";
+        pub const ARROW_RIGHT: &str = "\u{E06C}";
         pub const ARROWS_OUT_CARDINAL: &str = "\u{E0A4}";
         pub const GRID_FOUR: &str = "\u{E296}";
+        pub const MOUSE_LEFT_CLICK: &str = "\u{E334}";
+        pub const MOUSE_SCROLL: &str = "\u{E332}";
         pub const PERSPECTIVE: &str = "\u{EBE6}";
         pub const ROCKET_LAUNCH: &str = "\u{E3FE}";
         pub const SPHERE: &str = "\u{EE66}";

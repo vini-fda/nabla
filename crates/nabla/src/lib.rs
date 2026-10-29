@@ -12,6 +12,7 @@ mod formula;
 mod gizmo;
 pub mod grid;
 mod highlight;
+mod keys;
 mod plume;
 pub mod replay;
 mod ship3d;

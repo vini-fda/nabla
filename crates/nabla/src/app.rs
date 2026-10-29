@@ -18,6 +18,7 @@ use crate::canvas_buttons::{self, Button};
 use crate::formula::{self, Formula};
 use crate::gizmo::ViewGizmo;
 use crate::grid::{GridStyle, draw_grid};
+use crate::keys;
 use crate::plume::Plume;
 use crate::replay::{MAX_SUBDIVISIONS, Playback, Replay, Series};
 use crate::ship3d::{self, DepthMap, SHIP_GLB, ShipModel, ShipRenderer};
@@ -883,13 +884,84 @@ impl ViewerApp {
         });
     }
 
+    /// The keyboard and mouse inputs, in groups, the keys drawn as keycaps left of what they do.
     fn user_inputs_ui(ui: &mut egui::Ui) {
+        use icons::outline::{
+            ARROW_COUNTER_CLOCKWISE, ARROWS_OUT_CARDINAL, MOUSE_LEFT_CLICK, MOUSE_SCROLL,
+            ROCKET_LAUNCH,
+        };
+        use keys::{F, LEFT, RIGHT, Run, SPACE, caps, joiner, label_with_icons, mouse};
+
+        let k = keys::Keys::new(ui.ctx());
         ui.heading("User inputs");
-        ui.label("Drag: pan (or rotate: arrows button)   Scroll: zoom");
-        ui.label("Drag the axes: orbit   Click an axis: view along it");
-        ui.label("Space: play/pause   Left / Right: +/-dt");
-        ui.label("F: follow the ship (or the rocket button)");
-        ui.label("Shift+Left / Right: +/-sample   Home / End");
+        input_group(ui, "Playback", |ui| {
+            input_row(ui, |ui| caps(ui, &[SPACE]), |ui| ui.label("Play / pause"));
+            input_row(
+                ui,
+                |ui| caps(ui, &[LEFT, RIGHT]),
+                |ui| ui.label("Step one dt"),
+            );
+            input_row(
+                ui,
+                |ui| {
+                    caps(ui, &[k.shift()]);
+                    joiner(ui, "+");
+                    caps(ui, &[LEFT, RIGHT]);
+                },
+                |ui| ui.label("Previous / next sample"),
+            );
+            input_row(
+                ui,
+                |ui| {
+                    caps(ui, k.home());
+                    joiner(ui, "/");
+                    caps(ui, k.end());
+                },
+                |ui| ui.label("Start / end"),
+            );
+            input_row(
+                ui,
+                |ui| caps(ui, &[F]),
+                |ui| {
+                    label_with_icons(
+                        ui,
+                        &[
+                            Run::Text("Follow the ship (or "),
+                            Run::Icon(ROCKET_LAUNCH),
+                            Run::Text(")"),
+                        ],
+                    );
+                },
+            );
+        });
+        input_group(ui, "View", |ui| {
+            input_row(
+                ui,
+                |ui| mouse(ui, MOUSE_LEFT_CLICK, "drag"),
+                |ui| {
+                    label_with_icons(
+                        ui,
+                        &[
+                            Run::Text("Pan (when "),
+                            Run::Icon(ARROWS_OUT_CARDINAL),
+                            Run::Text(") or rotate (when "),
+                            Run::Icon(ARROW_COUNTER_CLOCKWISE),
+                            Run::Text(")"),
+                        ],
+                    );
+                },
+            );
+            input_row(
+                ui,
+                |ui| mouse(ui, MOUSE_SCROLL, "scroll"),
+                |ui| ui.label("Zoom"),
+            );
+            input_row(
+                ui,
+                |ui| mouse(ui, MOUSE_LEFT_CLICK, "drag axes"),
+                |ui| ui.label("Orbit; click one to view along it"),
+            );
+        });
     }
 
     /// The playback controls, on one row, and the timeline. `compact`, for narrow screens,
@@ -901,17 +973,22 @@ impl ViewerApp {
         };
         let (h, last) = (replay.h(), replay.last_frame());
         let playback = &mut self.playback;
+        let k = keys::Keys::new(ui.ctx());
         ui.horizontal_wrapped(|ui| {
+            use keys::{LEFT, RIGHT, SPACE};
+
             if ui
                 .button(icons::SKIP_BACK)
-                .on_hover_text("Start (Home)")
+                .on_hover_ui(|ui| keys::tooltip(ui, "Start", k.home()))
                 .clicked()
             {
                 playback.seek_start();
             }
             if ui
                 .button(icons::CARET_LEFT)
-                .on_hover_text("Previous controller sample (Shift+Left)")
+                .on_hover_ui(|ui| {
+                    keys::tooltip(ui, "Previous controller sample", &[k.shift(), LEFT]);
+                })
                 .clicked()
             {
                 playback.previous_sample(last);
@@ -923,21 +1000,23 @@ impl ViewerApp {
             };
             if ui
                 .button(play)
-                .on_hover_text("Play / pause (Space)")
+                .on_hover_ui(|ui| keys::tooltip(ui, "Play / pause", &[SPACE]))
                 .clicked()
             {
                 playback.toggle(last);
             }
             if ui
                 .button(icons::CARET_RIGHT)
-                .on_hover_text("Next controller sample (Shift+Right)")
+                .on_hover_ui(|ui| {
+                    keys::tooltip(ui, "Next controller sample", &[k.shift(), RIGHT]);
+                })
                 .clicked()
             {
                 playback.next_sample(last);
             }
             if ui
                 .button(icons::SKIP_FORWARD)
-                .on_hover_text("End (End)")
+                .on_hover_ui(|ui| keys::tooltip(ui, "End", k.end()))
                 .clicked()
             {
                 playback.seek_end(last);
@@ -1829,6 +1908,29 @@ const MENU_SPEEDS: [f64; 10] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 4.0,
 /// A playback speed as the menu shows it: `1x`, `1.5x`, `0.25x`.
 fn speed_label(speed: f64) -> String {
     format!("{}x", (speed * 100.0).round() / 100.0)
+}
+
+/// A group of the User inputs panel: its name, then its rows, the inputs in a column wide
+/// enough that every group's actions line up.
+fn input_group(ui: &mut egui::Ui, name: &str, rows: impl FnOnce(&mut egui::Ui)) {
+    const INPUTS_COLUMN_WIDTH: f32 = 130.0;
+    ui.add_space(4.0);
+    ui.label(egui::RichText::new(name).small().color(palette::OVERLAY1));
+    egui::Grid::new(name)
+        .num_columns(2)
+        .min_col_width(INPUTS_COLUMN_WIDTH)
+        .show(ui, rows);
+}
+
+/// A row of an [`input_group`]: the `inputs`, then what they do.
+fn input_row<A, B>(
+    ui: &mut egui::Ui,
+    inputs: impl FnOnce(&mut egui::Ui) -> A,
+    action: impl FnOnce(&mut egui::Ui) -> B,
+) {
+    ui.horizontal(inputs);
+    action(ui);
+    ui.end_row();
 }
 
 /// The compact layout's playback speed control, as in video players: a button with a gauge

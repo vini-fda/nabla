@@ -1,6 +1,7 @@
 //! Floating buttons over the canvas, like the ones by Blender's navigation gizmo: white
 //! outline icons in a grey rounded column in the canvas's top right corner, right of the
-//! gizmo. Toggles turn light blue while on; switches between two modes show the mode's icon.
+//! gizmo. Toggles turn their color (light blue, unless set) while on; switches between two modes
+//! show the mode's icon.
 
 use egui::{Color32, CornerRadius, Pos2, Rect, Sense, Vec2};
 
@@ -20,7 +21,8 @@ pub const MARGIN_RIGHT: f32 = 8.0;
 /// The column's color: a translucent grey, which stands out on the dark canvas.
 const COLUMN: Color32 = Color32::from_rgba_unmultiplied_const(46, 46, 46, 210);
 
-/// Color of an icon while on, and of the button behind it.
+/// A toggle's color while on, for its icon and the button behind it, unless set with
+/// [`Button::color`].
 const ON: Color32 = palette::BLUE;
 
 /// A button: the setting it flips when clicked, and its icon and tooltip while the setting
@@ -29,8 +31,9 @@ pub struct Button<'a> {
     on: &'a mut bool,
     icons: [&'static str; 2],
     tooltips: [&'static str; 2],
-    /// Show "on" light blue.
+    /// Show "on" in `color`.
     highlight: bool,
+    color: Color32,
 }
 
 impl<'a> Button<'a> {
@@ -41,6 +44,7 @@ impl<'a> Button<'a> {
             icons: [icon; 2],
             tooltips: [tooltip; 2],
             highlight: true,
+            color: ON,
         }
     }
 
@@ -51,13 +55,25 @@ impl<'a> Button<'a> {
             icons,
             tooltips,
             highlight: false,
+            color: ON,
         }
+    }
+
+    /// A toggle's color while on, in place of light blue.
+    pub fn color(mut self, color: Color32) -> Self {
+        self.color = color;
+        self
     }
 }
 
 /// Shows `buttons` in a column in the top right corner of `canvas`, and flips the setting of
-/// the one clicked.
-pub fn show(ui: &egui::Ui, painter: &egui::Painter, canvas: Rect, buttons: &mut [Button<'_>]) {
+/// the one clicked. Returns the column's rectangle.
+pub fn show(
+    ui: &egui::Ui,
+    painter: &egui::Painter,
+    canvas: Rect,
+    buttons: &mut [Button<'_>],
+) -> Rect {
     let count = buttons.len() as f32;
     let column = Rect::from_min_size(
         Pos2::new(
@@ -92,14 +108,18 @@ pub fn show(ui: &egui::Ui, painter: &egui::Painter, canvas: Rect, buttons: &mut 
         }
 
         let background = match (lit, response.hovered()) {
-            (true, hovered) => Some(ON.gamma_multiply(if hovered { 0.35 } else { 0.25 })),
+            (true, hovered) => Some(
+                button
+                    .color
+                    .gamma_multiply(if hovered { 0.35 } else { 0.25 }),
+            ),
             (false, true) => Some(Color32::from_white_alpha(25)),
             (false, false) => None,
         };
         if let Some(background) = background {
             painter.rect_filled(rect, CornerRadius::same((SIZE / 2.0) as u8), background);
         }
-        let color = if lit { ON } else { palette::WHITE };
+        let color = if lit { button.color } else { palette::WHITE };
         painter.text(
             rect.center(),
             egui::Align2::CENTER_CENTER,
@@ -108,4 +128,5 @@ pub fn show(ui: &egui::Ui, painter: &egui::Painter, canvas: Rect, buttons: &mut 
             color,
         );
     }
+    column
 }

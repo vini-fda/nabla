@@ -18,6 +18,7 @@ use crate::canvas_buttons::{self, Button};
 use crate::formula::{self, Formula};
 use crate::gizmo::ViewGizmo;
 use crate::grid::{GridStyle, draw_grid};
+use crate::keys;
 use crate::plume::Plume;
 use crate::replay::{MAX_SUBDIVISIONS, Playback, Replay, Series};
 use crate::ship3d::{self, DepthMap, SHIP_GLB, ShipModel, ShipRenderer};
@@ -199,6 +200,8 @@ pub struct ViewerApp {
     /// Show the thrusters' plumes in the 3D view.
     show_plume: bool,
     follow_ship: bool,
+    /// Show the keyboard and mouse help over the canvas.
+    show_help: bool,
     playback: Playback,
     /// Name of the selected test case.
     case: Option<String>,
@@ -259,6 +262,7 @@ impl Default for ViewerApp {
             show_grid: true,
             show_plume: true,
             follow_ship: false,
+            show_help: false,
             playback: Playback::default(),
             case: Some(DEFAULT_CASE.to_owned()),
             h: suite::H,
@@ -883,13 +887,169 @@ impl ViewerApp {
         });
     }
 
+    /// The user inputs help: touch gestures on a phone or tablet, keyboard and mouse elsewhere.
     fn user_inputs_ui(ui: &mut egui::Ui) {
+        let k = keys::Keys::new(ui.ctx());
         ui.heading("User inputs");
-        ui.label("Drag: pan (or rotate: arrows button)   Scroll: zoom");
-        ui.label("Drag the axes: orbit   Click an axis: view along it");
-        ui.label("Space: play/pause   Left / Right: +/-dt");
-        ui.label("F: follow the ship (or the rocket button)");
-        ui.label("Shift+Left / Right: +/-sample   Home / End");
+        if k.touch() {
+            Self::touch_inputs_ui(ui);
+        } else {
+            Self::keyboard_mouse_inputs_ui(ui, k);
+        }
+    }
+
+    /// The keyboard and mouse inputs, in groups, the keys drawn as keycaps left of what they do.
+    fn keyboard_mouse_inputs_ui(ui: &mut egui::Ui, k: keys::Keys) {
+        use icons::outline::{MOUSE_LEFT_CLICK, MOUSE_SCROLL, ROCKET_LAUNCH};
+        use keys::{F, LEFT, RIGHT, Run, SPACE, caps, gesture, joiner, label_with_icons};
+
+        input_group(ui, "Playback", |ui| {
+            input_row(ui, |ui| caps(ui, &[SPACE]), |ui| ui.label("Play / pause"));
+            input_row(
+                ui,
+                |ui| caps(ui, &[LEFT, RIGHT]),
+                |ui| ui.label("Step one dt"),
+            );
+            input_row(
+                ui,
+                |ui| {
+                    caps(ui, &[k.shift()]);
+                    joiner(ui, "+");
+                    caps(ui, &[LEFT, RIGHT]);
+                },
+                |ui| ui.label("Previous / next sample"),
+            );
+            input_row(
+                ui,
+                |ui| {
+                    caps(ui, k.home());
+                    joiner(ui, "/");
+                    caps(ui, k.end());
+                },
+                |ui| ui.label("Start / end"),
+            );
+            input_row(
+                ui,
+                |ui| caps(ui, &[F]),
+                |ui| {
+                    label_with_icons(
+                        ui,
+                        &[
+                            Run::Text("Follow the ship (or "),
+                            Run::Icon(ROCKET_LAUNCH),
+                            Run::Text(")"),
+                        ],
+                    );
+                },
+            );
+        });
+        input_group(ui, "View", |ui| {
+            input_row(
+                ui,
+                |ui| gesture(ui, MOUSE_LEFT_CLICK, "drag"),
+                drag_action_ui,
+            );
+            input_row(
+                ui,
+                |ui| gesture(ui, MOUSE_SCROLL, "scroll"),
+                |ui| ui.label("Zoom"),
+            );
+            input_row(
+                ui,
+                |ui| gesture(ui, MOUSE_LEFT_CLICK, "drag axes"),
+                |ui| ui.label("Orbit; click one to view along it"),
+            );
+        });
+    }
+
+    /// The touch gestures, and what the playback buttons do, since a touch screen shows no
+    /// tooltips.
+    fn touch_inputs_ui(ui: &mut egui::Ui) {
+        use icons::outline::{ARROWS_OUT_SIMPLE, HAND_SWIPE_RIGHT, HAND_TAP, ROCKET_LAUNCH};
+        use keys::{GESTURE_GLYPH_SIZE, gesture, joiner};
+
+        let button = |ui: &mut egui::Ui, glyph: &str| {
+            ui.label(
+                egui::RichText::new(glyph)
+                    .size(GESTURE_GLYPH_SIZE)
+                    .color(palette::WHITE),
+            );
+        };
+        input_group(ui, "Playback", |ui| {
+            input_row(
+                ui,
+                |ui| button(ui, icons::PLAY),
+                |ui| ui.label("Play / pause"),
+            );
+            input_row(
+                ui,
+                |ui| {
+                    button(ui, icons::CARET_LEFT);
+                    joiner(ui, "/");
+                    button(ui, icons::CARET_RIGHT);
+                },
+                |ui| ui.label("Previous / next sample"),
+            );
+            input_row(
+                ui,
+                |ui| {
+                    button(ui, icons::SKIP_BACK);
+                    joiner(ui, "/");
+                    button(ui, icons::SKIP_FORWARD);
+                },
+                |ui| ui.label("Start / end"),
+            );
+            input_row(
+                ui,
+                |ui| {
+                    ui.label(
+                        egui::RichText::new(ROCKET_LAUNCH)
+                            .font(icons::outline::font(GESTURE_GLYPH_SIZE))
+                            .color(palette::WHITE),
+                    )
+                },
+                |ui| ui.label("Follow the ship"),
+            );
+        });
+        input_group(ui, "View", |ui| {
+            input_row(
+                ui,
+                |ui| gesture(ui, HAND_SWIPE_RIGHT, "drag"),
+                drag_action_ui,
+            );
+            input_row(
+                ui,
+                |ui| gesture(ui, ARROWS_OUT_SIMPLE, "pinch"),
+                |ui| ui.label("Zoom"),
+            );
+            input_row(
+                ui,
+                |ui| gesture(ui, HAND_SWIPE_RIGHT, "drag axes"),
+                |ui| ui.label("Orbit"),
+            );
+            input_row(
+                ui,
+                |ui| gesture(ui, HAND_TAP, "tap an axis"),
+                |ui| ui.label("View along it"),
+            );
+        });
+        input_group(ui, "Timeline", |ui| {
+            input_row(
+                ui,
+                |ui| gesture(ui, HAND_TAP, "tap / drag"),
+                |ui| ui.label("Seek"),
+            );
+            input_row(
+                ui,
+                |ui| gesture(ui, ARROWS_OUT_SIMPLE, "pinch"),
+                |ui| ui.label("Zoom"),
+            );
+            input_row(
+                ui,
+                |ui| gesture(ui, HAND_TAP, "double-tap"),
+                |ui| ui.label("Show the whole run"),
+            );
+        });
     }
 
     /// The playback controls, on one row, and the timeline. `compact`, for narrow screens,
@@ -901,17 +1061,22 @@ impl ViewerApp {
         };
         let (h, last) = (replay.h(), replay.last_frame());
         let playback = &mut self.playback;
+        let k = keys::Keys::new(ui.ctx());
         ui.horizontal_wrapped(|ui| {
+            use keys::{LEFT, RIGHT, SPACE};
+
             if ui
                 .button(icons::SKIP_BACK)
-                .on_hover_text("Start (Home)")
+                .on_hover_ui(|ui| keys::tooltip(ui, "Start", k.home()))
                 .clicked()
             {
                 playback.seek_start();
             }
             if ui
                 .button(icons::CARET_LEFT)
-                .on_hover_text("Previous controller sample (Shift+Left)")
+                .on_hover_ui(|ui| {
+                    keys::tooltip(ui, "Previous controller sample", &[k.shift(), LEFT]);
+                })
                 .clicked()
             {
                 playback.previous_sample(last);
@@ -923,21 +1088,23 @@ impl ViewerApp {
             };
             if ui
                 .button(play)
-                .on_hover_text("Play / pause (Space)")
+                .on_hover_ui(|ui| keys::tooltip(ui, "Play / pause", &[SPACE]))
                 .clicked()
             {
                 playback.toggle(last);
             }
             if ui
                 .button(icons::CARET_RIGHT)
-                .on_hover_text("Next controller sample (Shift+Right)")
+                .on_hover_ui(|ui| {
+                    keys::tooltip(ui, "Next controller sample", &[k.shift(), RIGHT]);
+                })
                 .clicked()
             {
                 playback.next_sample(last);
             }
             if ui
                 .button(icons::SKIP_FORWARD)
-                .on_hover_text("End (End)")
+                .on_hover_ui(|ui| keys::tooltip(ui, "End", k.end()))
                 .clicked()
             {
                 playback.seek_end(last);
@@ -1105,7 +1272,7 @@ impl ViewerApp {
         if self.show_gizmo {
             self.gizmo.paint(ui, &painter, corner, &self.camera);
         }
-        canvas_buttons::show(
+        let buttons = canvas_buttons::show(
             ui,
             &painter,
             corner,
@@ -1139,8 +1306,53 @@ impl ViewerApp {
                         "Perspective view. Click for orthographic",
                     ],
                 ),
+                Button::toggle(
+                    icons::outline::SEAL_QUESTION,
+                    &mut self.show_help,
+                    "Keyboard and mouse help",
+                )
+                .color(palette::YELLOW),
             ],
         );
+        if self.show_help {
+            self.help_ui(ui, rect, buttons);
+        }
+    }
+
+    /// The keyboard and mouse help, over the `canvas`, left of its `buttons` and level with
+    /// their top. Where the canvas is too small for it, it shrinks, keeping its proportions, so
+    /// it always shows whole. Escape closes it, as does its button.
+    fn help_ui(&mut self, ui: &egui::Ui, canvas: egui::Rect, buttons: egui::Rect) {
+        const GAP: f32 = 8.0;
+        // Laid out at its full size at the layer's origin, unclipped, then scaled and moved into
+        // place by the layer's transform, which applies to its input too.
+        let area = egui::Area::new(ui.scope_id().with("help"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(egui::Pos2::ZERO)
+            .constrain_to(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::Vec2::splat(1.0e4),
+            ))
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style()).show(ui, Self::user_inputs_ui);
+            });
+        let size = area.response.rect.size();
+        let top_right = egui::pos2(buttons.left() - GAP, buttons.top());
+        let room = egui::vec2(
+            top_right.x - canvas.left() - GAP,
+            canvas.bottom() - top_right.y - GAP,
+        );
+        let scale = (room / size).min_elem().clamp(0.1, 1.0);
+        ui.ctx().set_transform_layer(
+            area.response.layer_id,
+            egui::emath::TSTransform::new(
+                egui::vec2(top_right.x - scale * size.x, top_right.y),
+                scale,
+            ),
+        );
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.show_help = false;
+        }
     }
 
     /// Everything on the canvas but the gizmo.
@@ -1380,8 +1592,6 @@ impl ViewerApp {
             self.display_ui(ui);
             ui.separator();
             self.sound.ui(ui);
-            ui.separator();
-            Self::user_inputs_ui(ui);
         });
     }
 
@@ -1829,6 +2039,45 @@ const MENU_SPEEDS: [f64; 10] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 4.0,
 /// A playback speed as the menu shows it: `1x`, `1.5x`, `0.25x`.
 fn speed_label(speed: f64) -> String {
     format!("{}x", (speed * 100.0).round() / 100.0)
+}
+
+/// A group of the User inputs panel: its name, then its rows, the inputs in a column wide
+/// enough that every group's actions line up.
+fn input_group(ui: &mut egui::Ui, name: &str, rows: impl FnOnce(&mut egui::Ui)) {
+    const INPUTS_COLUMN_WIDTH: f32 = 130.0;
+    ui.add_space(4.0);
+    ui.label(egui::RichText::new(name).small().color(palette::OVERLAY1));
+    egui::Grid::new(name)
+        .num_columns(2)
+        .min_col_width(INPUTS_COLUMN_WIDTH)
+        .show(ui, rows);
+}
+
+/// What dragging the canvas does, pointing at the pan/rotate canvas button's two icons.
+fn drag_action_ui(ui: &mut egui::Ui) {
+    use icons::outline::{ARROW_COUNTER_CLOCKWISE, ARROWS_OUT_CARDINAL};
+    use keys::Run;
+    keys::label_with_icons(
+        ui,
+        &[
+            Run::Text("Pan (when "),
+            Run::Icon(ARROWS_OUT_CARDINAL),
+            Run::Text(") or rotate (when "),
+            Run::Icon(ARROW_COUNTER_CLOCKWISE),
+            Run::Text(")"),
+        ],
+    );
+}
+
+/// A row of an [`input_group`]: the `inputs`, then what they do.
+fn input_row<A, B>(
+    ui: &mut egui::Ui,
+    inputs: impl FnOnce(&mut egui::Ui) -> A,
+    action: impl FnOnce(&mut egui::Ui) -> B,
+) {
+    ui.horizontal(inputs);
+    action(ui);
+    ui.end_row();
 }
 
 /// The compact layout's playback speed control, as in video players: a button with a gauge

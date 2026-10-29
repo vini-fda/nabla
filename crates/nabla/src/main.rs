@@ -39,6 +39,9 @@ fn main() -> eframe::Result {
         renderer: eframe::Renderer::Wgpu,
         depth_buffer: nabla::DEPTH_BUFFER,
         multisampling: nabla::MULTISAMPLING,
+        // The bundled fonts (theme.rs) and egui's cover the app's text; eframe is built without
+        // its `system_fonts` feature, so there is no system fallback to look for.
+        system_font_fallback: false,
         ..Default::default()
     };
     eframe::run_native(

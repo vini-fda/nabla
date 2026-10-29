@@ -1,8 +1,8 @@
 [package]
 name = "nabla-solutions"
-description = "The stored control policies (`solutions/` at the workspace root) and their database."
 version.workspace = true
 edition.workspace = true
+description = "The stored control policies (`solutions/` at the workspace root) and their database."
 publish = false
 
 [dependencies]

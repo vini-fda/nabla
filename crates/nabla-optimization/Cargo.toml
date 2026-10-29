@@ -1,8 +1,8 @@
 [package]
 name = "nabla-optimization"
-description = "Evaluate, compile and search for control policies of the nabla-core problem."
 version.workspace = true
 edition.workspace = true
+description = "Evaluate, compile and search for control policies of the nabla-core problem."
 publish = false
 
 [dependencies]

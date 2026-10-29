@@ -1,11 +1,11 @@
 [package]
 name = "nabla"
-description = "Nabla: replays, plots and compiles control policies of the 2D ship, natively and on the web."
 version.workspace = true
 edition.workspace = true
+rust-version = "1.99"
+description = "Nabla: replays, plots and compiles control policies of the 2D ship, natively and on the web."
 license = "MIT OR Apache-2.0"
 include = ["LICENSE-APACHE", "LICENSE-MIT", "**/*.rs", "Cargo.toml", "assets/fonts/*", "assets/formulas/*"]
-rust-version = "1.99"
 
 [package.metadata.docs.rs]
 all-features = true
@@ -19,27 +19,20 @@ path = "src/main.rs"
 test = false
 
 [dependencies]
-egui = "0.37.0"
-egui_plot = { git = "https://github.com/emilk/egui_plot", rev = "aead78045a529884eac5ad267251caa73bd832aa" }
+cpal = { version = "0.18.2", features = ["wasm-bindgen"] }
 # Without the default `system_fonts` (system font fallback for glyphs the bundled fonts lack),
 # `links` (opening URLs; the app opens none) and `accesskit` (screen readers; on Linux it pulls
 # in zbus and an async runtime). About 60 fewer crates on Linux, 40 on macOS and Windows.
-eframe = { version = "0.37.0", default-features = false, features = [
-    "clipboard",
-    "default_fonts",
-    "wayland",
-    "web_screen_reader",
-    "wgpu",
-    "x11",
-] }
+eframe = { version = "0.37.0", default-features = false, features = ["default_fonts", "clipboard", "wayland", "web_screen_reader", "wgpu", "x11"] }
+egui = "0.37.0"
+egui_extras = { version = "0.37.0", default-features = false, features = ["svg"] }
+egui_plot = { git = "https://github.com/emilk/egui_plot", rev = "aead78045a529884eac5ad267251caa73bd832aa" }
+gltf = { version = "1.4.1", default-features = false, features = ["utils"] }
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
 log = "0.4.34"
 nabla-core.workspace = true
 nabla-optimization.workspace = true
 nabla-solutions = { workspace = true, features = ["registry"] }
-gltf = { version = "1.4.1", default-features = false, features = ["utils"] }
-image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
-egui_extras = { version = "0.37.0", default-features = false, features = ["svg"] }
-cpal = { version = "0.18.2", features = ["wasm-bindgen"] }
 
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -48,16 +41,16 @@ cpal = { version = "0.18.2", features = ["wasm-bindgen"] }
 env_logger = { version = "0.11.11", default-features = false, features = ["auto-color"] }
 rfd = "0.17.2"
 
+# web:
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen-futures = "0.4.79"
+web-sys = "0.3.106"  # to access the DOM (to hide the loading text)
+
 # eframe's default features also turn on winit's (Wayland client-side window decorations, and
 # loading the Wayland libraries at runtime). Without them, this keeps them: same version, so
 # Cargo unifies it with eframe's winit.
 [target.'cfg(target_os = "linux")'.dependencies]
 winit = "0.30.13"
-
-# web:
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-wasm-bindgen-futures = "0.4.79"
-web-sys = "0.3.106"             # to access the DOM (to hide the loading text)
 
 [lints]
 workspace = true

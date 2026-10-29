@@ -58,6 +58,25 @@ jobs:
       - name: Cargo.lock is up to date
         run: cargo metadata $CARGO_FLAGS --format-version 1 >/dev/null
 
+  # TOML files: lint and format with Tombi (https://tombi-toml.github.io/tombi/), configured
+  # in tombi.toml. Fix locally with `tombi format`.
+  toml:
+    name: TOML
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Pinned, so a new release's formatting changes do not fail CI unannounced.
+      - uses: tombi-toml/setup-tombi@v1
+        with:
+          version: 1.9.7
+
+      - name: Lint
+        run: tombi lint --error-on-warnings
+
+      - name: Format
+        run: tombi format --check
+
   # Lint, build and test the native app on every platform that gets a release build.
   test:
     name: Test (${{ matrix.target }})

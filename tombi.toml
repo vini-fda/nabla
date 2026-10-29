@@ -1,0 +1,5 @@
+# Tombi (https://tombi-toml.github.io/tombi/), the TOML linter and formatter run by CI:
+# `tombi lint` and `tombi format`.
+
+# Files without a schema of their own stay plain TOML 1.0, which every parser reads.
+toml-version = "v1.0.0"

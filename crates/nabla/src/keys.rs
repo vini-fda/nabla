@@ -161,7 +161,7 @@ pub fn label_with_icons(ui: &mut egui::Ui, runs: &[Run]) {
     ui.label(job);
 }
 
-/// A tooltip naming an action and its keys: "Start [fn][Left]".
+/// A tooltip naming an action and its keys, such as `Start [fn] [Left]`.
 pub fn tooltip(ui: &mut egui::Ui, action: &str, keys: &[Key]) {
     ui.horizontal(|ui| {
         ui.label(action);

@@ -12,7 +12,7 @@ members = ["crates/*", "xtask"]
 [workspace.package]
 # One version for the whole workspace: released binaries build candidates against the git tag
 # `v{version}` of `nabla-core` and `nabla-optimization`.
-version = "0.10.1"
+version = "0.10.2"
 edition = "2024"
 
 [workspace.dependencies]

@@ -20,7 +20,7 @@ cargo test --workspace --release         # model, app and every stored solution
 cargo run --release -p nabla             # the app, natively
 ```
 
-Development tasks are in the `xtask` crate (`cargo xtask help`). `cargo xtask check` runs the same checks as CI, plus the web build. Every push to `main` deploys the web app.
+Development tasks are in the `xtask` crate (`cargo xtask help`). `cargo xtask check` runs the same checks as CI, plus the web build. `cargo xtask web-dev` serves the web app locally, rebuilding it on every change. Every push to `main` deploys the web app.
 
 On Linux, builds link with [mold](https://github.com/rui314/mold) through clang (see `.cargo/config.toml`), so both need to be installed: `sudo apt install mold clang` on Debian and Ubuntu.
 

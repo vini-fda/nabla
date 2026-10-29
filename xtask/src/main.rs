@@ -36,6 +36,11 @@ App (Nabla):
       --sign signs with a keychain identity (name or SHA-1), with the hardened runtime and a
       secure timestamp, as notarization requires. Without it, the signature is ad-hoc.
   The profile defaults to `release`.
+  web-dev [--port <port>] [--release]
+      Serve the web app with `trunk serve` at http://127.0.0.1:8080/#dev (or --port),
+      rebuilding it and reloading the page on every change. `#dev` skips the service
+      worker, which otherwise caches the app for offline use. Needs `trunk`
+      (`cargo install --locked trunk`).
 
 Repository:
   check
@@ -102,6 +107,7 @@ fn main() -> Result<ExitCode> {
         ("verify", []) => solutions::verify()?,
         ("check", []) => check(&sh)?,
         ("bundle" | "run", _) => return app(&sh, &task, args),
+        ("web-dev", args) => web_dev(&sh, args)?,
         ("help" | "--help" | "-h", _) => print_help(),
         ("submit" | "leaderboard" | "verify" | "check", _) => {
             bail!("wrong arguments for `{task}`\n\n{HELP}")
@@ -146,6 +152,28 @@ fn app(sh: &Shell, task: &str, args: Vec<String>) -> Result<ExitCode> {
         bin = bundle::refresh(sh, &bin)?;
     }
     run(&bin, &passthrough)
+}
+
+/// The `web-dev` task: `trunk serve` for the web app, until interrupted.
+fn web_dev(sh: &Shell, args: &[String]) -> Result<()> {
+    let mut port = "8080".to_owned();
+    let mut release = None;
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--port" => port = args.next().context("--port needs a number")?.clone(),
+            "--release" => release = Some("--release"),
+            _ => bail!("unexpected argument `{arg}`\n\n{HELP}"),
+        }
+    }
+    cmd!(sh, "trunk --version")
+        .quiet()
+        .ignore_stdout()
+        .run()
+        .context("trunk is needed: `cargo install --locked trunk`")?;
+    let _app = sh.push_dir("crates/nabla");
+    cmd!(sh, "trunk serve --port {port} {release...}").run()?;
+    Ok(())
 }
 
 /// The checks of `.github/workflows/ci.yml` for this platform, plus the web build.

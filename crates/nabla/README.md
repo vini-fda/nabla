@@ -88,12 +88,14 @@ On Linux you may need:
 sudo apt-get install libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev libasound2-dev
 ```
 
-For a web build with [Trunk](https://trunkrs.dev/), from this directory:
+For a web build with [Trunk](https://trunkrs.dev/):
 
 ```sh
 cargo install --locked trunk
-trunk serve   # then open http://127.0.0.1:8080/index.html#dev
+cargo xtask web-dev   # then open http://127.0.0.1:8080/#dev
 ```
+
+`cargo xtask web-dev` runs `trunk serve` in this directory; pass `--port` for another port, or `--release` for an optimized build.
 
 The `#dev` suffix skips the service worker, which otherwise caches the app for offline use.
 

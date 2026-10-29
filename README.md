@@ -11,7 +11,7 @@ This is a finite, discretized version of a control problem described in `docs/ma
 
 See [`TASK.md`](TASK.md) for the rules, the interface a solution implements, and the commands.
 
-**Web app:** https://vini-fda.github.io/ship2d_optimization/ replays the stored solutions on every test case in continuous time, with plots, a timeline and the solution's source. The same app runs natively ([`crates/nabla/`](crates/nabla)), where it can also compile and replay any solution file, recompiling when you save it.
+**Web app:** https://vini-fda.github.io/nabla/ replays the stored solutions on every test case in continuous time, with plots, a timeline and the solution's source. The same app runs natively ([`crates/nabla/`](crates/nabla)), where it can also compile and replay any solution file, recompiling when you save it.
 
 ```sh
 cargo xtask eval path/to/solution.rs     # score a solution (or several at once)
@@ -24,7 +24,7 @@ Development tasks are in the `xtask` crate (`cargo xtask help`). `cargo xtask ch
 
 ## Releasing
 
-Pushing a version tag `vX.Y.Z` builds the native app and publishes a [GitHub Release](https://github.com/vini-fda/ship2d_optimization/releases). The builds are for macOS on Apple silicon (an app bundle), Linux x86-64 and Windows 64-bit. Pushes to `main` only run CI and deploy the web app; they never release.
+Pushing a version tag `vX.Y.Z` builds the native app and publishes a [GitHub Release](https://github.com/vini-fda/nabla/releases). The builds are for macOS on Apple silicon (an app bundle), Linux x86-64 and Windows 64-bit. Pushes to `main` only run CI and deploy the web app; they never release.
 
 1. Set the workspace `version` in `Cargo.toml` (`[workspace.package]`, shared by every crate), and commit.
 2. Tag and push:

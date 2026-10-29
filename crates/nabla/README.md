@@ -1,6 +1,6 @@
 # Nabla
 
-A viewer for the control policies of the 2D ship problem ([`nabla-core`](../nabla-core)), rendered with [egui](https://github.com/emilk/egui). It is also the web app deployed to GitHub Pages: https://vini-fda.github.io/ship2d_optimization/
+A viewer for the control policies of the 2D ship problem ([`nabla-core`](../nabla-core)), rendered with [egui](https://github.com/emilk/egui). It is also the web app deployed to GitHub Pages: https://vini-fda.github.io/nabla/
 
 Open a solution's Rust source and pick a test case. The viewer compiles and runs the solution on that case with the exact sampled-data model of `nabla-core`. It then replays the run on a pannable, zoomable canvas.
 

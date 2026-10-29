@@ -72,7 +72,7 @@ pub fn source_dir() -> PathBuf {
 
 /// Where the workspace is published; released binaries build candidates against its version
 /// tag.
-pub const REPOSITORY: &str = "https://github.com/vini-fda/ship2d_optimization";
+pub const REPOSITORY: &str = "https://github.com/vini-fda/nabla";
 
 /// The source tree is still where it was compiled (development), as opposed to a released
 /// binary running on another machine.

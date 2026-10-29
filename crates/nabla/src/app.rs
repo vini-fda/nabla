@@ -16,6 +16,7 @@ use nabla_solutions::registry::StoredSolution;
 use crate::camera::{Camera, Vec3};
 use crate::canvas_buttons::{self, Button};
 use crate::formula::{self, Formula};
+use crate::game::{self, Game, Input};
 use crate::gizmo::ViewGizmo;
 use crate::grid::{GridStyle, draw_grid};
 use crate::keys;
@@ -203,6 +204,8 @@ pub struct ViewerApp {
     /// Show the keyboard and mouse help over the canvas.
     show_help: bool,
     playback: Playback,
+    /// Gameplay mode: the player's flight on the selected case, flown in place of the policy.
+    game: Option<Game>,
     /// Name of the selected test case.
     case: Option<String>,
     /// Sampling period the selected case runs with, in place of its own.
@@ -264,6 +267,7 @@ impl Default for ViewerApp {
             follow_ship: false,
             show_help: false,
             playback: Playback::default(),
+            game: None,
             case: Some(DEFAULT_CASE.to_owned()),
             h: suite::H,
             show_code: false,
@@ -493,21 +497,93 @@ impl ViewerApp {
         self.replay.as_ref().map_or(0, Replay::last_frame)
     }
 
-    /// Sample index `k`, offset `tau` into the step, and the exact state at the playhead.
-    fn now(&self) -> Option<(usize, f64, State)> {
+    /// The run the canvas, plots and state show, and the moment of it shown as `(k, tau)`:
+    /// the player's flight at present in gameplay mode, else the replay at the playhead.
+    fn shown(&self) -> Option<(&Replay, usize, f64)> {
+        if let Some(game) = &self.game {
+            let (k, offset) = game.moment();
+            return Some((&game.replay, k, offset));
+        }
         let replay = self.replay.as_ref()?;
         let (k, offset) = self.playback.moment(replay.h());
+        Some((replay, k, offset))
+    }
+
+    /// Sample index `k`, offset `tau` into the step, and the exact state shown.
+    fn now(&self) -> Option<(usize, f64, State)> {
+        let (replay, k, offset) = self.shown()?;
         Some((k, offset, replay.state_at(k, offset)))
     }
 
+    /// Start a flight on the selected case, from its start, following the ship.
+    fn start_game(&mut self) {
+        let Some(case) = self.selected_case() else {
+            return;
+        };
+        self.game = Some(Game::new(case));
+        self.playback.playing = false;
+        self.follow_ship = true;
+        self.fit_pending = true;
+        self.compact_view = CompactView::Canvas;
+    }
+
+    /// Switch to gameplay mode (a new flight), or back to replaying the policy.
+    fn set_flying(&mut self, fly: bool) {
+        if fly == self.game.is_some() {
+            return;
+        }
+        if fly {
+            self.start_game();
+        } else {
+            self.game = None;
+            self.follow_ship = false;
+            self.fit_pending = true;
+        }
+    }
+
+    /// The flight's controls held on the keyboard: Space (or Up) thrusts, Left and Right turn,
+    /// and Shift scales them down for fine control.
+    fn keyboard_input(ui: &egui::Ui) -> Input {
+        if ui.ctx().memory(|m| m.focused().is_some()) {
+            return Input::default();
+        }
+        ui.input(|i| {
+            // A key pressed and released between two frames still counts, for that frame.
+            let held = |key| i.key_down(key) || i.key_pressed(key);
+            let left = f64::from(u8::from(held(egui::Key::ArrowLeft)));
+            let right = f64::from(u8::from(held(egui::Key::ArrowRight)));
+            Input {
+                thrust: held(egui::Key::Space) || held(egui::Key::ArrowUp),
+                turn: left - right,
+                fine: i.modifiers.shift,
+            }
+        })
+    }
+
     /// Space: play/pause. Left/Right: one dt. Shift+Left/Right: previous/next controller
-    /// sample. Home/End: start/end. F: follow the ship or stop following it.
+    /// sample. Home/End: start/end. F: follow the ship or stop following it. In gameplay mode,
+    /// P: pause/resume and R: restart, the other keys flying the ship (see
+    /// [`Self::keyboard_input`]).
     fn handle_keys(&mut self, ui: &egui::Ui) {
         if ui.ctx().memory(|m| m.focused().is_some()) {
             return;
         }
+        // Not with a modifier, which is the browser's or the system's (Cmd+F: find).
+        let plain = |key| ui.input(|i| i.key_pressed(key) && i.modifiers.is_none());
+        if plain(egui::Key::F) {
+            self.follow_ship = !self.follow_ship;
+        }
+        if let Some(game) = &mut self.game {
+            if plain(egui::Key::P) {
+                game.paused = !game.paused;
+            }
+            if plain(egui::Key::R) {
+                self.start_game();
+            }
+            return;
+        }
         let last = self.last_frame();
-        let (space, left, right, home, end, shift, follow) = ui.input(|i| {
+        let (space, left, right, home, end, shift) = ui.input(|i| {
             (
                 i.key_pressed(egui::Key::Space),
                 i.key_pressed(egui::Key::ArrowLeft),
@@ -515,13 +591,8 @@ impl ViewerApp {
                 i.key_pressed(egui::Key::Home),
                 i.key_pressed(egui::Key::End),
                 i.modifiers.shift,
-                // Not with a modifier, which is the browser's or the system's (Cmd+F: find).
-                i.key_pressed(egui::Key::F) && i.modifiers.is_none(),
             )
         });
-        if follow {
-            self.follow_ship = !self.follow_ship;
-        }
         let p = &mut self.playback;
         if space {
             p.toggle(last);
@@ -539,6 +610,19 @@ impl ViewerApp {
         if end {
             p.seek_end(last);
         }
+    }
+
+    /// Replay the control policy, or fly the ship yourself on the selected case.
+    fn mode_ui(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Mode");
+        let mut fly = self.game.is_some();
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut fly, false, "Replay the policy")
+                .on_hover_text("Watch the control policy fly the selected case");
+            ui.selectable_value(&mut fly, true, "Fly it yourself")
+                .on_hover_text("Fly the ship to B on the selected case, with no policy");
+        });
+        self.set_flying(fly);
     }
 
     fn source_ui(&mut self, ui: &mut egui::Ui) {
@@ -668,6 +752,9 @@ impl ViewerApp {
         });
         if self.case != old_case {
             self.run(true);
+            if self.game.is_some() {
+                self.start_game();
+            }
         }
         let h = ui
             .horizontal(|ui| {
@@ -683,6 +770,9 @@ impl ViewerApp {
         if self.replay.as_ref().is_some_and(|r| r.h() != self.h) && !self.runner.busy() {
             // Keep the playhead time.
             self.run(false);
+        }
+        if self.game.as_ref().is_some_and(|g| g.replay.h() != self.h) {
+            self.start_game();
         }
     }
 
@@ -791,9 +881,10 @@ impl ViewerApp {
     }
 
     fn frame_info_ui(&self, ui: &mut egui::Ui) {
-        let (Some(replay), Some((k, offset, s))) = (&self.replay, self.now()) else {
+        let Some((replay, k, offset)) = self.shown() else {
             return;
         };
+        let s = replay.state_at(k, offset);
         let goal = replay.case.task.goal;
         ui.heading("Current state");
         let font = egui::TextStyle::Body.resolve(ui.style());
@@ -887,21 +978,97 @@ impl ViewerApp {
         });
     }
 
-    /// The user inputs help: touch gestures on a phone or tablet, keyboard and mouse elsewhere.
-    fn user_inputs_ui(ui: &mut egui::Ui) {
+    /// The user inputs help: touch gestures on a phone or tablet, keyboard and mouse elsewhere;
+    /// in gameplay mode, `flying`, the flight's controls in place of the playback's.
+    fn user_inputs_ui(ui: &mut egui::Ui, flying: bool) {
         let k = keys::Keys::new(ui.ctx());
         ui.heading("User inputs");
         if k.touch() {
-            Self::touch_inputs_ui(ui);
+            Self::touch_inputs_ui(ui, flying);
         } else {
-            Self::keyboard_mouse_inputs_ui(ui, k);
+            Self::keyboard_mouse_inputs_ui(ui, k, flying);
         }
     }
 
+    /// The flight's keys.
+    fn keyboard_flight_ui(ui: &mut egui::Ui, k: keys::Keys) {
+        use icons::outline::ROCKET_LAUNCH;
+        use keys::{F, LEFT, P, R, Run, SPACE, caps, joiner, label_with_icons};
+
+        input_group(ui, "Flight", |ui| {
+            input_row(ui, |ui| caps(ui, &[SPACE]), |ui| ui.label("Thrust"));
+            input_row(
+                ui,
+                |ui| caps(ui, &[LEFT, keys::RIGHT]),
+                |ui| ui.label("Turn left / right"),
+            );
+            input_row(
+                ui,
+                |ui| {
+                    caps(ui, &[k.shift()]);
+                    joiner(ui, "held");
+                },
+                |ui| ui.label(format!("Fine control ({}x power)", game::FINE)),
+            );
+            input_row(
+                ui,
+                |ui| {
+                    caps(ui, &[P]);
+                    joiner(ui, "/");
+                    caps(ui, &[R]);
+                },
+                |ui| ui.label("Pause / restart"),
+            );
+            input_row(
+                ui,
+                |ui| caps(ui, &[F]),
+                |ui| {
+                    label_with_icons(
+                        ui,
+                        &[
+                            Run::Text("Follow the ship (or "),
+                            Run::Icon(ROCKET_LAUNCH),
+                            Run::Text(")"),
+                        ],
+                    );
+                },
+            );
+        });
+    }
+
     /// The keyboard and mouse inputs, in groups, the keys drawn as keycaps left of what they do.
-    fn keyboard_mouse_inputs_ui(ui: &mut egui::Ui, k: keys::Keys) {
-        use icons::outline::{MOUSE_LEFT_CLICK, MOUSE_SCROLL, ROCKET_LAUNCH};
-        use keys::{F, LEFT, RIGHT, Run, SPACE, caps, gesture, joiner, label_with_icons};
+    fn keyboard_mouse_inputs_ui(ui: &mut egui::Ui, k: keys::Keys, flying: bool) {
+        use icons::outline::{MOUSE_LEFT_CLICK, MOUSE_SCROLL};
+        use keys::gesture;
+
+        if flying {
+            Self::keyboard_flight_ui(ui, k);
+        } else {
+            Self::keyboard_playback_ui(ui, k);
+        }
+        input_group(ui, "View", |ui| {
+            input_row(
+                ui,
+                |ui| gesture(ui, MOUSE_LEFT_CLICK, "drag"),
+                drag_action_ui,
+            );
+            input_row(
+                ui,
+                |ui| gesture(ui, MOUSE_SCROLL, "scroll"),
+                |ui| ui.label("Zoom"),
+            );
+            input_row(
+                ui,
+                |ui| gesture(ui, MOUSE_LEFT_CLICK, "drag axes"),
+                |ui| ui.label("Orbit; click one to view along it"),
+            );
+        });
+    }
+
+    /// The playback's keys.
+    fn keyboard_playback_ui(ui: &mut egui::Ui, k: keys::Keys) {
+        use icons::outline::ROCKET_LAUNCH;
+        use keys::{F, LEFT, RIGHT, Run, SPACE, caps, joiner, label_with_icons};
 
         input_group(ui, "Playback", |ui| {
             input_row(ui, |ui| caps(ui, &[SPACE]), |ui| ui.label("Play / pause"));
@@ -943,28 +1110,36 @@ impl ViewerApp {
                 },
             );
         });
-        input_group(ui, "View", |ui| {
+    }
+
+    /// The flight's on-screen controls.
+    fn touch_flight_ui(ui: &mut egui::Ui) {
+        use icons::outline::{FIRE, HAND_SWIPE_RIGHT, HAND_TAP, ROCKET_LAUNCH};
+        use keys::gesture;
+
+        input_group(ui, "Flight", |ui| {
+            input_row(ui, |ui| gesture(ui, FIRE, "hold"), |ui| ui.label("Thrust"));
             input_row(
                 ui,
-                |ui| gesture(ui, MOUSE_LEFT_CLICK, "drag"),
-                drag_action_ui,
+                |ui| gesture(ui, HAND_SWIPE_RIGHT, "drag stick"),
+                |ui| ui.label("Turn, harder the further"),
             );
             input_row(
                 ui,
-                |ui| gesture(ui, MOUSE_SCROLL, "scroll"),
-                |ui| ui.label("Zoom"),
+                |ui| gesture(ui, HAND_TAP, "tap fine"),
+                |ui| ui.label(format!("Fine control ({}x power)", game::FINE)),
             );
             input_row(
                 ui,
-                |ui| gesture(ui, MOUSE_LEFT_CLICK, "drag axes"),
-                |ui| ui.label("Orbit; click one to view along it"),
+                |ui| outline_glyph(ui, ROCKET_LAUNCH),
+                |ui| ui.label("Follow the ship"),
             );
         });
     }
 
-    /// The touch gestures, and what the playback buttons do, since a touch screen shows no
-    /// tooltips.
-    fn touch_inputs_ui(ui: &mut egui::Ui) {
+    /// The touch gestures, and what the playback buttons or the flight's controls do, since a
+    /// touch screen shows no tooltips.
+    fn touch_inputs_ui(ui: &mut egui::Ui, flying: bool) {
         use icons::outline::{ARROWS_OUT_SIMPLE, HAND_SWIPE_RIGHT, HAND_TAP, ROCKET_LAUNCH};
         use keys::{GESTURE_GLYPH_SIZE, gesture, joiner};
 
@@ -975,42 +1150,40 @@ impl ViewerApp {
                     .color(palette::WHITE),
             );
         };
-        input_group(ui, "Playback", |ui| {
-            input_row(
-                ui,
-                |ui| button(ui, icons::PLAY),
-                |ui| ui.label("Play / pause"),
-            );
-            input_row(
-                ui,
-                |ui| {
-                    button(ui, icons::CARET_LEFT);
-                    joiner(ui, "/");
-                    button(ui, icons::CARET_RIGHT);
-                },
-                |ui| ui.label("Previous / next sample"),
-            );
-            input_row(
-                ui,
-                |ui| {
-                    button(ui, icons::SKIP_BACK);
-                    joiner(ui, "/");
-                    button(ui, icons::SKIP_FORWARD);
-                },
-                |ui| ui.label("Start / end"),
-            );
-            input_row(
-                ui,
-                |ui| {
-                    ui.label(
-                        egui::RichText::new(ROCKET_LAUNCH)
-                            .font(icons::outline::font(GESTURE_GLYPH_SIZE))
-                            .color(palette::WHITE),
-                    )
-                },
-                |ui| ui.label("Follow the ship"),
-            );
-        });
+        if flying {
+            Self::touch_flight_ui(ui);
+        } else {
+            input_group(ui, "Playback", |ui| {
+                input_row(
+                    ui,
+                    |ui| button(ui, icons::PLAY),
+                    |ui| ui.label("Play / pause"),
+                );
+                input_row(
+                    ui,
+                    |ui| {
+                        button(ui, icons::CARET_LEFT);
+                        joiner(ui, "/");
+                        button(ui, icons::CARET_RIGHT);
+                    },
+                    |ui| ui.label("Previous / next sample"),
+                );
+                input_row(
+                    ui,
+                    |ui| {
+                        button(ui, icons::SKIP_BACK);
+                        joiner(ui, "/");
+                        button(ui, icons::SKIP_FORWARD);
+                    },
+                    |ui| ui.label("Start / end"),
+                );
+                input_row(
+                    ui,
+                    |ui| outline_glyph(ui, ROCKET_LAUNCH),
+                    |ui| ui.label("Follow the ship"),
+                );
+            });
+        }
         input_group(ui, "View", |ui| {
             input_row(
                 ui,
@@ -1033,6 +1206,9 @@ impl ViewerApp {
                 |ui| ui.label("View along it"),
             );
         });
+        if flying {
+            return;
+        }
         input_group(ui, "Timeline", |ui| {
             input_row(
                 ui,
@@ -1154,11 +1330,61 @@ impl ViewerApp {
         }
     }
 
-    fn plots_ui(&mut self, ui: &mut egui::Ui) {
-        let (Some(replay), Some(plots)) = (&self.replay, &self.plots) else {
+    /// Gameplay mode's bar, in place of the playback controls and the timeline: pause, restart
+    /// and exit, and the time.
+    fn game_bar_ui(&mut self, ui: &mut egui::Ui) {
+        let Some(game) = &mut self.game else {
             return;
         };
-        let t = self.playback.time(replay.h());
+        let (mut restart, mut exit) = (false, false);
+        ui.horizontal(|ui| {
+            let pause = if game.paused {
+                icons::PLAY
+            } else {
+                icons::PAUSE
+            };
+            if ui
+                .button(pause)
+                .on_hover_ui(|ui| keys::tooltip(ui, "Pause / resume", &[keys::P]))
+                .clicked()
+            {
+                game.paused = !game.paused;
+            }
+            let size = egui::TextStyle::Button.resolve(ui.style()).size;
+            let restart_icon = egui::RichText::new(icons::outline::ARROW_CLOCKWISE)
+                .font(icons::outline::font(size));
+            restart = ui
+                .button(restart_icon)
+                .on_hover_ui(|ui| keys::tooltip(ui, "Restart", &[keys::R]))
+                .clicked();
+            exit = ui
+                .button("Exit")
+                .on_hover_text("Back to replaying the control policy")
+                .clicked();
+            ui.separator();
+            let (k, _) = game.moment();
+            ui.monospace(format!("t = {:.2} s, k = {k}", game.time()));
+        });
+        if restart {
+            self.start_game();
+        }
+        if exit {
+            self.set_flying(false);
+        }
+    }
+
+    /// The plots of the shown run: the replay, or the flight so far, which grows every frame.
+    fn plots_ui(&mut self, ui: &mut egui::Ui) {
+        let flight;
+        let (replay, plots, t) = if let Some(game) = &self.game {
+            flight = Plots::new(&game.replay);
+            (&game.replay, &flight, game.time())
+        } else {
+            let (Some(replay), Some(plots)) = (&self.replay, &self.plots) else {
+                return;
+            };
+            (replay, plots, self.playback.time(replay.h()))
+        };
         ui.heading("State plots");
         let seek = egui::ScrollArea::vertical()
             .show(ui, |ui| {
@@ -1220,7 +1446,10 @@ impl ViewerApp {
                 .next()
             })
             .inner;
-        if let Some(t) = seek {
+        // A flight cannot be seeked: its time runs freely.
+        if let Some(t) = seek
+            && self.game.is_none()
+        {
             self.playback.playing = false;
             self.playback.seek_time(t, replay.h(), replay.last_frame());
         }
@@ -1237,6 +1466,14 @@ impl ViewerApp {
         self.gizmo
             .input(ui, corner, &mut self.camera, self.show_gizmo);
 
+        // The flight's pads, over the canvas, take the pointer from it where they are.
+        let touch_device = keys::Keys::new(ui.ctx()).touch();
+        let on_pads = self.game.as_mut().is_some_and(|game| {
+            let visible = game.pads.visible(touch_device);
+            game.pads.update(ui, rect, visible);
+            game.pads.touching()
+        });
+
         // Primary drag orbits the camera or pans, as the pan/rotate button says. Panning is
         // disabled while following the ship, since the center is locked to the ship's
         // position each frame.
@@ -1249,11 +1486,13 @@ impl ViewerApp {
             }
         }
 
-        // Zoom with scroll/pinch while the cursor is over the canvas.
+        // Zoom with scroll/pinch while the cursor is over the canvas. A finger on a pad and
+        // another on the canvas are not a pinch.
         if let Some(hover_pos) = response.hover_pos() {
-            let (scroll_y, zoom_delta) = ui
-                .ctx()
-                .input(|i| (i.smooth_scroll_delta.y, i.zoom_delta()));
+            let (scroll_y, zoom_delta) = ui.ctx().input(|i| {
+                let zoom = if on_pads { 1.0 } else { i.zoom_delta() };
+                (i.smooth_scroll_delta.y, zoom)
+            });
             let factor = zoom_delta * (scroll_y / 200.0).exp();
             if factor.is_finite() && factor > 0.0 && (factor - 1.0).abs() > f32::EPSILON {
                 self.camera.zoom_at(factor, hover_pos, rect);
@@ -1261,17 +1500,23 @@ impl ViewerApp {
         }
 
         if self.fit_pending {
-            if let Some(replay) = &self.replay {
-                fit_camera(&mut self.camera, replay.bounds(), rect);
+            let bounds = match &self.game {
+                Some(game) => Some(game.view_bounds()),
+                None => self.replay.as_ref().map(Replay::bounds),
+            };
+            if let Some(bounds) = bounds {
+                fit_camera(&mut self.camera, bounds, rect);
             }
             self.fit_pending = false;
         }
 
         let painter = ui.painter_at(rect);
         self.draw_scene(ui, &painter, rect);
+        self.draw_game_overlay(&painter, rect, touch_device);
         if self.show_gizmo {
             self.gizmo.paint(ui, &painter, corner, &self.camera);
         }
+        let mut fly = self.game.is_some();
         let buttons = canvas_buttons::show(
             ui,
             &painter,
@@ -1307,6 +1552,12 @@ impl ViewerApp {
                     ],
                 ),
                 Button::toggle(
+                    icons::outline::GAME_CONTROLLER,
+                    &mut fly,
+                    "Fly it yourself: steer the ship to B with the keyboard or touch",
+                )
+                .color(palette::GREEN),
+                Button::toggle(
                     icons::outline::SEAL_QUESTION,
                     &mut self.show_help,
                     "Keyboard and mouse help",
@@ -1314,6 +1565,7 @@ impl ViewerApp {
                 .color(palette::YELLOW),
             ],
         );
+        self.set_flying(fly);
         if self.show_help {
             self.help_ui(ui, rect, buttons);
         }
@@ -1324,6 +1576,7 @@ impl ViewerApp {
     /// it always shows whole. Escape closes it, as does its button.
     fn help_ui(&mut self, ui: &egui::Ui, canvas: egui::Rect, buttons: egui::Rect) {
         const GAP: f32 = 8.0;
+        let flying = self.game.is_some();
         // Laid out at its full size at the layer's origin, unclipped, then scaled and moved into
         // place by the layer's transform, which applies to its input too.
         let area = egui::Area::new(ui.scope_id().with("help"))
@@ -1334,7 +1587,7 @@ impl ViewerApp {
                 egui::Vec2::splat(1.0e4),
             ))
             .show(ui.ctx(), |ui| {
-                egui::Frame::popup(ui.style()).show(ui, Self::user_inputs_ui);
+                egui::Frame::popup(ui.style()).show(ui, |ui| Self::user_inputs_ui(ui, flying));
             });
         let size = area.response.rect.size();
         let top_right = egui::pos2(buttons.left() - GAP, buttons.top());
@@ -1363,7 +1616,7 @@ impl ViewerApp {
         } else {
             GridStyle::faint(ui.visuals())
         };
-        let (Some(replay), Some((k, _, state))) = (&self.replay, self.now()) else {
+        let Some((_, _, state)) = self.now() else {
             if self.show_grid {
                 draw_grid(painter, &self.camera, rect, &style);
             }
@@ -1379,6 +1632,9 @@ impl ViewerApp {
         if self.show_grid {
             draw_grid(painter, &self.camera, rect, &style);
         }
+        let Some((replay, k, offset)) = self.shown() else {
+            return;
+        };
         if self.show_path {
             self.draw_path(painter, rect, replay, k, &state);
         }
@@ -1398,7 +1654,7 @@ impl ViewerApp {
                 }
                 // After the ship, whose depth they are tested against.
                 if self.show_plume {
-                    let t = self.playback.time(replay.h());
+                    let t = replay.time(k) + offset;
                     let depth =
                         DepthMap::new(renderer, &self.camera, rect, position, self.circumradius);
                     if let Some(callback) =
@@ -1498,6 +1754,86 @@ impl ViewerApp {
         );
     }
 
+    /// Over the flight: where the goal is while it is off the canvas, the pads (where they
+    /// show), and the banner.
+    fn draw_game_overlay(&self, painter: &egui::Painter, rect: egui::Rect, touch_device: bool) {
+        let Some(game) = &self.game else {
+            return;
+        };
+        let pads = game.pads.visible(touch_device);
+        // Above the pads, where they show.
+        let marker_area = if pads {
+            rect.with_max_y(rect.bottom() - game::PADS_HEIGHT)
+        } else {
+            rect
+        };
+        self.draw_goal_marker(painter, rect, marker_area, &game.replay, &game.state());
+        if pads {
+            game.pads.paint(painter, rect);
+        }
+        // The policy's run on the same case, for comparison.
+        let policy = self
+            .replay
+            .as_ref()
+            .filter(|r| r.case.name == game.replay.case.name)
+            .and_then(|r| Some((r.solution.as_str(), r.outcome().steps()?)));
+        game_banner(painter, rect, game, policy);
+    }
+
+    /// Where the goal is while it is off the canvas: a triangle at the edge of `area` (of the
+    /// canvas) pointing at it, with the distance to it from the ship, in state `s`.
+    fn draw_goal_marker(
+        &self,
+        painter: &egui::Painter,
+        rect: egui::Rect,
+        area: egui::Rect,
+        replay: &Replay,
+        s: &State,
+    ) {
+        const INSET: f32 = 24.0;
+        const SIZE: f32 = 9.0;
+        let task = &replay.case.task;
+        let inner = area.shrink(INSET);
+        let Some(goal) = self
+            .camera
+            .world_to_screen(world(task.goal.x, task.goal.y), rect)
+        else {
+            return;
+        };
+        if inner.contains(goal) {
+            return;
+        }
+        let center = inner.center();
+        let direction = goal - center;
+        // How far along the direction the inner rectangle's edge is.
+        let reach =
+            (inner.width() / 2.0 / direction.x.abs()).min(inner.height() / 2.0 / direction.y.abs());
+        if !reach.is_finite() {
+            return;
+        }
+        let tip = center + direction * reach;
+        let along = direction.normalized();
+        let across = along.rot90();
+        painter.add(egui::Shape::convex_polygon(
+            vec![
+                tip,
+                tip - along * 1.6 * SIZE + across * SIZE,
+                tip - along * 1.6 * SIZE - across * SIZE,
+            ],
+            GOAL_COLOR,
+            egui::Stroke::NONE,
+        ));
+        let distance = (task.goal.x - s.x).hypot(task.goal.y - s.y);
+        let label = tip - along * (2.6 * SIZE);
+        painter.text(
+            label,
+            egui::Align2::CENTER_CENTER,
+            format!("B {distance:.1} m"),
+            egui::FontId::monospace(12.0),
+            GOAL_COLOR,
+        );
+    }
+
     fn draw_ship(&self, painter: &egui::Painter, rect: egui::Rect, state: &State) {
         let center = world(state.x, state.y);
         let (sin_theta, cos_theta) = (state.theta as f32).sin_cos();
@@ -1582,6 +1918,8 @@ impl ViewerApp {
     fn controls_ui(&mut self, ui: &mut egui::Ui) {
         // Scrolls sideways too, so rows are never cut off if the space is narrower than they are.
         egui::ScrollArea::both().show(ui, |ui| {
+            self.mode_ui(ui);
+            ui.separator();
             self.source_ui(ui);
             ui.separator();
             self.case_ui(ui);
@@ -1595,11 +1933,21 @@ impl ViewerApp {
         });
     }
 
+    /// The bar along the bottom: the game's in gameplay mode, else the playback controls and
+    /// the timeline.
+    fn bottom_bar_ui(&mut self, ui: &mut egui::Ui, compact: bool) {
+        if self.game.is_some() {
+            self.game_bar_ui(ui);
+        } else {
+            self.timeline_ui(ui, compact);
+        }
+    }
+
     /// Desktop layout: the timeline along the bottom, controls left and plots right above it.
     fn wide_layout(&mut self, ui: &mut egui::Ui) {
         // The timeline first, across the whole window, so neither side panel (nor its
         // collapsed title bar, which slides back in when the pointer comes near) reaches it.
-        egui::Panel::bottom("timeline_panel").show(ui, |ui| self.timeline_ui(ui, false));
+        egui::Panel::bottom("timeline_panel").show(ui, |ui| self.bottom_bar_ui(ui, false));
         let mut show_controls = self.show_controls;
         CONTROLS_PANEL.show(ui, &mut show_controls, |ui| self.controls_ui(ui));
         self.show_controls = show_controls;
@@ -1615,7 +1963,7 @@ impl ViewerApp {
     /// timeline stays available below the canvas and the plots.
     fn compact_layout(&mut self, ui: &mut egui::Ui) {
         if self.compact_view != CompactView::Controls {
-            egui::Panel::bottom("timeline_panel").show(ui, |ui| self.timeline_ui(ui, true));
+            egui::Panel::bottom("timeline_panel").show(ui, |ui| self.bottom_bar_ui(ui, true));
         }
         // No heading above the controls or plots: the selected tab already names the view.
         egui::CentralPanel::default().show(ui, |ui| match self.compact_view {
@@ -1635,7 +1983,13 @@ impl eframe::App for ViewerApp {
 
         // Advance playback first, so every panel shows the same instant.
         self.handle_keys(ui);
-        if let Some(replay) = &self.replay {
+        if let Some(game) = &mut self.game {
+            let input = Self::keyboard_input(ui).or(game.pads.held());
+            game.advance(f64::from(ui.input(|i| i.stable_dt)), input);
+            if !game.paused {
+                ui.ctx().request_repaint();
+            }
+        } else if let Some(replay) = &self.replay {
             let (h, duration) = (replay.h(), replay.duration());
             let dt = f64::from(ui.input(|i| i.stable_dt));
             self.playback.advance(dt, h, replay.last_frame());
@@ -1672,15 +2026,17 @@ impl eframe::App for ViewerApp {
         let ctx = ui.ctx().clone();
         self.code_window(&ctx);
 
-        // The thrusters heard at the playhead, while the replay plays.
-        let levels = self
-            .replay
-            .as_ref()
-            .filter(|_| self.playback.playing)
-            .map(|r| {
-                let t = self.playback.time(r.h());
-                (r.thrust_fraction(t) as f32, r.torque_fraction(t) as f32)
-            });
+        // The thrusters heard at the playhead while the replay plays, or at present while the
+        // flight runs.
+        let heard = match &self.game {
+            Some(game) => (!game.paused).then(|| (&game.replay, game.time())),
+            None => self
+                .replay
+                .as_ref()
+                .filter(|_| self.playback.playing)
+                .map(|r| (r, self.playback.time(r.h()))),
+        };
+        let levels = heard.map(|(r, t)| (r.thrust_fraction(t) as f32, r.torque_fraction(t) as f32));
         self.sound.update(&ctx, levels);
     }
 }
@@ -1916,6 +2272,42 @@ fn paint_collapse_icon(
     ));
 }
 
+/// A banner along the top of the canvas while the flight is paused or once it has landed, with
+/// the steps the `policy` (its name and step count) takes on the same case, if known.
+fn game_banner(
+    painter: &egui::Painter,
+    canvas: egui::Rect,
+    game: &Game,
+    policy: Option<(&str, usize)>,
+) {
+    const TOP: f32 = 16.0;
+    let (text, color) = match game.landed() {
+        Some(n) => {
+            let mut text = format!("Landed at B in {n} steps ({:.2} s)", game.replay.time(n));
+            if let Some((name, m)) = policy {
+                text += &format!("\n{name} takes {m}");
+            }
+            (text, palette::GREEN)
+        }
+        None if game.paused => ("Paused".to_owned(), palette::WHITE),
+        None => return,
+    };
+    let galley = painter.layout_no_wrap(text, egui::FontId::proportional(18.0), color);
+    let rect = egui::Rect::from_center_size(
+        egui::pos2(
+            canvas.center().x,
+            canvas.top() + TOP + galley.size().y / 2.0 + 6.0,
+        ),
+        galley.size() + egui::vec2(24.0, 12.0),
+    );
+    painter.rect_filled(
+        rect,
+        rect.height() / 2.0,
+        egui::Color32::from_rgba_unmultiplied(30, 30, 30, 220),
+    );
+    painter.galley(rect.center() - galley.size() / 2.0, galley, color);
+}
+
 fn world(x: f64, y: f64) -> egui::Vec2 {
     egui::vec2(x as f32, y as f32)
 }
@@ -2066,6 +2458,15 @@ fn drag_action_ui(ui: &mut egui::Ui) {
             Run::Icon(ARROW_COUNTER_CLOCKWISE),
             Run::Text(")"),
         ],
+    );
+}
+
+/// An outline icon in the User inputs panel, as large as a gesture's.
+fn outline_glyph(ui: &mut egui::Ui, glyph: &str) {
+    ui.label(
+        egui::RichText::new(glyph)
+            .font(icons::outline::font(keys::GESTURE_GLYPH_SIZE))
+            .color(palette::WHITE),
     );
 }
 

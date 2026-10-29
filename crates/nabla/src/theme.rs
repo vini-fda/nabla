@@ -62,12 +62,15 @@ pub mod icons {
     pub mod outline {
         use egui::{FontFamily, FontId};
 
+        pub const ARROW_CLOCKWISE: &str = "\u{E036}";
         pub const ARROW_COUNTER_CLOCKWISE: &str = "\u{E038}";
         pub const ARROW_FAT_UP: &str = "\u{E52E}";
         pub const ARROW_LEFT: &str = "\u{E058}";
         pub const ARROW_RIGHT: &str = "\u{E06C}";
         pub const ARROWS_OUT_CARDINAL: &str = "\u{E0A4}";
         pub const ARROWS_OUT_SIMPLE: &str = "\u{E0A6}";
+        pub const FIRE: &str = "\u{E242}";
+        pub const GAME_CONTROLLER: &str = "\u{E26E}";
         pub const GRID_FOUR: &str = "\u{E296}";
         pub const HAND_SWIPE_RIGHT: &str = "\u{EC92}";
         pub const HAND_TAP: &str = "\u{EC90}";

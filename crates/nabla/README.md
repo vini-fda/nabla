@@ -30,6 +30,22 @@ Playback is continuous in time. Between controller samples the control is held c
 | Arrows button | Switch what dragging the canvas does: pan (four arrows, the default) or rotate the camera (circular arrow) |
 | Grid button | Switch between orthographic (flat grid, the default) and perspective projection |
 
+## Flying it yourself
+
+**Fly it yourself** (the game controller button over the canvas, or **Mode** at the top of the left panel) switches to gameplay: no control policy runs, and you fly the ship to `B` on the selected case. There is no timeline: time runs freely from the start, and the bottom panel holds only pause, restart and exit and the time. Once the ship lands, a banner gives the step count, next to the policy's on the same case.
+
+The flight uses the same exact sampled-data model as the solutions. At each sample `t_k = k h`, the controls you hold become `u_k`, held for the step. Thrust is all or nothing, and so is torque from the keyboard; the touch joystick gives as much torque as it is pushed. Fine control scales both to a tenth, since one step at full power can change the speed or the spin by more than the target set allows. The plots, plumes and sound follow the flight, and a marker at the canvas's edge points to `B` while it is off screen.
+
+| Input | Effect |
+| --- | --- |
+| `Space` (or `↑`) held | Thrust |
+| `←` / `→` held | Turn left / right |
+| `Shift` held | Fine control (a tenth of the thrust and torque) |
+| `P` / `R` | Pause / restart |
+| `F` | Follow the ship / stop following |
+
+On phones and tablets (and once a touch screen is used), controls appear over the canvas. In the bottom left corner, a joystick turns the ship: push it sideways, and the further it goes the harder it turns (left counterclockwise, right clockwise), with a small dead zone in the middle. It follows the finger that took it until that finger lifts, even off its base. In the bottom right, a thrust pad is held while a finger is on it, and a **fine** latch above it turns on or off with a tap. So one thumb steers while the other thrusts.
+
 ## Solutions are Rust source files
 
 A solution is a `.rs` file defining `pub struct Solution` implementing `nabla_core::Controller` (see [`TASK.md`](../../TASK.md)). To open one:
@@ -54,6 +70,7 @@ src/
 ├── app.rs        # egui UI: source & case, playback, canvas, plots, code window
 ├── source.rs    ← solution source files; compiling and running them in the background
 ├── replay.rs    ← a solution run on a case, exact states between samples, playback on the Δt grid
+├── game.rs      ← gameplay mode: a flight that grows a sample at a time from the player's controls, touch joystick and pads
 ├── timeline.rs  ← After Effects-style timeline: sample marks, playhead, zoom
 ├── camera.rs    ← orthographic orbit camera: world↔screen transform, pan, cursor-anchored zoom
 ├── gizmo.rs     ← Blender-style axes gizmo: orbit by dragging, snap to an axis by clicking

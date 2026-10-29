@@ -32,6 +32,8 @@ pub const SPACE: Key = Key::Word("space");
 pub const LEFT: Key = Key::Glyph(outline::ARROW_LEFT);
 pub const RIGHT: Key = Key::Glyph(outline::ARROW_RIGHT);
 pub const F: Key = Key::Word("F");
+pub const P: Key = Key::Word("P");
+pub const R: Key = Key::Word("R");
 const FN: Key = Key::Word("fn");
 
 /// The keys a hint shows, for the platform it runs on (in the browser too: egui reads the

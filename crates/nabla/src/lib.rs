@@ -9,6 +9,7 @@ mod ascii_only;
 pub mod camera;
 mod canvas_buttons;
 mod formula;
+mod game;
 mod gizmo;
 pub mod grid;
 mod highlight;

@@ -1606,7 +1606,7 @@ dependencies = [
 
 [[package]]
 name = "nabla"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "cpal",
  "eframe",
@@ -1628,18 +1628,18 @@ dependencies = [
 
 [[package]]
 name = "nabla-core"
-version = "0.10.0"
+version = "0.10.1"
 
 [[package]]
 name = "nabla-optimization"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "nabla-core",
 ]
 
 [[package]]
 name = "nabla-solutions"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "nabla-core",
  "nabla-optimization",

@@ -84,6 +84,17 @@ jobs:
           rustup toolchain install
           rustup target add ${{ matrix.target }}
 
+      # The Linux linker of .cargo/config.toml. RUSTFLAGS replaces the flag there that
+      # selects it, so the flag goes into RUSTFLAGS too. Before the cache, whose key includes
+      # RUSTFLAGS.
+      - uses: rui314/setup-mold@v1
+        if: runner.os == 'Linux'
+        with:
+          make-default: false
+      - name: Link with mold
+        if: runner.os == 'Linux'
+        run: echo "RUSTFLAGS=$RUSTFLAGS -C link-arg=-fuse-ld=mold" >> "$GITHUB_ENV"
+
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}

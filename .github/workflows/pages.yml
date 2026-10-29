@@ -1,6 +1,6 @@
 name: GitHub Pages
 
-# Builds the viewer for the web with trunk and deploys it on every push to main.
+# Builds the app for the web with trunk and deploys it on every push to main.
 on:
   push:
     branches: [main]
@@ -37,14 +37,14 @@ jobs:
       # The site is served from https://<owner>.github.io/<repository>/, so all URLs need
       # that prefix.
       - name: Build
-        working-directory: viewer
+        working-directory: crates/nabla
         run: trunk build --release --public-url "/${{ github.event.repository.name }}/"
 
       - uses: actions/configure-pages@v6
 
       - uses: actions/upload-pages-artifact@v5
         with:
-          path: viewer/dist
+          path: crates/nabla/dist
 
   deploy:
     needs: build

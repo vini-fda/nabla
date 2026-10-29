@@ -24,13 +24,13 @@ Solutions (see TASK.md):
   verify
       Re-evaluate every stored solution and check its entry in `solutions/index.tsv`.
 
-Viewer:
-  run [--profile <name>] [--target <triple>] [-- <viewer arguments>...]
-      Build and run the viewer. On macOS it runs inside the app bundle, so the Dock shows the
+App (Nabla):
+  run [--profile <name>] [--target <triple>] [-- <app arguments>...]
+      Build and run the app. On macOS it runs inside the app bundle, so the Dock shows the
       Liquid Glass icon; an unchanged bundle is only refreshed with the new binary.
-      `cargo viewer` is `cargo xtask run --profile fast`.
+      `cargo nabla` is `cargo xtask run --profile fast`.
   bundle [--profile <name>] [--target <triple>] [--flat-icon] [--sign <identity>]
-      Build the viewer and wrap it in a macOS app bundle, `Nabla.app`, next to the binary
+      Build the app and wrap it in a macOS app bundle, `Nabla.app`, next to the binary
       (`target/release/Nabla.app` by default). macOS only; needs Xcode, for `actool`.
       --flat-icon skips the Liquid Glass icon (Assets.car) and uses only the flat .icns.
       --sign signs with a keychain identity (name or SHA-1), with the hardened runtime and a
@@ -43,24 +43,20 @@ Repository:
       which needs `trunk`.
 ";
 
-/// The options shared by every task: which build of the viewer to use.
+/// The options shared by every task: which build of the app to use.
 struct Build {
     profile: String,
     target: Option<String>,
 }
 
 impl Build {
-    /// `cargo build` the viewer, and return the path of its binary.
+    /// `cargo build` the app, and return the path of its binary.
     fn run(&self, sh: &Shell) -> Result<PathBuf> {
         let cargo = cargo();
         let profile = &self.profile;
         let target = self.target.as_ref().map(|t| ["--target", t]);
         let target = target.iter().flatten();
-        cmd!(
-            sh,
-            "{cargo} build --profile {profile} {target...} -p ship2d_graphics"
-        )
-        .run()?;
+        cmd!(sh, "{cargo} build --profile {profile} {target...} -p nabla").run()?;
 
         let mut dir = target_dir();
         if let Some(target) = &self.target {
@@ -72,7 +68,7 @@ impl Build {
             "bench" => "release",
             other => other,
         });
-        Ok(dir.join(format!("ship2d_graphics{}", std::env::consts::EXE_SUFFIX)))
+        Ok(dir.join(format!("nabla{}", std::env::consts::EXE_SUFFIX)))
     }
 }
 
@@ -105,7 +101,7 @@ fn main() -> Result<ExitCode> {
         ("leaderboard", []) => solutions::leaderboard()?,
         ("verify", []) => solutions::verify()?,
         ("check", []) => check(&sh)?,
-        ("bundle" | "run", _) => return viewer(&sh, &task, args),
+        ("bundle" | "run", _) => return app(&sh, &task, args),
         ("help" | "--help" | "-h", _) => print_help(),
         ("submit" | "leaderboard" | "verify" | "check", _) => {
             bail!("wrong arguments for `{task}`\n\n{HELP}")
@@ -116,7 +112,7 @@ fn main() -> Result<ExitCode> {
 }
 
 /// The `bundle` and `run` tasks.
-fn viewer(sh: &Shell, task: &str, args: Vec<String>) -> Result<ExitCode> {
+fn app(sh: &Shell, task: &str, args: Vec<String>) -> Result<ExitCode> {
     let mut build = Build {
         profile: "release".to_owned(),
         target: None,
@@ -170,28 +166,33 @@ fn check(sh: &Shell) -> Result<()> {
     .run()?;
     cmd!(
         sh,
-        "{cargo} clippy --locked --quiet -p ship2d_graphics --lib --target wasm32-unknown-unknown"
+        "{cargo} clippy --locked --quiet -p nabla --lib --target wasm32-unknown-unknown"
     )
     .run()?;
     // As in CI: release mode, with debug assertions and overflow checks on for this
     // workspace's crates.
-    let checks = ["ship2d_optimization", "ship2d_graphics"]
-        .iter()
-        .flat_map(|package| {
-            ["debug-assertions", "overflow-checks"].map(|setting| {
-                [
-                    "--config".to_owned(),
-                    format!("profile.release.package.{package}.{setting}=true"),
-                ]
-            })
+    let checks = [
+        "nabla-core",
+        "nabla-optimization",
+        "nabla-solutions",
+        "nabla",
+    ]
+    .iter()
+    .flat_map(|package| {
+        ["debug-assertions", "overflow-checks"].map(|setting| {
+            [
+                "--config".to_owned(),
+                format!("profile.release.package.{package}.{setting}=true"),
+            ]
         })
-        .flatten();
+    })
+    .flatten();
     cmd!(
         sh,
         "{cargo} test --locked --quiet --workspace --release {checks...}"
     )
     .run()?;
-    let _viewer = sh.push_dir("viewer");
+    let _app = sh.push_dir("crates/nabla");
     cmd!(sh, "trunk build --release").run()?;
     Ok(())
 }
@@ -201,7 +202,7 @@ fn print_help() {
     print!("{HELP}");
 }
 
-/// Run `bin` in place of this process where the platform allows, so the viewer gets the
+/// Run `bin` in place of this process where the platform allows, so the app gets the
 /// terminal's signals (Ctrl+C) directly.
 fn run(bin: &Path, args: &[String]) -> Result<ExitCode> {
     let mut command = std::process::Command::new(bin);

@@ -17,8 +17,9 @@ constant until the next step. The control must satisfy
 0 ≤ F ≤ F_max,   |τ| ≤ τ_max      (checked exactly: no tolerance, no clamping)
 ```
 
-The state then advances by the exact sampled-data map `step` in `src/model.rs`: closed-form
-rotation, and translation computed by Gauss–Legendre quadrature, accurate to rounding.
+The state then advances by the exact sampled-data map `step` in
+`crates/nabla-core/src/model.rs`: closed-form rotation, and translation computed by
+Gauss–Legendre quadrature, accurate to rounding.
 
 A case is solved at the first step `N` where the state lies in the target set around the goal
 `B`:
@@ -47,10 +48,10 @@ from its `Task`, so a solution should read them from there rather than hardcode 
 ## What a solution is
 
 A solution is a Rust source file (any `&str`) that defines `pub struct Solution` implementing
-`ship2d_optimization::Controller`:
+`nabla_core::Controller`:
 
 ```rust
-use ship2d_optimization::*;
+use nabla_core::*;
 
 pub struct Solution { /* anything */ }
 
@@ -65,12 +66,12 @@ impl Controller for Solution {
   (e.g. for MPC).
 - Cases run in parallel, each on one thread with its own `Solution`. Do not share mutable state
   between cases (e.g. through statics).
-- Only the standard library and this crate are available.
+- Only the standard library, `nabla-core` and `nabla-optimization` are available.
 - Evaluating both suites must take under `T_max` of wall-clock time.
 
 ## Test cases and score
 
-`src/suite.rs` defines two suites. Every case of both must be solved.
+`crates/nabla-core/src/suite.rs` defines two suites. Every case of both must be solved.
 
 - **standard** (`suite::standard`): hand-picked cases plus seeded random ones. The hand-picked
   cases cover starts that are at rest, moving fast, spinning, already at the goal, very far away,
@@ -101,15 +102,15 @@ cargo xtask submit <name> path/to/solution.rs     # store it if every case is so
 cargo xtask leaderboard                           # stored solutions, best first
 cargo xtask verify                                # re-evaluate every stored solution
 cargo test --workspace --release                  # model tests + one test per solution
-cargo xtask help                                  # every task, including the viewer's
+cargo xtask help                                  # every task, including the app's
 ```
 
 ### How evaluation runs
 
 - **Builds.** Each source becomes its own cargo project, `target/candidates/<source hash>/`,
   with its own target directory. Builds of different sources never wait on each other's cargo
-  lock. An unchanged source is not rebuilt. A new one also compiles this crate, which takes about
-  a second. `target/candidates/` is only a cache, and you can delete it at any time.
+  lock. An unchanged source is not rebuilt. A new one also compiles `nabla-core` and
+  `nabla-optimization`, which takes about a second. `target/candidates/` is only a cache, and you can delete it at any time.
 - **Cases.** The compiled candidate runs all cases of both suites in parallel, one thread per
   core. Workers take the next case from a shared atomic counter (`parallel::map`), so a few long
   cases do not leave the other cores idle.
@@ -158,15 +159,16 @@ impl Controller for Solution {
 }
 ```
 
-**2. Write the tuner as an example program**, e.g. `examples/tune_mine.rs`, that includes the
-solution file as a module. `Controller::new` only receives the `Task`, so the gains under test
+**2. Write the tuner as an example program** of `nabla-optimization`, e.g.
+`crates/nabla-optimization/examples/tune_mine.rs`, that includes the solution file as a module. `Controller::new` only receives the `Task`, so the gains under test
 go through a static, which `new` reads once per case:
 
 ```rust
-#[path = "../path/to/mine.rs"]
+#[path = "../../../path/to/mine.rs"]
 mod solution;
 
-use ship2d_optimization::{Control, Controller, State, Task, eval, parallel, problem, suite};
+use nabla_core::{Control, Controller, State, Task, problem, suite};
+use nabla_optimization::{eval, parallel};
 use solution::{Gains, Solution};
 use std::sync::RwLock;
 
@@ -198,7 +200,7 @@ fn main() {
 LTO:
 
 ```sh
-cargo run --profile fast --example tune_mine
+cargo run --profile fast -p nabla-optimization --example tune_mine
 ```
 
 The scores are the same as with `cargo xtask eval`, since optimization levels do not change

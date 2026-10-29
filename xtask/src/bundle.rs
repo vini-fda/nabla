@@ -1,5 +1,5 @@
-//! The viewer as a macOS app bundle, `Nabla.app`, with the layered Icon Composer icon
-//! (`viewer/macos/nabla_macOS.icon`) that macOS 26 renders with Liquid Glass. A bare
+//! The app as a macOS app bundle, `Nabla.app`, with the layered Icon Composer icon
+//! (`crates/nabla/macos/nabla_macOS.icon`) that macOS 26 renders with Liquid Glass. A bare
 //! executable can only show a flat rounded icon in the Dock.
 
 use std::fs;
@@ -12,9 +12,9 @@ use xshell::{Shell, cmd};
 use crate::project_root;
 
 /// The binary's name, inside `Contents/MacOS`.
-const EXECUTABLE: &str = "ship2d_graphics";
+const EXECUTABLE: &str = "nabla";
 
-/// `Nabla.app`, next to the viewer binary `bin`.
+/// `Nabla.app`, next to the app binary `bin`.
 fn app_path(bin: &Path) -> PathBuf {
     bin.with_file_name("Nabla.app")
 }
@@ -37,7 +37,7 @@ pub fn create(sh: &Shell, bin: &Path, flat_icon: bool, identity: Option<&str>) -
     }
     sh.write_file(
         app.join("Contents/Info.plist"),
-        info_plist(&viewer_version()?, layered),
+        info_plist(&app_version()?, layered),
     )?;
     sign(sh, &app, identity)?;
     Ok(app)
@@ -58,17 +58,17 @@ pub fn refresh(sh: &Shell, bin: &Path) -> Result<PathBuf> {
 }
 
 /// Whether the bundle's Info.plist is newer than everything it was made from: the icon, the
-/// viewer's version, and this module, which lays the bundle out.
+/// workspace version, and this module, which lays the bundle out.
 fn is_current(app: &Path) -> Result<bool> {
     let Ok(made) = fs::metadata(app.join("Contents/Info.plist")).and_then(|m| m.modified()) else {
         return Ok(false);
     };
     let root = project_root();
-    let mut inputs = vec![
-        root.join("viewer/Cargo.toml"),
-        root.join("xtask/src/bundle.rs"),
-    ];
-    collect_files(&root.join("viewer/macos/nabla_macOS.icon"), &mut inputs)?;
+    let mut inputs = vec![root.join("Cargo.toml"), root.join("xtask/src/bundle.rs")];
+    collect_files(
+        &root.join("crates/nabla/macos/nabla_macOS.icon"),
+        &mut inputs,
+    )?;
     for input in inputs {
         if modified(&input)? > made {
             return Ok(false);
@@ -98,7 +98,7 @@ fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
 /// Compile the layered icon into `Assets.car` with Xcode's `actool`. Returns false, with a
 /// warning, if that fails: only Xcode 26's `actool` can compile `.icon` files.
 fn compile_layered_icon(sh: &Shell, resources: &Path) -> Result<bool> {
-    let icon = project_root().join("viewer/macos/nabla_macOS.icon");
+    let icon = project_root().join("crates/nabla/macos/nabla_macOS.icon");
     let work = sh.create_temp_dir()?;
     let partial_plist = work.path().join("icon.plist");
     let compiled = cmd!(
@@ -135,7 +135,7 @@ fn warn(message: &str) {
 /// The flat fallback icon, `nabla_macOS.icns`, from the app icon PNG. macOS uses it where the
 /// layered icon is missing (before macOS 26, or without Xcode 26).
 fn compile_flat_icon(sh: &Shell, resources: &Path) -> Result<()> {
-    let png = project_root().join("viewer/assets/app-icon-macos.png");
+    let png = project_root().join("crates/nabla/assets/app-icon-macos.png");
     let work = sh.create_temp_dir()?;
     let iconset = work.path().join("nabla_macOS.iconset");
     sh.create_dir(&iconset)?;
@@ -159,7 +159,7 @@ fn compile_flat_icon(sh: &Shell, resources: &Path) -> Result<()> {
 
 /// Sign the bundle with `identity`, or ad-hoc without one, which is enough to run on Apple
 /// silicon but not for Gatekeeper. Notarization needs a Developer ID identity, the hardened
-/// runtime and a secure timestamp. The viewer needs no entitlements: it only spawns `cargo`
+/// runtime and a secure timestamp. The app needs no entitlements: it only spawns `cargo`
 /// and the binaries it builds, which the hardened runtime allows.
 fn sign(sh: &Shell, app: &Path, identity: Option<&str>) -> Result<()> {
     match identity {
@@ -176,9 +176,9 @@ fn sign(sh: &Shell, app: &Path, identity: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// The viewer's version, from `viewer/Cargo.toml`.
-fn viewer_version() -> Result<String> {
-    let manifest = project_root().join("viewer/Cargo.toml");
+/// The app's version: the workspace version, from the root `Cargo.toml`.
+fn app_version() -> Result<String> {
+    let manifest = project_root().join("Cargo.toml");
     let text = fs::read_to_string(&manifest)?;
     text.lines()
         .find_map(|line| {
@@ -207,7 +207,7 @@ fn info_plist(version: &str, layered: bool) -> String {
     <key>CFBundleDisplayName</key>
     <string>Nabla</string>
     <key>CFBundleIdentifier</key>
-    <string>io.github.vini-fda.ship2d-viewer</string>
+    <string>io.github.vini-fda.nabla</string>
     <key>CFBundleExecutable</key>
     <string>{EXECUTABLE}</string>
     <key>CFBundlePackageType</key>

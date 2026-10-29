@@ -3,10 +3,10 @@
 #![expect(clippy::print_stdout, reason = "these tasks report on stdout")]
 
 use anyhow::{Context as _, Result, anyhow, bail};
-use ship2d_optimization::db;
-use ship2d_optimization::eval::{Report, SuiteKind};
-use ship2d_optimization::harness::{build_sources, source_hash};
-use ship2d_optimization::problem::Outcome;
+use nabla_core::problem::Outcome;
+use nabla_optimization::eval::{Report, SuiteKind};
+use nabla_optimization::harness::{build_sources, source_hash};
+use nabla_solutions::db;
 
 fn read(path: &str) -> Result<String> {
     std::fs::read_to_string(path).with_context(|| format!("reading {path}"))

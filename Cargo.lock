@@ -2224,6 +2224,46 @@ dependencies = [
 ]
 
 [[package]]
+name = "nabla"
+version = "0.9.0"
+dependencies = [
+ "cpal",
+ "eframe",
+ "egui",
+ "egui_extras",
+ "egui_plot",
+ "env_logger",
+ "gltf",
+ "image",
+ "log",
+ "nabla-core",
+ "nabla-optimization",
+ "nabla-solutions",
+ "rfd",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
+name = "nabla-core"
+version = "0.9.0"
+
+[[package]]
+name = "nabla-optimization"
+version = "0.9.0"
+dependencies = [
+ "nabla-core",
+]
+
+[[package]]
+name = "nabla-solutions"
+version = "0.9.0"
+dependencies = [
+ "nabla-core",
+ "nabla-optimization",
+]
+
+[[package]]
 name = "naga"
 version = "30.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3432,29 +3472,6 @@ dependencies = [
  "quote",
  "syn 3.0.9",
 ]
-
-[[package]]
-name = "ship2d_graphics"
-version = "0.8.1"
-dependencies = [
- "cpal",
- "eframe",
- "egui",
- "egui_extras",
- "egui_plot",
- "env_logger",
- "gltf",
- "image",
- "log",
- "rfd",
- "ship2d_optimization",
- "wasm-bindgen-futures",
- "web-sys",
-]
-
-[[package]]
-name = "ship2d_optimization"
-version = "0.8.1"
 
 [[package]]
 name = "shlex"
@@ -4867,7 +4884,9 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "ship2d_optimization",
+ "nabla-core",
+ "nabla-optimization",
+ "nabla-solutions",
  "xshell",
 ]
 

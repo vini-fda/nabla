@@ -1476,7 +1476,7 @@ impl ViewerApp {
                 .next()
             })
             .inner;
-        // A flight cannot be seeked: its time runs freely.
+        // A flight has no seeking: its time runs freely.
         if let Some(t) = seek
             && self.game.is_none()
         {

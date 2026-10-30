@@ -14,8 +14,14 @@
 //! [`Steering`] picks what letting go of the turn does. With [`Steering::Raw`], nothing: the
 //! ship spins on. With [`Steering::Sas`], a stability assist like Kerbal Space Program's SAS
 //! brakes the spin and holds the heading the ship comes to, until the player turns again.
+//!
+//! The player can also point instead, with the mouse or a finger, while the camera follows the
+//! ship: an [`Aim`] turns the ship toward the pointer and thrusts once it faces it, within a
+//! cone. Both the assist and the aim use the attitude law of `docs/main.typ` ("Problem:
+//! pointing").
 
 use std::collections::HashMap;
+use std::f64::consts::TAU;
 
 use egui::{Color32, Pos2, Rect, Sense, Vec2, pos2, vec2};
 use nabla_core::problem::{Case, Outcome, Trajectory};
@@ -57,6 +63,14 @@ pub enum Steering {
     Sas,
 }
 
+/// Where the player points: the commanded heading `psi`, toward the pointer from the ship, and
+/// the half-angle `delta` of the cone around it within which the ship thrusts.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Aim {
+    pub heading: f64,
+    pub cone: f64,
+}
+
 /// The controls the player holds.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Input {
@@ -64,8 +78,11 @@ pub struct Input {
     /// How hard to turn, from -1 (full torque to the right, clockwise) to 1 (full torque to the
     /// left, counterclockwise).
     pub turn: f64,
-    /// Scale thrust and torque down to [`FINE`].
+    /// Scale thrust and torque down to [`FINE`]. Under an aim, the thrust only.
     pub fine: bool,
+    /// Where the player points, while they do: it takes over the torque, and thrusts within its
+    /// cone.
+    pub aim: Option<Aim>,
 }
 
 impl Input {
@@ -75,6 +92,7 @@ impl Input {
             thrust: self.thrust || other.thrust,
             turn: self.turn + other.turn,
             fine: self.fine || other.fine,
+            aim: self.aim.or(other.aim),
         }
     }
 
@@ -199,9 +217,11 @@ impl Game {
     }
 }
 
-/// The control for `input` in state `s`: the input's own, except that the stability assist
-/// takes over the torque while the player is not turning. It holds `hold`, which it sets, when
-/// it takes over, to where the ship's spin will stop, and clears when the player turns again.
+/// The control for `input` in state `s`: the input's own, except that an aim, or else the
+/// stability assist while the player is not turning, takes over the torque. The aim turns the
+/// ship toward its heading, the shorter way, and thrusts within its cone, as well as when the
+/// player thrusts. The assist holds `hold`, which it sets, when it takes over, to where the
+/// ship's spin will stop, and which is cleared while the player turns or aims.
 fn steer(
     input: Input,
     steering: Steering,
@@ -210,6 +230,19 @@ fn steer(
     s: &State,
 ) -> Control {
     let mut u = input.control(params);
+    if let Some(aim) = input.aim {
+        *hold = None;
+        let error = wrap(aim.heading - s.theta);
+        u.torque = hold_torque(params, s, s.theta + error);
+        if error.abs() <= aim.cone {
+            let thrust = Input {
+                thrust: true,
+                ..input
+            };
+            u.thrust = thrust.control(params).thrust;
+        }
+        return u;
+    }
     if steering == Steering::Raw || input.turn != 0.0 {
         *hold = None;
         return u;
@@ -217,6 +250,11 @@ fn steer(
     let heading = *hold.get_or_insert_with(|| stopping_heading(params, s));
     u.torque = hold_torque(params, s, heading);
     u
+}
+
+/// `angle` turned into `[-pi, pi]` by whole turns: the turn to it the shorter way.
+pub fn wrap(angle: f64) -> f64 {
+    angle - TAU * (angle / TAU).round()
 }
 
 /// The stability assist's angular acceleration: a fraction of the ship's.
@@ -314,13 +352,16 @@ fn stick_turn(canvas: Rect, p: Pos2) -> f32 {
 /// turns the ship, as hard as it is pushed sideways, thrust in its bottom right, and a latch for
 /// fine control. The joystick follows the finger that took it until that finger lifts, even off
 /// its base; thrust is held while any finger is on it. So one thumb can turn while the other
-/// thrusts.
+/// thrusts. While the player points, the controls are hidden, and the whole canvas points.
 #[derive(Default)]
 pub struct Pads {
     /// Where each touch on the screen is, by device and touch id.
     touches: HashMap<(u64, u64), Pos2>,
     /// The touch that holds the joystick.
     stick: Option<(u64, u64)>,
+    /// The touch that points, for an [`Aim`]: the first to land on the canvas off the controls
+    /// and off the areas the caller keeps for other widgets.
+    aim: Option<(u64, u64)>,
     /// Where the joystick is held, while it is.
     knob: Option<Pos2>,
     /// A touch screen has been used, so the controls show even where the system is not a
@@ -332,6 +373,8 @@ pub struct Pads {
     held: Input,
     /// A touch was on a control at the last [`Self::update`].
     on_pad: bool,
+    /// The controls are hidden, at the last [`Self::update`].
+    hidden: bool,
 }
 
 impl Pads {
@@ -345,16 +388,38 @@ impl Pads {
         self.held
     }
 
+    /// Whether a touch screen has been used: then the touches point, rather than the mouse.
+    pub fn touched(&self) -> bool {
+        self.touched
+    }
+
+    /// Where the touch that points is, while one does.
+    pub fn aim_touch(&self) -> Option<Pos2> {
+        let key = self.aim?;
+        self.touches.get(&key).copied()
+    }
+
     /// Whether a touch is on a control, so a second finger is not taken for a pinch.
     pub fn touching(&self) -> bool {
         self.on_pad
     }
 
-    /// Reads this frame's touches, and the mouse, on the controls on `canvas`, while they show.
-    /// Call it after the canvas has been allocated, so the controls, and not the canvas, take
-    /// the pointer's drags.
-    pub fn update(&mut self, ui: &egui::Ui, canvas: Rect, visible: bool) {
-        let taps = self.read_touches(ui, canvas);
+    /// The controls that show: all of them, or none while they are hidden.
+    fn shown(&self) -> impl Iterator<Item = Pad> + use<> {
+        let hidden = self.hidden;
+        Pad::ALL.into_iter().filter(move |_| !hidden)
+    }
+
+    /// Reads this frame's touches, and the mouse, on the controls on `canvas`, while they show
+    /// (if `visible`). A touch that lands in one of the `reserved` areas, which other widgets
+    /// take, never points. Call it after the canvas has been allocated, so the controls, and not
+    /// the canvas, take the pointer's drags.
+    pub fn update(&mut self, ui: &egui::Ui, canvas: Rect, visible: bool, reserved: &[Rect]) {
+        self.hidden = !visible;
+        if self.hidden {
+            self.stick = None;
+        }
+        let taps = self.read_touches(ui, canvas, reserved);
         self.held = Input::default();
         self.knob = None;
         self.on_pad = false;
@@ -364,7 +429,7 @@ impl Pads {
 
         let mut clicked_fine = false;
         let mut dragged_stick = None;
-        for pad in Pad::ALL {
+        for pad in self.shown() {
             let (center, radius) = pad.circle(canvas);
             let rect = Rect::from_center_size(center, Vec2::splat(2.0 * PAD_REACH * radius));
             let id = ui.scope_id().with(("game_pad", pad as u8));
@@ -406,17 +471,19 @@ impl Pads {
                 .any(|p| Pad::Thrust.contains(canvas, p)),
             turn: self.knob.map_or(0.0, |p| f64::from(stick_turn(canvas, p))),
             fine: self.fine,
+            aim: None,
         };
         self.on_pad = self.stick.is_some()
             || self
                 .touches
                 .values()
-                .any(|&p| Pad::ALL.iter().any(|pad| pad.contains(canvas, p)));
+                .any(|&p| self.shown().any(|pad| pad.contains(canvas, p)));
     }
 
-    /// Follows this frame's touch events: where each touch is, and which one holds the
-    /// joystick, the first to land on it. Returns where touches started.
-    fn read_touches(&mut self, ui: &egui::Ui, canvas: Rect) -> Vec<Pos2> {
+    /// Follows this frame's touch events: where each touch is, which one holds the joystick,
+    /// the first to land on it, and which one points, the first to land off the controls and
+    /// the `reserved` areas. Returns where touches started.
+    fn read_touches(&mut self, ui: &egui::Ui, canvas: Rect, reserved: &[Rect]) -> Vec<Pos2> {
         let mut taps = Vec::new();
         ui.input(|i| {
             for event in &i.events {
@@ -436,8 +503,16 @@ impl Pads {
                     egui::TouchPhase::Start => {
                         self.touches.insert(key, pos);
                         taps.push(pos);
-                        if self.stick.is_none() && Pad::Stick.contains(canvas, pos) {
+                        let on_pad = self.shown().any(|pad| pad.contains(canvas, pos));
+                        if self.stick.is_none() && !self.hidden && Pad::Stick.contains(canvas, pos)
+                        {
                             self.stick = Some(key);
+                        } else if self.aim.is_none()
+                            && !on_pad
+                            && canvas.contains(pos)
+                            && !reserved.iter().any(|r| r.contains(pos))
+                        {
+                            self.aim = Some(key);
                         }
                     }
                     egui::TouchPhase::Move => {
@@ -447,6 +522,9 @@ impl Pads {
                         self.touches.remove(&key);
                         if self.stick == Some(key) {
                             self.stick = None;
+                        }
+                        if self.aim == Some(key) {
+                            self.aim = None;
                         }
                     }
                 }
@@ -533,6 +611,7 @@ fn paint_base(painter: &egui::Painter, center: Pos2, radius: f32, lit: Option<Co
 mod tests {
     use super::*;
     use nabla_core::suite;
+    use std::f64::consts::PI;
 
     fn game() -> Game {
         Game::new(suite::find("agile").expect("case exists"))
@@ -707,6 +786,73 @@ mod tests {
         assert!(
             s.omega.abs() < 1e-3 && (s.theta - new).abs() < 0.05,
             "and stopped there"
+        );
+    }
+
+    #[test]
+    fn wrap_turns_the_shorter_way() {
+        assert!(
+            (wrap(3.0 * PI / 2.0) + PI / 2.0).abs() < 1e-12,
+            "three quarters left"
+        );
+        assert!(
+            (wrap(-5.0 * PI / 2.0) + PI / 2.0).abs() < 1e-12,
+            "more than a turn right"
+        );
+        assert_eq!(wrap(0.3), 0.3, "already short");
+    }
+
+    /// An input that points at `heading`, thrusting within `cone`.
+    fn aim(heading: f64, cone: f64) -> Input {
+        Input {
+            aim: Some(Aim { heading, cone }),
+            ..Input::default()
+        }
+    }
+
+    #[test]
+    fn aiming_turns_the_ship_and_thrusts_only_within_the_cone() {
+        for name in ["agile", "sluggish", "random_00", "random_07"] {
+            for h in [0.01, 0.02, 0.05, 0.1] {
+                let mut case = suite::find(name).expect("case exists");
+                case.task.params.h = h;
+                let params = case.task.params;
+                let heading = case.start.theta + 2.0;
+                let cone = 0.1;
+                let mut g = Game::new(case);
+                fly(&mut g, 30.0, aim(heading, cone), Steering::Sas);
+                let at = format!("{name}, h = {h}");
+                let r = &g.replay.trajectory;
+                for (s, u) in r.states.iter().zip(&r.controls) {
+                    assert!(u.is_admissible(&params), "{at}: admissible");
+                    let error = wrap(heading - s.theta).abs();
+                    let thrusting = u.thrust > 0.0;
+                    assert_eq!(thrusting, error <= cone, "{at}: thrust at {error}");
+                }
+                let s = g.state();
+                assert!(wrap(heading - s.theta).abs() < 1e-3, "{at}: faces the aim");
+                assert!(s.omega.abs() < 1e-3, "{at}: and stays");
+                assert_eq!(g.hold, None, "{at}: the aim, not the assist");
+            }
+        }
+    }
+
+    #[test]
+    fn aiming_turns_the_shorter_way_and_overrides_the_turn() {
+        let mut case = suite::find("sluggish").expect("case exists");
+        case.start.omega = 0.0;
+        let start = case.start.theta;
+        let mut g = Game::new(case);
+        // A quarter turn right, as three quarters left; the player turning left besides.
+        let input = Input {
+            turn: 1.0,
+            ..aim(start + 1.5 * PI, 0.1)
+        };
+        fly(&mut g, 0.5, input, Steering::Raw);
+        assert!(g.state().theta < start, "turns right");
+        assert!(
+            g.replay.trajectory.controls.iter().all(|u| u.torque <= 0.0),
+            "the aim's torque, not the turn's"
         );
     }
 

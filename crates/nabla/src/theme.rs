@@ -76,6 +76,7 @@ pub mod icons {
         pub const HAND_TAP: &str = "\u{EC90}";
         pub const MOUSE_LEFT_CLICK: &str = "\u{E334}";
         pub const MOUSE_SCROLL: &str = "\u{E332}";
+        pub const PATH: &str = "\u{E39C}";
         pub const PERSPECTIVE: &str = "\u{EBE6}";
         pub const ROCKET_LAUNCH: &str = "\u{E3FE}";
         pub const SEAL_QUESTION: &str = "\u{E608}";

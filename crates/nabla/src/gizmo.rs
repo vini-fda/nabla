@@ -84,6 +84,19 @@ impl ViewGizmo {
         room.then_some(center)
     }
 
+    /// What the gizmo and the Top-down view button under it take of `canvas`, if it has room
+    /// for them.
+    pub fn area(canvas: Rect) -> Option<Rect> {
+        let reach = ARM + BALL;
+        let gizmo = Rect::from_center_size(Self::center(canvas)?, Vec2::splat(2.0 * reach));
+        // The button is a little wider than the gizmo.
+        Some(
+            gizmo
+                .with_max_y(gizmo.bottom() + BUTTON_GAP + BUTTON_HEIGHT)
+                .expand2(Vec2::new(BUTTON_GAP, 0.0)),
+        )
+    }
+
     /// Handles the gizmo's input, if `shown`, and turns `camera`, also while hidden to finish
     /// a turn under way. Call it before anything is drawn with the camera, so the frame shows
     /// the new view, and [`Self::paint`] (if shown) after, so the

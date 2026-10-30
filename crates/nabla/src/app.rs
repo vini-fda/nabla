@@ -16,7 +16,7 @@ use nabla_solutions::registry::StoredSolution;
 use crate::camera::{Camera, Vec3};
 use crate::canvas_buttons::{self, Button};
 use crate::formula::{self, Formula};
-use crate::game::{self, Game, Input};
+use crate::game::{self, Game, Input, Steering};
 use crate::gizmo::ViewGizmo;
 use crate::grid::{GridStyle, draw_grid};
 use crate::keys;
@@ -91,6 +91,8 @@ const TRAVELED_COLOR: egui::Color32 = palette::BLUE;
 const PATH_MIN_SEGMENT_PX: f32 = 0.5;
 
 const GOAL_COLOR: egui::Color32 = palette::YELLOW;
+/// The heading the stability assist holds, or would, in gameplay mode.
+const SAS_HEADING_COLOR: egui::Color32 = palette::SAPPHIRE;
 const GOAL_RADIUS_PX: f32 = 10.0;
 const GOAL_LABEL_OFFSET_PX: f32 = 12.0;
 const START_RADIUS_PX: f32 = 5.0;
@@ -206,6 +208,8 @@ pub struct ViewerApp {
     playback: Playback,
     /// Gameplay mode: the player's flight on the selected case, flown in place of the policy.
     game: Option<Game>,
+    /// What letting go of the turn does in gameplay mode: kept from flight to flight.
+    steering: Steering,
     /// Name of the selected test case.
     case: Option<String>,
     /// Sampling period the selected case runs with, in place of its own.
@@ -268,6 +272,7 @@ impl Default for ViewerApp {
             show_help: false,
             playback: Playback::default(),
             game: None,
+            steering: Steering::default(),
             case: Some(DEFAULT_CASE.to_owned()),
             h: suite::H,
             show_code: false,
@@ -562,8 +567,8 @@ impl ViewerApp {
 
     /// Space: play/pause. Left/Right: one dt. Shift+Left/Right: previous/next controller
     /// sample. Home/End: start/end. F: follow the ship or stop following it. In gameplay mode,
-    /// P: pause/resume and R: restart, the other keys flying the ship (see
-    /// [`Self::keyboard_input`]).
+    /// P: pause/resume, R: restart and T: the stability assist on or off (as in KSP), the other
+    /// keys flying the ship (see [`Self::keyboard_input`]).
     fn handle_keys(&mut self, ui: &egui::Ui) {
         if ui.ctx().memory(|m| m.focused().is_some()) {
             return;
@@ -579,6 +584,9 @@ impl ViewerApp {
             }
             if plain(egui::Key::R) {
                 self.start_game();
+            }
+            if plain(egui::Key::T) {
+                self.steering = toggled(self.steering);
             }
             return;
         }
@@ -993,7 +1001,7 @@ impl ViewerApp {
     /// The flight's keys.
     fn keyboard_flight_ui(ui: &mut egui::Ui, k: keys::Keys) {
         use icons::outline::ROCKET_LAUNCH;
-        use keys::{F, LEFT, P, R, Run, SPACE, caps, joiner, label_with_icons};
+        use keys::{F, LEFT, P, R, Run, SPACE, T, caps, joiner, label_with_icons};
 
         input_group(ui, "Flight", |ui| {
             input_row(ui, |ui| caps(ui, &[SPACE]), |ui| ui.label("Thrust"));
@@ -1018,6 +1026,11 @@ impl ViewerApp {
                     caps(ui, &[R]);
                 },
                 |ui| ui.label("Pause / restart"),
+            );
+            input_row(
+                ui,
+                |ui| caps(ui, &[T]),
+                |ui| ui.label("SAS: hold the heading when not turning"),
             );
             input_row(
                 ui,
@@ -1128,6 +1141,11 @@ impl ViewerApp {
                 ui,
                 |ui| gesture(ui, HAND_TAP, "tap fine"),
                 |ui| ui.label(format!("Fine control ({}x power)", game::FINE)),
+            );
+            input_row(
+                ui,
+                |ui| gesture(ui, HAND_TAP, "tap SAS"),
+                |ui| ui.label("Hold the heading when not turning"),
             );
             input_row(
                 ui,
@@ -1331,7 +1349,7 @@ impl ViewerApp {
     }
 
     /// Gameplay mode's bar, in place of the playback controls and the timeline: pause, restart
-    /// and exit, and the time.
+    /// and exit, the stability assist's switch, and the time.
     fn game_bar_ui(&mut self, ui: &mut egui::Ui) {
         let Some(game) = &mut self.game else {
             return;
@@ -1361,6 +1379,18 @@ impl ViewerApp {
                 .button("Exit")
                 .on_hover_text("Back to replaying the control policy")
                 .clicked();
+            ui.separator();
+            let mut sas = self.steering == Steering::Sas;
+            let sas_toggle = ui.toggle_value(&mut sas, "SAS").on_hover_ui(|ui| {
+                keys::tooltip(
+                    ui,
+                    "Stability assist: when you stop turning, stop the spin and hold the heading",
+                    &[keys::T],
+                );
+            });
+            if sas_toggle.changed() {
+                self.steering = toggled(self.steering);
+            }
             ui.separator();
             let (k, _) = game.moment();
             ui.monospace(format!("t = {:.2} s, k = {k}", game.time()));
@@ -1767,7 +1797,11 @@ impl ViewerApp {
         } else {
             rect
         };
-        self.draw_goal_marker(painter, rect, marker_area, &game.replay, &game.state());
+        let state = game.state();
+        if let Some(heading) = game.sas_heading(self.steering) {
+            self.draw_sas_heading(painter, rect, &state, heading);
+        }
+        self.draw_goal_marker(painter, rect, marker_area, &game.replay, &state);
         if pads {
             game.pads.paint(painter, rect);
         }
@@ -1778,6 +1812,21 @@ impl ViewerApp {
             .filter(|r| r.case.name == game.replay.case.name)
             .and_then(|r| Some((r.solution.as_str(), r.outcome().steps()?)));
         game_banner(painter, rect, game, policy);
+    }
+
+    /// The heading the stability assist holds, or would hold if the player let go now: a faint
+    /// line from the ship in state `s` out past its nose, ending in a ring.
+    fn draw_sas_heading(&self, painter: &egui::Painter, rect: egui::Rect, s: &State, heading: f64) {
+        const LENGTH: f32 = 2.5;
+        const RING_RADIUS_PX: f32 = 4.0;
+        let color = SAS_HEADING_COLOR.gamma_multiply(0.7);
+        let center = world(s.x, s.y);
+        let tip = center + egui::Vec2::angled(heading as f32) * LENGTH * self.circumradius;
+        let ends = [center, tip].map(|p| self.camera.world_to_screen(p, rect));
+        if let [Some(from), Some(to)] = ends {
+            painter.line_segment([from, to], egui::Stroke::new(1.0, color));
+            painter.circle_stroke(to, RING_RADIUS_PX, egui::Stroke::new(1.5, color));
+        }
     }
 
     /// Where the goal is while it is off the canvas: a triangle at the edge of `area` (of the
@@ -1985,7 +2034,7 @@ impl eframe::App for ViewerApp {
         self.handle_keys(ui);
         if let Some(game) = &mut self.game {
             let input = Self::keyboard_input(ui).or(game.pads.held());
-            game.advance(f64::from(ui.input(|i| i.stable_dt)), input);
+            game.advance(f64::from(ui.input(|i| i.stable_dt)), input, self.steering);
             if !game.paused {
                 ui.ctx().request_repaint();
             }
@@ -2270,6 +2319,14 @@ fn paint_collapse_icon(
         visuals.fg_stroke.color,
         egui::Stroke::NONE,
     ));
+}
+
+/// The other way of steering: the stability assist on or off.
+fn toggled(steering: Steering) -> Steering {
+    match steering {
+        Steering::Raw => Steering::Sas,
+        Steering::Sas => Steering::Raw,
+    }
 }
 
 /// A banner along the top of the canvas while the flight is paused or once it has landed, with

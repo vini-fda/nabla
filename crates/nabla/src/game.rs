@@ -10,6 +10,10 @@
 //! too, and as strong as the joystick is pushed on a touch screen. Fine control scales both down
 //! to [`FINE`] of their maxima, since one step at full power can change the speed or the spin by
 //! more than the target set allows.
+//!
+//! [`Steering`] picks what letting go of the turn does. With [`Steering::Raw`], nothing: the
+//! ship spins on. With [`Steering::Sas`], a stability assist like Kerbal Space Program's SAS
+//! brakes the spin and holds the heading the ship comes to, until the player turns again.
 
 use std::collections::HashMap;
 
@@ -32,6 +36,26 @@ const MAX_FRAME_TIME: f64 = 0.1;
 
 /// Least half width and height of the view [`Game::view_bounds`] frames around the ship.
 const MIN_VIEW_HALF_SIZE: f64 = 3.0;
+
+/// Fraction of the ship's angular acceleration the stability assist brakes with, leaving the
+/// rest to make up for the samples' lag.
+const SAS_AUTHORITY: f64 = 0.8;
+/// Time constant of the stability assist's approach to the held heading, at least this many
+/// sampling periods, so that it settles without overshooting at any `h`.
+const SAS_TIME_CONSTANT: f64 = 0.2;
+const SAS_MIN_SAMPLES: f64 = 4.0;
+
+/// What letting go of the turn does.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Steering {
+    /// Nothing: the turn input is the torque, and the ship spins on when it is let go.
+    #[default]
+    Raw,
+    /// Stability assist, as KSP's SAS: while the player turns, the turn input is the torque, as
+    /// with [`Steering::Raw`]. Let go, the assist brakes the spin, with the ship's full torque
+    /// whatever the fine control, and holds the heading the ship comes to.
+    Sas,
+}
 
 /// The controls the player holds.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -85,6 +109,8 @@ pub struct Game {
     pub paused: bool,
     /// The first sample in the target set.
     landed: Option<usize>,
+    /// The heading the stability assist holds, while it does.
+    hold: Option<f64>,
     pub pads: Pads,
 }
 
@@ -100,6 +126,7 @@ impl Game {
             time: 0.0,
             paused: false,
             landed: None,
+            hold: None,
             pads: Pads::default(),
         }
     }
@@ -126,9 +153,22 @@ impl Game {
         self.landed
     }
 
+    /// With the stability assist, the heading it holds, or, while the player turns, the one it
+    /// would hold if they let go now: where braking would stop the spin. `None` without it.
+    pub fn sas_heading(&self, steering: Steering) -> Option<f64> {
+        if steering == Steering::Raw {
+            return None;
+        }
+        let params = &self.replay.case.task.params;
+        Some(
+            self.hold
+                .unwrap_or_else(|| stopping_heading(params, &self.state())),
+        )
+    }
+
     /// Run the flight `dt` real seconds on, unless paused, with `input` held at the samples
-    /// this passes.
-    pub fn advance(&mut self, dt: f64, input: Input) {
+    /// this passes, steering as `steering` says.
+    pub fn advance(&mut self, dt: f64, input: Input, steering: Steering) {
         if self.paused {
             return;
         }
@@ -143,7 +183,7 @@ impl Game {
             if self.landed.is_none() && task.reached(&s) {
                 self.landed = Some(k);
             }
-            let u = input.control(&task.params);
+            let u = steer(input, steering, &mut self.hold, &task.params, &s);
             trajectory.controls.push(u);
             trajectory.states.push(step(&task.params, &s, &u));
         }
@@ -157,6 +197,48 @@ impl Game {
         let dy = (goal.y - s.y).abs().max(MIN_VIEW_HALF_SIZE);
         ([s.x - dx, s.y - dy], [s.x + dx, s.y + dy])
     }
+}
+
+/// The control for `input` in state `s`: the input's own, except that the stability assist
+/// takes over the torque while the player is not turning. It holds `hold`, which it sets, when
+/// it takes over, to where the ship's spin will stop, and clears when the player turns again.
+fn steer(
+    input: Input,
+    steering: Steering,
+    hold: &mut Option<f64>,
+    params: &Params,
+    s: &State,
+) -> Control {
+    let mut u = input.control(params);
+    if steering == Steering::Raw || input.turn != 0.0 {
+        *hold = None;
+        return u;
+    }
+    let heading = *hold.get_or_insert_with(|| stopping_heading(params, s));
+    u.torque = hold_torque(params, s, heading);
+    u
+}
+
+/// The stability assist's angular acceleration: a fraction of the ship's.
+fn sas_acceleration(params: &Params) -> f64 {
+    SAS_AUTHORITY * params.tau_max / params.inertia
+}
+
+/// The heading at which the stability assist brings the ship's spin in state `s` to a stop.
+fn stopping_heading(params: &Params, s: &State) -> f64 {
+    s.theta + s.omega * s.omega.abs() / (2.0 * sas_acceleration(params))
+}
+
+/// The torque that turns the ship in state `s` toward `heading` and holds it there: over the
+/// next step, it brings the angular velocity to the speed at which braking at the assist's
+/// acceleration stops the ship on the heading, or, near it, to an exponential approach.
+fn hold_torque(params: &Params, s: &State, heading: f64) -> f64 {
+    let error = heading - s.theta;
+    let time_constant = SAS_TIME_CONSTANT.max(SAS_MIN_SAMPLES * params.h);
+    let braking = (2.0 * sas_acceleration(params) * error.abs()).sqrt();
+    let omega = (error.abs() / time_constant).min(braking).copysign(error);
+    let torque = params.inertia * (omega - s.omega) / params.h;
+    torque.clamp(-params.tau_max, params.tau_max)
 }
 
 /// Radius of the joystick's base, and of its knob, which travels sideways within the base.
@@ -523,7 +605,7 @@ mod tests {
             thrust: true,
             ..Input::default()
         };
-        g.advance(2.5 * h, thrust);
+        g.advance(2.5 * h, thrust, Steering::Raw);
         let r = &g.replay;
         assert_eq!(
             r.trajectory.controls.len(),
@@ -543,18 +625,96 @@ mod tests {
     #[test]
     fn long_frames_are_capped_and_pause_stops_time() {
         let mut g = game();
-        g.advance(10.0, Input::default());
+        g.advance(10.0, Input::default(), Steering::Raw);
         assert!((g.time() - MAX_FRAME_TIME).abs() < 1e-12, "capped");
         g.paused = true;
-        g.advance(0.05, Input::default());
+        g.advance(0.05, Input::default(), Steering::Raw);
         assert!((g.time() - MAX_FRAME_TIME).abs() < 1e-12, "paused");
+    }
+
+    /// Runs `g` for `seconds` with `input` held, steering as `steering` says.
+    fn fly(g: &mut Game, seconds: f64, input: Input, steering: Steering) {
+        for _ in 0..(seconds / 0.05).round() as usize {
+            g.advance(0.05, input, steering);
+        }
+    }
+
+    #[test]
+    fn without_the_assist_a_spinning_ship_spins_on() {
+        let mut g = game();
+        let omega = g.replay.case.start.omega;
+        fly(&mut g, 2.0, Input::default(), Steering::Raw);
+        assert!((g.state().omega - omega).abs() < 1e-12, "no torque");
+    }
+
+    #[test]
+    fn the_assist_stops_the_spin_and_holds_the_heading_on_any_ship() {
+        for name in ["agile", "sluggish", "random_00", "random_07"] {
+            for h in [0.01, 0.02, 0.05, 0.1] {
+                let mut case = suite::find(name).expect("case exists");
+                case.task.params.h = h;
+                let params = case.task.params;
+                let mut g = Game::new(case);
+                let stop = stopping_heading(&params, &g.replay.case.start);
+                fly(&mut g, 30.0, Input::default(), Steering::Sas);
+                let s = g.state();
+                let at = format!("{name}, h = {h}");
+                assert!(s.omega.abs() < 1e-3, "{at}: still spinning at {}", s.omega);
+                assert!(
+                    (s.theta - stop).abs() < 0.05,
+                    "{at}: held {} for {stop}",
+                    s.theta
+                );
+                assert_eq!(g.hold, Some(stop), "{at}: held where it stopped");
+                for u in &g.replay.trajectory.controls {
+                    assert!(u.is_admissible(&params), "{at}: admissible");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn turning_overrides_the_assist_which_then_holds_the_new_heading() {
+        let mut g = game();
+        fly(&mut g, 3.0, Input::default(), Steering::Sas);
+        let held = g.hold.expect("holding");
+        let left = Input {
+            turn: 1.0,
+            ..Input::default()
+        };
+        fly(&mut g, 0.2, left, Steering::Sas);
+        assert_eq!(g.hold, None, "the player turns");
+        let params = g.replay.case.task.params;
+        let guide = g.sas_heading(Steering::Sas).expect("guide while turning");
+        assert_eq!(
+            guide,
+            stopping_heading(&params, &g.state()),
+            "where it would stop"
+        );
+        assert!(guide > held, "ahead of the turn");
+        assert_eq!(
+            g.sas_heading(Steering::Raw),
+            None,
+            "no guide without the assist"
+        );
+        let tau_max = g.replay.case.task.params.tau_max;
+        let last = g.replay.trajectory.controls.last().expect("controls");
+        assert_eq!(last.torque, tau_max, "the player's torque, unchanged");
+        fly(&mut g, 5.0, Input::default(), Steering::Sas);
+        let s = g.state();
+        let new = g.hold.expect("holding again");
+        assert!(new > held, "turned left");
+        assert!(
+            s.omega.abs() < 1e-3 && (s.theta - new).abs() < 0.05,
+            "and stopped there"
+        );
     }
 
     #[test]
     fn a_flight_starting_in_the_target_set_lands_at_once() {
         let mut g = Game::new(suite::find("at_goal").expect("case exists"));
         assert_eq!(g.landed(), None, "not before it starts");
-        g.advance(0.001, Input::default());
+        g.advance(0.001, Input::default(), Steering::Raw);
         assert_eq!(g.landed(), Some(0), "at the first sample");
     }
 }

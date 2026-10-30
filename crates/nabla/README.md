@@ -9,7 +9,7 @@ Playback is continuous in time. Between controller samples the control is held c
 ## What's on screen
 
 - **Left panel**: the solution source (open, reload, compile status and errors), the case picker, the case's parameters and initial state, the outcome (steps to reach the target set), the state and control at the current frame, display options, and sound: the ion thruster's sound (five synthesized styles to choose from), master/ion/RCS volume knobs, and buttons to hear each thruster on its own.
-- **Main canvas**: the ship drawn as an isosceles triangle in a Desmos-style coordinate grid you can pan (drag) and zoom (scroll, anchored at the cursor). It starts as a top-down orthographic view; the axes gizmo in its top right corner turns it to look from any side. Right of it, floating buttons show or hide the gizmo (sphere) and follow the ship (rocket), turning light blue while on, switch dragging the canvas between panning and rotating the camera (arrows), and switch between orthographic and perspective projection (grid). Perspective uses the field of view of Blender's default 50 mm camera, and keeps the plane through the view's center at the same zoom as orthographic. It shows the full path (grey), the part travelled so far (blue), the start, the goal `B` with its position tolerance, and the velocity (green) and acceleration (red) arrows.
+- **Main canvas**: the ship drawn as an isosceles triangle in a Desmos-style coordinate grid you can pan (drag) and zoom (scroll, anchored at the cursor). It starts as a top-down orthographic view; the axes gizmo in its top right corner turns it to look from any side. Right of it, floating buttons show or hide the gizmo (sphere), follow the ship (rocket) and show or hide the path (a curve between two dots), turning light blue while on, switch dragging the canvas between panning and rotating the camera (arrows), and switch between orthographic and perspective projection (grid). Perspective uses the field of view of Blender's default 50 mm camera, and keeps the plane through the view's center at the same zoom as orthographic. It shows the full path (grey), the part travelled so far (blue), the start, the goal `B` with its position tolerance, and the velocity (green) and acceleration (red) arrows.
 - **Bottom panel**: playback controls, the playback speed (relative to real time), the display sampling time `Δt`, and an After Effects-style timeline. The timeline has a thin yellow mark at every controller sample `t_k = k h` and a playhead. Click or drag to seek, scroll to zoom, shift+scroll to pan, double-click to show the whole run.
 - **Right panel**: x, y, vx, vy, θ, ω and the controls F, τ over the whole run, with a cursor at the current time. Click a plot to jump to that time.
 
@@ -27,6 +27,7 @@ Playback is continuous in time. Between controller samples the control is held c
 | **Top-down view** button under the gizmo | Back to the default top-down orthographic view |
 | Sphere button | Show / hide the gizmo |
 | Rocket button | Follow the ship, as `F` |
+| Path button | Show / hide the path, as the **Path** checkbox in Settings |
 | Arrows button | Switch what dragging the canvas does: pan (four arrows, the default) or rotate the camera (circular arrow) |
 | Grid button | Switch between orthographic (flat grid, the default) and perspective projection |
 

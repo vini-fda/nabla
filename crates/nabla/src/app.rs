@@ -1608,6 +1608,11 @@ impl ViewerApp {
                     &mut self.follow_ship,
                     "Follow the ship (F)",
                 ),
+                Button::toggle(
+                    icons::outline::PATH,
+                    &mut self.show_path,
+                    "Show the path: the whole run in grey, the part flown so far in blue",
+                ),
                 Button::switch(
                     [
                         icons::outline::ARROWS_OUT_CARDINAL,

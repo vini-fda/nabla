@@ -16,7 +16,7 @@ use nabla_solutions::registry::StoredSolution;
 use crate::camera::{Camera, Vec3};
 use crate::canvas_buttons::{self, Button};
 use crate::formula::{self, Formula};
-use crate::game::{self, Game, Input, Steering};
+use crate::game::{self, Aim, Game, Input, Steering};
 use crate::gizmo::ViewGizmo;
 use crate::grid::{GridStyle, draw_grid};
 use crate::keys;
@@ -93,6 +93,16 @@ const PATH_MIN_SEGMENT_PX: f32 = 0.5;
 const GOAL_COLOR: egui::Color32 = palette::YELLOW;
 /// The heading the stability assist holds, or would, in gameplay mode.
 const SAS_HEADING_COLOR: egui::Color32 = palette::SAPPHIRE;
+/// The line from the ship to the pointer, in pointing mode: green while the ship faces the
+/// pointer, within the cone, and so thrusts.
+const AIM_COLOR: egui::Color32 = palette::OVERLAY1;
+const AIM_THRUST_COLOR: egui::Color32 = palette::GREEN;
+/// How near the ship (in points) the pointer commands nothing: the heading toward it is not
+/// defined at the ship itself.
+const AIM_DEAD_ZONE_PX: f32 = 12.0;
+/// The thrust cone's default half-angle, and its range, in degrees.
+const DEFAULT_AIM_CONE: f64 = 10.0;
+const AIM_CONE_RANGE: std::ops::RangeInclusive<f64> = 1.0..=90.0;
 const GOAL_RADIUS_PX: f32 = 10.0;
 const GOAL_LABEL_OFFSET_PX: f32 = 12.0;
 const START_RADIUS_PX: f32 = 5.0;
@@ -210,6 +220,17 @@ pub struct ViewerApp {
     game: Option<Game>,
     /// What letting go of the turn does in gameplay mode: kept from flight to flight.
     steering: Steering,
+    /// Pointing mode: while the camera follows the ship, the mouse or a finger held on the
+    /// canvas turns the ship toward it, and thrusts once it faces it.
+    pointing: bool,
+    /// Half-angle of the cone around the pointer within which the ship thrusts, in degrees.
+    aim_cone: f64,
+    /// Where the player points, as the canvas last saw it: on screen, and the heading toward
+    /// it from the ship.
+    aiming: Option<(egui::Pos2, f64)>,
+    /// The canvas's areas that other widgets take (the buttons, the gizmo), as last drawn: a
+    /// touch there never points.
+    reserved: Vec<egui::Rect>,
     /// Name of the selected test case.
     case: Option<String>,
     /// Sampling period the selected case runs with, in place of its own.
@@ -273,6 +294,10 @@ impl Default for ViewerApp {
             playback: Playback::default(),
             game: None,
             steering: Steering::default(),
+            pointing: false,
+            aim_cone: DEFAULT_AIM_CONE,
+            aiming: None,
+            reserved: Vec::new(),
             case: Some(DEFAULT_CASE.to_owned()),
             h: suite::H,
             show_code: false,
@@ -561,6 +586,7 @@ impl ViewerApp {
                 thrust: held(egui::Key::Space) || held(egui::Key::ArrowUp),
                 turn: left - right,
                 fine: i.modifiers.shift,
+                aim: None,
             }
         })
     }
@@ -1034,6 +1060,11 @@ impl ViewerApp {
             );
             input_row(
                 ui,
+                |ui| keys::gesture(ui, icons::outline::MOUSE_LEFT_CLICK, "hold (Point)"),
+                |ui| ui.label("Turn toward the pointer; thrust when facing it"),
+            );
+            input_row(
+                ui,
                 |ui| caps(ui, &[F]),
                 |ui| {
                     label_with_icons(
@@ -1146,6 +1177,11 @@ impl ViewerApp {
                 ui,
                 |ui| gesture(ui, HAND_TAP, "tap SAS"),
                 |ui| ui.label("Hold the heading when not turning"),
+            );
+            input_row(
+                ui,
+                |ui| gesture(ui, HAND_TAP, "hold (Point)"),
+                |ui| ui.label("Turn toward the finger; thrust when facing it"),
             );
             input_row(
                 ui,
@@ -1349,8 +1385,10 @@ impl ViewerApp {
     }
 
     /// Gameplay mode's bar, in place of the playback controls and the timeline: pause, restart
-    /// and exit, the stability assist's switch, and the time.
-    fn game_bar_ui(&mut self, ui: &mut egui::Ui) {
+    /// and exit, the switches for the stability assist and pointing (with its cone), and the
+    /// time. `compact`, for narrow screens, shortens the cone's and the time's labels so the
+    /// row fits a phone.
+    fn game_bar_ui(&mut self, ui: &mut egui::Ui, compact: bool) {
         let Some(game) = &mut self.game else {
             return;
         };
@@ -1391,9 +1429,36 @@ impl ViewerApp {
             if sas_toggle.changed() {
                 self.steering = toggled(self.steering);
             }
+            ui.add_enabled_ui(self.follow_ship, |ui| {
+                ui.toggle_value(&mut self.pointing, "Point")
+                    .on_hover_text(
+                        "Hold the mouse or a finger on the canvas: the ship turns toward it, \
+                         and thrusts once it faces it within the cone",
+                    )
+                    .on_disabled_hover_text("Follow the ship (F) to point");
+                if self.pointing {
+                    ui.add(
+                        egui::DragValue::new(&mut self.aim_cone)
+                            .range(AIM_CONE_RANGE)
+                            .speed(0.5)
+                            .max_decimals(0)
+                            .prefix(if compact { "" } else { "cone " })
+                            .suffix(" deg"),
+                    )
+                    .on_hover_text(
+                        "Half-angle of the cone around the pointer within which the ship \
+                         thrusts. Drag or click to change",
+                    );
+                }
+            });
             ui.separator();
             let (k, _) = game.moment();
-            ui.monospace(format!("t = {:.2} s, k = {k}", game.time()));
+            let time = if compact {
+                format!("{:.2} s", game.time())
+            } else {
+                format!("t = {:.2} s, k = {k}", game.time())
+            };
+            ui.monospace(time);
         });
         if restart {
             self.start_game();
@@ -1498,36 +1563,15 @@ impl ViewerApp {
 
         // The flight's pads, over the canvas, take the pointer from it where they are.
         let touch_device = keys::Keys::new(ui.ctx()).touch();
+        let pointing = self.pointing_now();
         let on_pads = self.game.as_mut().is_some_and(|game| {
-            let visible = game.pads.visible(touch_device);
-            game.pads.update(ui, rect, visible);
-            game.pads.touching()
+            // While the player points, the controls go, and the whole canvas points.
+            let visible = game.pads.visible(touch_device) && !pointing;
+            game.pads.update(ui, rect, visible, &self.reserved);
+            game.pads.touching() || (pointing && game.pads.aim_touch().is_some())
         });
 
-        // Primary drag orbits the camera or pans, as the pan/rotate button says. Panning is
-        // disabled while following the ship, since the center is locked to the ship's
-        // position each frame.
-        if response.dragged_by(egui::PointerButton::Primary) {
-            if self.drag_orbits {
-                self.gizmo.orbit(&mut self.camera, response.drag_delta());
-                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-            } else if !self.follow_ship {
-                self.camera.pan_by_screen(response.drag_delta());
-            }
-        }
-
-        // Zoom with scroll/pinch while the cursor is over the canvas. A finger on a pad and
-        // another on the canvas are not a pinch.
-        if let Some(hover_pos) = response.hover_pos() {
-            let (scroll_y, zoom_delta) = ui.ctx().input(|i| {
-                let zoom = if on_pads { 1.0 } else { i.zoom_delta() };
-                (i.smooth_scroll_delta.y, zoom)
-            });
-            let factor = zoom_delta * (scroll_y / 200.0).exp();
-            if factor.is_finite() && factor > 0.0 && (factor - 1.0).abs() > f32::EPSILON {
-                self.camera.zoom_at(factor, hover_pos, rect);
-            }
-        }
+        self.drag_and_zoom(ui, &response, rect, on_pads);
 
         if self.fit_pending {
             let bounds = match &self.game {
@@ -1541,7 +1585,9 @@ impl ViewerApp {
         }
 
         let painter = ui.painter_at(rect);
+        // The scene first, which centers the camera on the ship when following it.
         self.draw_scene(ui, &painter, rect);
+        self.aiming = self.read_aim(&response, rect);
         self.draw_game_overlay(&painter, rect, touch_device);
         if self.show_gizmo {
             self.gizmo.paint(ui, &painter, corner, &self.camera);
@@ -1596,9 +1642,83 @@ impl ViewerApp {
             ],
         );
         self.set_flying(fly);
+        self.reserved = std::iter::once(buttons)
+            .chain(ViewGizmo::area(corner).filter(|_| self.show_gizmo))
+            .collect();
         if self.show_help {
             self.help_ui(ui, rect, buttons);
         }
+    }
+
+    /// Dragging and zooming the canvas, whose `response` this is, in `rect`. `on_pads`: a finger
+    /// is on the flight's controls, or points, so another finger is not a pinch.
+    fn drag_and_zoom(
+        &mut self,
+        ui: &egui::Ui,
+        response: &egui::Response,
+        rect: egui::Rect,
+        on_pads: bool,
+    ) {
+        // Primary drag orbits the camera or pans, as the pan/rotate button says. Panning is
+        // disabled while following the ship, since the center is locked to the ship's
+        // position each frame. In pointing mode, the drag points instead.
+        let pointing = self.pointing_now();
+        if pointing && response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+        }
+        if response.dragged_by(egui::PointerButton::Primary) && !pointing {
+            if self.drag_orbits {
+                self.gizmo.orbit(&mut self.camera, response.drag_delta());
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+            } else if !self.follow_ship {
+                self.camera.pan_by_screen(response.drag_delta());
+            }
+        }
+
+        // Zoom with scroll/pinch while the cursor is over the canvas. A finger on a pad, or
+        // pointing, and another on the canvas are not a pinch.
+        if let Some(hover_pos) = response.hover_pos() {
+            let (scroll_y, zoom_delta) = ui.ctx().input(|i| {
+                let zoom = if on_pads { 1.0 } else { i.zoom_delta() };
+                (i.smooth_scroll_delta.y, zoom)
+            });
+            let factor = zoom_delta * (scroll_y / 200.0).exp();
+            if factor.is_finite() && factor > 0.0 && (factor - 1.0).abs() > f32::EPSILON {
+                self.camera.zoom_at(factor, hover_pos, rect);
+            }
+        }
+    }
+
+    /// Whether the pointer flies the ship now: in gameplay mode, with pointing on and the
+    /// camera following the ship, without which a still pointer would not hold a direction.
+    fn pointing_now(&self) -> bool {
+        self.game.is_some() && self.pointing && self.follow_ship
+    }
+
+    /// Where the player points, in pointing mode: the mouse pressed on the canvas, or on a
+    /// touch screen the touch that points, on screen, and the heading toward it from the ship,
+    /// unless it is too near the ship for one.
+    fn read_aim(&self, response: &egui::Response, rect: egui::Rect) -> Option<(egui::Pos2, f64)> {
+        if !self.pointing_now() {
+            return None;
+        }
+        let game = self.game.as_ref()?;
+        let pointer = if game.pads.touched() {
+            game.pads.aim_touch()
+        } else {
+            response
+                .is_pointer_button_down_on()
+                .then(|| response.interact_pointer_pos())
+                .flatten()
+        }?;
+        let s = game.state();
+        let ship = world(s.x, s.y);
+        let on_screen = self.camera.world_to_screen(ship, rect)?;
+        if on_screen.distance(pointer) < AIM_DEAD_ZONE_PX {
+            return None;
+        }
+        let offset = self.camera.screen_to_world(pointer, rect)? - ship;
+        Some((pointer, f64::from(offset.y).atan2(f64::from(offset.x))))
     }
 
     /// The keyboard and mouse help, over the `canvas`, left of its `buttons` and level with
@@ -1785,12 +1905,12 @@ impl ViewerApp {
     }
 
     /// Over the flight: where the goal is while it is off the canvas, the pads (where they
-    /// show), and the banner.
+    /// show, and not while the player points), and the banner.
     fn draw_game_overlay(&self, painter: &egui::Painter, rect: egui::Rect, touch_device: bool) {
         let Some(game) = &self.game else {
             return;
         };
-        let pads = game.pads.visible(touch_device);
+        let pads = game.pads.visible(touch_device) && !self.pointing_now();
         // Above the pads, where they show.
         let marker_area = if pads {
             rect.with_max_y(rect.bottom() - game::PADS_HEIGHT)
@@ -1798,7 +1918,9 @@ impl ViewerApp {
             rect
         };
         let state = game.state();
-        if let Some(heading) = game.sas_heading(self.steering) {
+        if let Some((pointer, heading)) = self.aiming {
+            self.draw_aim(painter, rect, &state, pointer, heading);
+        } else if let Some(heading) = game.sas_heading(self.steering) {
             self.draw_sas_heading(painter, rect, &state, heading);
         }
         self.draw_goal_marker(painter, rect, marker_area, &game.replay, &state);
@@ -1812,6 +1934,44 @@ impl ViewerApp {
             .filter(|r| r.case.name == game.replay.case.name)
             .and_then(|r| Some((r.solution.as_str(), r.outcome().steps()?)));
         game_banner(painter, rect, game, policy);
+    }
+
+    /// Where the player points, from the ship in state `s`: a line to the `pointer`, which
+    /// points at `heading`, and the edges of the thrust cone around it, as long. Green while
+    /// the ship faces the pointer within the cone, and so thrusts.
+    fn draw_aim(
+        &self,
+        painter: &egui::Painter,
+        rect: egui::Rect,
+        s: &State,
+        pointer: egui::Pos2,
+        heading: f64,
+    ) {
+        let cone = self.aim_cone.to_radians();
+        let color = if game::wrap(heading - s.theta).abs() <= cone {
+            AIM_THRUST_COLOR
+        } else {
+            AIM_COLOR
+        };
+        let center = world(s.x, s.y);
+        let Some(ship) = self.camera.world_to_screen(center, rect) else {
+            return;
+        };
+        let reach = self
+            .camera
+            .screen_to_world(pointer, rect)
+            .map_or(0.0, |p| (p - center).length());
+        for side in [-1.0, 1.0] {
+            let edge = center + egui::Vec2::angled((heading + side * cone) as f32) * reach;
+            if let Some(edge) = self.camera.world_to_screen(edge, rect) {
+                painter.line_segment(
+                    [ship, edge],
+                    egui::Stroke::new(1.0, color.gamma_multiply(0.35)),
+                );
+            }
+        }
+        painter.line_segment([ship, pointer], egui::Stroke::new(1.5, color));
+        painter.circle_stroke(pointer, 6.0, egui::Stroke::new(1.5, color));
     }
 
     /// The heading the stability assist holds, or would hold if the player let go now: a faint
@@ -1986,7 +2146,7 @@ impl ViewerApp {
     /// the timeline.
     fn bottom_bar_ui(&mut self, ui: &mut egui::Ui, compact: bool) {
         if self.game.is_some() {
-            self.game_bar_ui(ui);
+            self.game_bar_ui(ui, compact);
         } else {
             self.timeline_ui(ui, compact);
         }
@@ -2033,7 +2193,11 @@ impl eframe::App for ViewerApp {
         // Advance playback first, so every panel shows the same instant.
         self.handle_keys(ui);
         if let Some(game) = &mut self.game {
-            let input = Self::keyboard_input(ui).or(game.pads.held());
+            let mut input = Self::keyboard_input(ui).or(game.pads.held());
+            input.aim = self.aiming.map(|(_, heading)| Aim {
+                heading,
+                cone: self.aim_cone.to_radians(),
+            });
             game.advance(f64::from(ui.input(|i| i.stable_dt)), input, self.steering);
             if !game.paused {
                 ui.ctx().request_repaint();

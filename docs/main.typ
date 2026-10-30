@@ -340,3 +340,74 @@ V / 2 n_1 h + V dot 2 n_2 h + V / 2 n_1 h = V (n_1 + 2 n_2) h,
 $
 
 so $V = D \/ ((n_1 + 2 n_2) h)$ lands exactly on $B$. The required thrust $m V \/ (n_1 h) = m D \/ (n_1 (n_1 + 2 n_2) h^2)$ is at most $F_max$ once $n_1$ is large enough. $square$
+
+== Problem: pointing (a human in the loop)
+
+The viewer also lets a person fly the ship. In one of its control modes, the player points on the screen and a feedback policy does the rest: it turns the ship toward the pointer and thrusts once the ship faces it. The loop splits in two. The player closes the outer, translational loop by choosing where to point, and the policy closes the inner, rotational loop.
+
+=== The commanded direction
+
+The camera follows the ship, so the ship stays at the same point of the screen. A pointer at a screen point $mathbf(q)$ lies over the point $mathbf(p) + mathbf(r)$ of the plane, where the offset $mathbf(r)$ depends on $mathbf(q)$ and the camera (its zoom and the side it looks from) but not on $mathbf(p)$. A pointer held still therefore commands a constant offset, and with it a constant direction, however the ship moves. Without the camera following, a still pointer would mark a fixed point of the plane instead, and the direction to it would swing as the ship passes by. This is why the mode works only while the camera follows the ship.
+
+With $mathbf(r)$ sampled at $t_k$, the commanded heading and the heading error are
+
+$
+psi = op("atan2")(r_y, r_x), quad
+e_k = op("wrap")(psi - theta_k), quad
+op("wrap")(a) = a - 2 pi op("round")(a / (2 pi)) in [-pi, pi],
+$
+
+so that the ship turns the shorter way. A pointer within a few pixels of the ship commands nothing, since $psi$ is not defined at $mathbf(r) = 0$.
+
+*Pointing problem.* Given a commanded heading $psi$ and a thrust cone half-angle $delta in (0, pi)$, find a policy $u_k = pi(mathbf(s)_k; psi)$ with admissible controls such that, for a constant $psi$, $e_k -> 0$ and $omega_k -> 0$, and $F_k > 0$ only while $abs(e_k) <= delta$.
+
+=== Thrust in a cone
+
+The thrust is all or nothing, gated by the heading error:
+
+$
+F_k = cases(F_max & "if" abs(e_k) <= delta, 0 & "otherwise".)
+$
+
+At a sample with $abs(e_k) <= delta$, the thrust has a component of at least $F_k cos delta$ along $mathbf(e)(psi)$ and at most $F_k sin delta$ across it. A small $delta$ wastes less thrust sideways but thrusts later, and only once the ship faces the pointer closely. A large one responds sooner but pushes the ship off the line for a while.
+
+=== The attitude law
+
+The rotation is a double integrator with bounded input, and since the torque is held over the step, $omega_(k+1) = omega_k + h tau_k \/ I$ exactly. A rate $omega^*$ is therefore reached in one step by $tau_k = I (omega^* - omega_k) \/ h$, unless that torque exceeds $tau_max$. The policy asks for the rate
+
+$
+omega^*(e) = op("sgn")(e) min(abs(e) / T, sqrt(2 alpha abs(e))), quad
+alpha = beta tau_max / I, quad
+T = max(T_0, n h),
+$
+
+with $0 < beta < 1$, and applies
+
+$
+tau_k = op("sat")(I (omega^*(e_k) - omega_k) / h), quad
+op("sat")(x) = max(-tau_max, min(tau_max, x)).
+$
+
+Far from the commanded heading, $omega^*$ follows the braking curve $omega^2 = 2 alpha abs(e)$. A ship turning at that rate and slowing at $alpha$ stops exactly on $psi$: this is the switching curve of the time-optimal turn, with acceleration $alpha$. Braking at $alpha < tau_max \/ I$ keeps a margin of $(1 - beta) tau_max \/ I$ for the lag, since each step only reaches the rate asked for at the start of the step. Near $psi$, the square root grows without bound in slope, so the law switches to the linear branch $omega^* = e \/ T$.
+
+*Proposition (no ringing near the target).* In the linear branch, unsaturated, and for a constant $psi$, the heading error obeys
+
+$
+e_(k+1) = (1 - q) e_k - q e_(k-1), quad q = h / (2 T).
+$
+
+If $T >= (3 + 2 sqrt(2)) / 2 h approx 2.91 h$, it tends to zero geometrically, and changes sign at most once.
+
+*Proof.* The torque is constant over the step, so $theta_(k+1) = theta_k + h (omega_k + omega_(k+1)) \/ 2$. Unsaturated, each step reaches the rate asked for, so $omega_(k+1) = e_k \/ T$ and $omega_k = e_(k-1) \/ T$. Subtracting from $psi$ gives the recurrence. Its characteristic polynomial $z^2 - (1 - q) z + q$ has real roots when $(1 - q)^2 >= 4 q$, that is when $q <= 3 - 2 sqrt(2)$. Their sum $1 - q$ and product $q$ are positive, so both roots are positive; the polynomial is $2 q > 0$ at $z = 1$ and has its vertex at $(1 - q) \/ 2 < 1$, so both are below 1. A sum of two geometric sequences with positive ratios changes sign at most once. $square$
+
+The viewer uses $beta = 0.8$, $T_0 = 0.2 "s"$ and $n = 4$, so $q <= 1 \/ 8$, with roots near $0.70$ and $0.18$ at $T = 4 h$.
+
+=== Holding a heading
+
+The viewer's stability assist, like the SAS of Kerbal Space Program, uses the same law. When the player lets go of the turn, it sets
+
+$
+psi = theta + omega abs(omega) / (2 alpha),
+$
+
+the heading at which the braking curve brings the spin to rest, and holds it, with $e_k = psi - theta_k$ not wrapped: after a long spin it brakes to a stop rather than turning back the shorter way.

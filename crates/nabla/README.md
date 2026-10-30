@@ -32,9 +32,11 @@ Playback is continuous in time. Between controller samples the control is held c
 
 ## Flying it yourself
 
-**Fly it yourself** (the game controller button over the canvas, or **Mode** at the top of the left panel) switches to gameplay: no control policy runs, and you fly the ship to `B` on the selected case. There is no timeline: time runs freely from the start, and the bottom panel holds only pause, restart and exit, the **SAS** switch and the time. Once the ship lands, a banner gives the step count, next to the policy's on the same case.
+**Fly it yourself** (the game controller button over the canvas, or **Mode** at the top of the left panel) switches to gameplay: no control policy runs, and you fly the ship to `B` on the selected case. There is no timeline: time runs freely from the start, and the bottom panel holds only pause, restart and exit, the **SAS** and **Point** switches and the time. Once the ship lands, a banner gives the step count, next to the policy's on the same case.
 
 The flight uses the same exact sampled-data model as the solutions. At each sample `t_k = k h`, the controls you hold become `u_k`, held for the step. Thrust is all or nothing, and so is torque from the keyboard; the touch joystick gives as much torque as it is pushed. Fine control scales both to a tenth, since one step at full power can change the speed or the spin by more than the target set allows. **SAS** (`T`, as in Kerbal Space Program) switches what letting go of the turn does. Off, the default, nothing: the ship spins on, and stopping a spin is up to you. On, a stability assist like KSP's takes over the torque whenever you are not turning: it brakes the spin, with the ship's full torque whatever the fine control, and holds the heading the ship comes to. Turning again overrides it, and it holds the new heading once you let go. A faint line from the ship ending in a ring shows that heading all along: while you turn, it is where the ship would come to rest if you let go now. The choice is kept from flight to flight.
+
+**Point** lets you fly with the mouse or a finger instead. Hold it on the canvas, and the ship turns toward it, the shorter way, and thrusts once it faces it within a cone, whose half-angle (10 degrees by default) is set next to the switch. A line from the ship to the pointer, between the cone's edges, turns green while it thrusts. Point works only while the camera follows the ship: then a still pointer holds a direction relative to the ship, while otherwise it would mark a fixed point the ship flies past. While it steers, the on-screen controls (joystick, thrust and fine) go, and a finger anywhere on the canvas points. Dragging the canvas points rather than turning the camera, and a touch on the buttons in the corner never points. The policy, and why it settles without ringing, is modeled in [`docs/main.typ`](../../docs/main.typ) ("Problem: pointing").
 
 The plots, plumes and sound follow the flight, and a marker at the canvas's edge points to `B` while it is off screen.
 
@@ -45,6 +47,7 @@ The plots, plumes and sound follow the flight, and a marker at the canvas's edge
 | `Shift` held | Fine control (a tenth of the thrust and torque) |
 | `P` / `R` | Pause / restart |
 | `T` | SAS on / off |
+| Hold the mouse on the canvas, with **Point** on | Turn toward the pointer, and thrust when facing it |
 | `F` | Follow the ship / stop following |
 
 On phones and tablets (and once a touch screen is used), controls appear over the canvas. In the bottom left corner, a joystick turns the ship: push it sideways, and the further it goes the harder it turns (left counterclockwise, right clockwise), with a small dead zone in the middle. It follows the finger that took it until that finger lifts, even off its base. In the bottom right, a thrust pad is held while a finger is on it, and a **fine** latch above it turns on or off with a tap. So one thumb steers while the other thrusts.

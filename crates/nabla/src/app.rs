@@ -105,6 +105,9 @@ const AIM_DEAD_ZONE_PX: f32 = 12.0;
 /// from the ship (in points) its aim is drawn.
 const STICK_AIM_MIN: f32 = 0.5;
 const STICK_AIM_REACH_PX: f32 = 90.0;
+/// How fast the controller's R1 and L1 zoom while held: the zoom's logarithm per second, so
+/// about 4x a second.
+const CONTROLLER_ZOOM_RATE: f32 = 1.4;
 /// The thrust cone's default half-angle, and its range, in degrees.
 const DEFAULT_AIM_CONE: f64 = 10.0;
 const AIM_CONE_RANGE: std::ops::RangeInclusive<f64> = 1.0..=90.0;
@@ -1072,10 +1075,19 @@ impl ViewerApp {
             input_row(
                 ui,
                 |ui| {
-                    caps(ui, &[Key::Word("L1")]);
+                    caps(ui, &[Key::Word("L2")]);
                     joiner(ui, "held");
                 },
                 |ui| ui.label(format!("Fine control ({}x power)", game::FINE)),
+            );
+            input_row(
+                ui,
+                |ui| {
+                    caps(ui, &[Key::Word("R1")]);
+                    joiner(ui, "/");
+                    caps(ui, &[Key::Word("L1")]);
+                },
+                |ui| ui.label("Zoom in / out"),
             );
             input_row(
                 ui,
@@ -1768,6 +1780,15 @@ impl ViewerApp {
             if factor.is_finite() && factor > 0.0 && (factor - 1.0).abs() > f32::EPSILON {
                 self.camera.zoom_at(factor, hover_pos, rect);
             }
+        }
+
+        // The controller's R1 zooms in and L1 out while held, about the canvas's center: the
+        // ship, while following it.
+        let zoom = self.gamepads.state().map_or(0.0, gamepad::State::zoom);
+        if zoom != 0.0 {
+            let dt = ui.input(|i| i.stable_dt).min(0.1);
+            let factor = (zoom * CONTROLLER_ZOOM_RATE * dt).exp();
+            self.camera.zoom_at(factor, rect.center(), rect);
         }
     }
 
@@ -2689,7 +2710,7 @@ fn fit_camera(camera: &mut Camera, bounds: ([f64; 2], [f64; 2]), rect: egui::Rec
     let usable = rect.size() * (1.0 - 2.0 * FIT_MARGIN);
     let scale = (usable.x / size.x).min(usable.y / size.y);
     if scale.is_finite() && scale > 0.0 {
-        camera.scale = scale;
+        camera.set_scale(scale);
     }
 }
 

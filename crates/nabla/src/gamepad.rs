@@ -4,7 +4,8 @@
 //! This reads the first connected controller every frame: its sticks and the buttons the flight
 //! uses, as [`State`], which [`State::input`] turns into the flight's controls. The left stick
 //! and the bottom face button also show over the canvas, in [`readout_ui`]. Buttons are named
-//! as on a Sony controller; on an Xbox one, Cross is A, Triangle Y, L1 LB and R2 RT. A browser
+//! as on a Sony controller; on an Xbox one, Cross is A, Triangle Y, L1 and R1 LB and RB, and
+//! L2 and R2 LT and RT. A browser
 //! only lists a controller once one of its buttons has been pressed with the page open.
 
 use std::time::Duration;
@@ -39,10 +40,12 @@ pub struct State {
     pub right_stick: [f32; 2],
     /// The bottom face button: Cross on a Sony controller, A on an Xbox one.
     pub south: bool,
-    /// The right trigger, pressed past its threshold.
+    /// The triggers, pressed past their threshold.
+    pub l2: bool,
     pub r2: bool,
-    /// The left shoulder button.
+    /// The shoulder buttons.
     pub l1: bool,
+    pub r1: bool,
     /// The buttons pressed since the last frame, for the ones that switch something on a press
     /// rather than while held.
     pub pressed: Vec<Button>,
@@ -50,14 +53,20 @@ pub struct State {
 
 impl State {
     /// The flight's controls held on the controller: the left stick turns, as hard as it is
-    /// pushed sideways (left, counterclockwise), Cross or R2 thrusts, and L1 is fine control.
+    /// pushed sideways (left, counterclockwise), Cross or R2 thrusts, and L2 is fine control.
     pub fn input(&self) -> Input {
         Input {
             thrust: self.south || self.r2,
             turn: f64::from(-self.stick[0]),
-            fine: self.l1,
+            fine: self.l2,
             aim: None,
         }
+    }
+
+    /// Which way the shoulder buttons zoom while held: 1 in (R1), -1 out (L1), 0 for neither
+    /// or both.
+    pub fn zoom(&self) -> f32 {
+        f32::from(i8::from(self.r1) - i8::from(self.l1))
     }
 
     /// Whether `button` was pressed since the last frame.
@@ -106,8 +115,10 @@ impl Gamepads {
                 stick: [pad.value(Axis::LeftStickX), pad.value(Axis::LeftStickY)],
                 right_stick: [pad.value(Axis::RightStickX), pad.value(Axis::RightStickY)],
                 south: pad.is_pressed(Button::South),
+                l2: pad.is_pressed(Button::LeftTrigger2),
                 r2: pad.is_pressed(Button::RightTrigger2),
                 l1: pad.is_pressed(Button::LeftTrigger),
+                r1: pad.is_pressed(Button::RightTrigger),
                 pressed: pressed
                     .iter()
                     .filter(|&&(from, _)| from == id)
@@ -203,11 +214,12 @@ mod tests {
         let state = State {
             stick: [-0.5, 0.9],
             r2: true,
+            l2: true,
             l1: true,
             ..State::default()
         };
         let input = state.input();
-        assert!(input.thrust && input.fine, "R2 thrusts, L1 is fine control");
+        assert!(input.thrust && input.fine, "R2 thrusts, L2 is fine control");
         assert_eq!(
             input.turn, 0.5,
             "left turns left, as hard as pushed; up does not count"
@@ -219,5 +231,21 @@ mod tests {
         };
         assert!(cross.input().thrust, "Cross thrusts");
         assert_eq!(cross.input().turn, -1.0, "full right");
+    }
+
+    #[test]
+    fn the_shoulder_buttons_zoom() {
+        let held = |l1, r1| State {
+            l1,
+            r1,
+            ..State::default()
+        };
+        assert_eq!(held(false, true).zoom(), 1.0, "R1 in");
+        assert_eq!(held(true, false).zoom(), -1.0, "L1 out");
+        assert_eq!(held(true, true).zoom(), 0.0, "both: neither");
+        assert!(
+            !held(true, false).input().fine,
+            "L1 is no longer fine control"
+        );
     }
 }

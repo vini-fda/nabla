@@ -114,7 +114,7 @@ cargo xtask bundle && open "target/release/Nabla.app"
 On Linux you may need:
 
 ```sh
-sudo apt-get install libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev libasound2-dev
+sudo apt-get install libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev libasound2-dev libudev-dev
 ```
 
 For a web build with [Trunk](https://trunkrs.dev/):

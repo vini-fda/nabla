@@ -10,6 +10,7 @@ pub mod camera;
 mod canvas_buttons;
 mod formula;
 mod game;
+mod gamepad;
 mod gizmo;
 pub mod grid;
 mod highlight;

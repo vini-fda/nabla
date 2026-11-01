@@ -39,6 +39,8 @@ The flight uses the same exact sampled-data model as the solutions. At each samp
 
 **Point** lets you fly with the mouse or a finger instead. Hold it on the canvas, and the ship turns toward it, the shorter way, and thrusts once it faces it within a cone, whose half-angle (10 degrees by default) is set next to the switch. A line from the ship to the pointer, between the cone's edges, turns green while it thrusts. Point works only while the camera follows the ship: then a still pointer holds a direction relative to the ship, while otherwise it would mark a fixed point the ship flies past. While it steers, the on-screen controls (joystick, thrust and fine) go, and a finger anywhere on the canvas points. Dragging the canvas points rather than turning the camera, and a touch on the buttons in the corner never points. The policy, and why it settles without ringing, is modeled in [`docs/main.typ`](../../docs/main.typ) ("Problem: pointing").
 
+A **game controller** works too, natively and in the browser (read with [gilrs](https://crates.io/crates/gilrs); a browser only lists one once a button has been pressed with the page open). The left stick turns, as hard as it is pushed sideways, Cross or R2 thrusts, L1 held is fine control, Triangle switches SAS and Options pauses. The right stick aims like **Point**: the ship turns toward where it points on screen and thrusts once it faces it within the cone. Being a direction rather than a spot, it needs neither Point nor the camera following the ship. Buttons are named as on a Sony controller; on an Xbox one, Cross is A, Triangle Y, L1 LB and R2 RT. While a controller is connected, a panel in the canvas's top left corner shows its left stick and Cross button.
+
 The plots, plumes and sound follow the flight, and a marker at the canvas's edge points to `B` while it is off screen.
 
 | Input | Effect |
@@ -49,6 +51,9 @@ The plots, plumes and sound follow the flight, and a marker at the canvas's edge
 | `P` / `R` | Pause / restart |
 | `T` | SAS on / off |
 | Hold the mouse on the canvas, with **Point** on | Turn toward the pointer, and thrust when facing it |
+| Controller: left stick / Cross or R2 / L1 held | Turn / thrust / fine control |
+| Controller: right stick | Aim, as **Point** |
+| Controller: Triangle / Options | SAS on / off, pause / resume |
 | `F` | Follow the ship / stop following |
 
 On phones and tablets (and once a touch screen is used), controls appear over the canvas. In the bottom left corner, a joystick turns the ship: push it sideways, and the further it goes the harder it turns (left counterclockwise, right clockwise), with a small dead zone in the middle. It follows the finger that took it until that finger lifts, even off its base. In the bottom right, a thrust pad is held while a finger is on it, and a **fine** latch above it turns on or off with a tap. So one thumb steers while the other thrusts.

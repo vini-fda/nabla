@@ -15,6 +15,7 @@ use nabla_solutions::registry::StoredSolution;
 
 use crate::camera::{Camera, Vec3};
 use crate::canvas_buttons::{self, Button};
+use crate::controller_view;
 use crate::formula::{self, Formula};
 use crate::game::{self, Aim, Game, Input, Steering};
 use crate::gamepad::{self, Gamepads};
@@ -253,6 +254,8 @@ pub struct ViewerApp {
     sound: Sound,
     /// Game controllers, read every frame.
     gamepads: Gamepads,
+    /// Show the controller's wireframe, lit by its state, under the flight.
+    show_controller: bool,
     database: Vec<(Entry, &'static StoredSolution, PathBuf)>,
     cases: Vec<CaseEntry>,
     replay: Option<Replay>,
@@ -316,6 +319,7 @@ impl Default for ViewerApp {
             runner: Runner::default(),
             sound: Sound::default(),
             gamepads: Gamepads::default(),
+            show_controller: false,
             database: Vec::new(),
             cases: Vec::new(),
             replay: None,
@@ -603,7 +607,8 @@ impl ViewerApp {
     }
 
     /// The controller's switches in gameplay mode, on a press: Triangle turns the stability
-    /// assist on or off (as T), and Options pauses or resumes (as P).
+    /// assist on or off (as T), Options pauses or resumes (as P), and Create shows or hides the
+    /// controller view.
     fn handle_controller_buttons(&mut self) {
         let (Some(game), Some(pad)) = (&mut self.game, self.gamepads.state()) else {
             return;
@@ -613,6 +618,9 @@ impl ViewerApp {
         }
         if pad.just_pressed(gamepad::Button::Start) {
             game.paused = !game.paused;
+        }
+        if pad.just_pressed(gamepad::Button::Select) {
+            self.show_controller = !self.show_controller;
         }
     }
 
@@ -1019,6 +1027,11 @@ impl ViewerApp {
         );
         ui.checkbox(&mut self.show_grid, "Grid");
         ui.checkbox(&mut self.show_path, "Path (grey: full, blue: so far)");
+        ui.checkbox(&mut self.show_controller, "Controller view, while flying")
+            .on_hover_text(
+                "A wireframe of the game controller under the flight, lit as you use it. \
+                 The controller's Create button shows or hides it too",
+            );
         ui.add_enabled_ui(!self.debug_view(), |ui| {
             ui.checkbox(&mut self.show_plume, "Thruster plumes");
         });
@@ -1103,6 +1116,11 @@ impl ViewerApp {
                 ui,
                 |ui| caps(ui, &[Key::Word("Options")]),
                 |ui| ui.label("Pause / resume"),
+            );
+            input_row(
+                ui,
+                |ui| caps(ui, &[Key::Word("Create")]),
+                |ui| ui.label("Show / hide the controller view"),
             );
         });
     }
@@ -1730,12 +1748,6 @@ impl ViewerApp {
             ],
         );
         self.set_flying(fly);
-        // The controller's stick and Cross button, in the top left corner, clear of a collapsed
-        // side panel's triangle.
-        if let Some(state) = self.gamepads.state() {
-            let pos = rect.left_top() + egui::vec2(TITLE_BAR_WIDTH + 8.0, 8.0);
-            gamepad::readout_ui(ui.ctx(), pos, state);
-        }
         self.reserved = std::iter::once(buttons)
             .chain(ViewGizmo::area(corner).filter(|_| self.show_gizmo))
             .collect();
@@ -2049,6 +2061,10 @@ impl ViewerApp {
             .filter(|r| r.case.name == game.replay.case.name)
             .and_then(|r| Some((r.solution.as_str(), r.outcome().steps()?)));
         game_banner(painter, rect, game, policy);
+        if self.show_controller {
+            let panel = controller_view::panel_rect(rect);
+            controller_view::paint(painter, panel, self.gamepads.state());
+        }
     }
 
     /// Where the player points, from the ship in state `s`: a line to the `pointer`, which

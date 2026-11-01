@@ -1,33 +1,44 @@
 //! Game controllers (a PS5 or an Xbox controller, ...), which egui doesn't read: read with
 //! gilrs, natively from the system's HID devices and in the browser through its Gamepad API.
 //!
-//! This reads the first connected controller every frame: its sticks and the buttons the flight
-//! uses, as [`State`], which [`State::input`] turns into the flight's controls. The left stick
-//! and the bottom face button also show over the canvas, in [`readout_ui`]. Buttons are named
-//! as on a Sony controller; on an Xbox one, Cross is A, Triangle Y, L1 and R1 LB and RB, and
-//! L2 and R2 LT and RT. A browser
-//! only lists a controller once one of its buttons has been pressed with the page open.
+//! This reads the first connected controller every frame, as [`State`]: its sticks, its
+//! triggers' depth and the buttons held, which [`State::input`] turns into the flight's
+//! controls; `controller_view` draws them. Buttons are named as on a Sony controller; on an
+//! Xbox one, Cross is A, Circle B, Square X, Triangle Y, L1 and R1 LB and RB, L2 and R2 LT and
+//! RT, Create View and Options Menu. A browser only lists a controller once one of its buttons
+//! has been pressed with the page open.
 
 use std::time::Duration;
 
-use egui::{Color32, Pos2, Stroke, Vec2};
 pub use gilrs::Button;
 use gilrs::{Axis, Event, EventType, Gilrs};
 
 use crate::game::Input;
-use crate::theme::palette;
 
 /// How often to look for a controller while none is connected. While one is, every frame: its
 /// events don't wake egui up the way the mouse's and the keyboard's do.
 const SEARCH_INTERVAL: Duration = Duration::from_millis(250);
 
-/// Radius of the stick's well in the readout, and of the dot showing where the stick is.
-const STICK_RADIUS: f32 = 28.0;
-const STICK_DOT_RADIUS: f32 = 5.0;
-/// Radius of the button's light in the readout.
-const BUTTON_RADIUS: f32 = 9.0;
-const STICK_COLOR: Color32 = palette::SAPPHIRE;
-const PRESSED_COLOR: Color32 = palette::GREEN;
+/// The buttons read as held: every one the controller view shows.
+const BUTTONS: [Button; 17] = [
+    Button::South,
+    Button::East,
+    Button::West,
+    Button::North,
+    Button::LeftTrigger,
+    Button::RightTrigger,
+    Button::LeftTrigger2,
+    Button::RightTrigger2,
+    Button::Select,
+    Button::Start,
+    Button::Mode,
+    Button::LeftThumb,
+    Button::RightThumb,
+    Button::DPadUp,
+    Button::DPadDown,
+    Button::DPadLeft,
+    Button::DPadRight,
+];
 
 /// A controller's state, as read this frame.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -38,14 +49,10 @@ pub struct State {
     pub stick: [f32; 2],
     /// The right stick, the same way.
     pub right_stick: [f32; 2],
-    /// The bottom face button: Cross on a Sony controller, A on an Xbox one.
-    pub south: bool,
-    /// The triggers, pressed past their threshold.
-    pub l2: bool,
-    pub r2: bool,
-    /// The shoulder buttons.
-    pub l1: bool,
-    pub r1: bool,
+    /// How far L2 and R2 are pulled, from 0 to 1.
+    pub triggers: [f32; 2],
+    /// The buttons held, the triggers once pulled past their threshold.
+    pub held: Vec<Button>,
     /// The buttons pressed since the last frame, for the ones that switch something on a press
     /// rather than while held.
     pub pressed: Vec<Button>,
@@ -56,9 +63,9 @@ impl State {
     /// pushed sideways (left, counterclockwise), Cross or R2 thrusts, and L2 is fine control.
     pub fn input(&self) -> Input {
         Input {
-            thrust: self.south || self.r2,
+            thrust: self.is_held(Button::South) || self.is_held(Button::RightTrigger2),
             turn: f64::from(-self.stick[0]),
-            fine: self.l2,
+            fine: self.is_held(Button::LeftTrigger2),
             aim: None,
         }
     }
@@ -66,7 +73,13 @@ impl State {
     /// Which way the shoulder buttons zoom while held: 1 in (R1), -1 out (L1), 0 for neither
     /// or both.
     pub fn zoom(&self) -> f32 {
-        f32::from(i8::from(self.r1) - i8::from(self.l1))
+        let held = |button| f32::from(u8::from(self.is_held(button)));
+        held(Button::RightTrigger) - held(Button::LeftTrigger)
+    }
+
+    /// Whether `button` is held.
+    pub fn is_held(&self, button: Button) -> bool {
+        self.held.contains(&button)
     }
 
     /// Whether `button` was pressed since the last frame.
@@ -110,20 +123,23 @@ impl Gamepads {
         self.state = gilrs
             .gamepads()
             .find(|(_, pad)| pad.is_connected())
-            .map(|(id, pad)| State {
-                name: pad.name().to_owned(),
-                stick: [pad.value(Axis::LeftStickX), pad.value(Axis::LeftStickY)],
-                right_stick: [pad.value(Axis::RightStickX), pad.value(Axis::RightStickY)],
-                south: pad.is_pressed(Button::South),
-                l2: pad.is_pressed(Button::LeftTrigger2),
-                r2: pad.is_pressed(Button::RightTrigger2),
-                l1: pad.is_pressed(Button::LeftTrigger),
-                r1: pad.is_pressed(Button::RightTrigger),
-                pressed: pressed
-                    .iter()
-                    .filter(|&&(from, _)| from == id)
-                    .map(|&(_, button)| button)
-                    .collect(),
+            .map(|(id, pad)| {
+                let depth = |button| pad.button_data(button).map_or(0.0, |d| d.value());
+                State {
+                    name: pad.name().to_owned(),
+                    stick: [pad.value(Axis::LeftStickX), pad.value(Axis::LeftStickY)],
+                    right_stick: [pad.value(Axis::RightStickX), pad.value(Axis::RightStickY)],
+                    triggers: [depth(Button::LeftTrigger2), depth(Button::RightTrigger2)],
+                    held: BUTTONS
+                        .into_iter()
+                        .filter(|&button| pad.is_pressed(button))
+                        .collect(),
+                    pressed: pressed
+                        .iter()
+                        .filter(|&&(from, _)| from == id)
+                        .map(|&(_, button)| button)
+                        .collect(),
+                }
             });
         if self.state.is_some() {
             ctx.request_repaint();
@@ -138,114 +154,42 @@ impl Gamepads {
     }
 }
 
-/// Shows `state` in a small panel at `pos`: the controller's name, its left stick as a dot in a
-/// well, with the axes' values, and whether its Cross button is pressed.
-pub fn readout_ui(ctx: &egui::Context, pos: Pos2, state: &State) {
-    egui::Area::new(egui::Id::unique("gamepad_readout"))
-        .order(egui::Order::Foreground)
-        .fixed_pos(pos)
-        .interactable(false)
-        .show(ctx, |ui| {
-            egui::Frame::popup(ui.style()).show(ui, |ui| {
-                ui.label(
-                    egui::RichText::new(&state.name)
-                        .small()
-                        .color(palette::OVERLAY1),
-                );
-                ui.horizontal(|ui| {
-                    stick_ui(ui, state.stick);
-                    ui.vertical(|ui| {
-                        let [x, y] = state.stick;
-                        ui.monospace(format!("x = {x:+.3}"));
-                        ui.monospace(format!("y = {y:+.3}"));
-                        ui.horizontal(|ui| {
-                            button_ui(ui, state.south);
-                            ui.label(if state.south {
-                                "Cross: pressed"
-                            } else {
-                                "Cross: released"
-                            });
-                        });
-                    });
-                });
-            });
-        });
-}
-
-/// The stick at `[x, y]` as a dot in a round well, with crosshairs at its center.
-fn stick_ui(ui: &mut egui::Ui, [x, y]: [f32; 2]) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::splat(2.0 * STICK_RADIUS), egui::Sense::hover());
-    let painter = ui.painter();
-    let center = rect.center();
-    let faint = Stroke::new(1.0, palette::OVERLAY0);
-    painter.circle(center, STICK_RADIUS, palette::SURFACE1, faint);
-    painter.hline(rect.x_range(), center.y, faint);
-    painter.vline(center.x, rect.y_range(), faint);
-    // Screen y points down; the stick's y up.
-    let offset = Vec2::new(x, -y) * (STICK_RADIUS - STICK_DOT_RADIUS);
-    painter.circle_filled(center + offset, STICK_DOT_RADIUS, STICK_COLOR);
-}
-
-/// A light, filled while the button is `pressed`.
-fn button_ui(ui: &mut egui::Ui, pressed: bool) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::splat(2.0 * BUTTON_RADIUS), egui::Sense::hover());
-    let painter = ui.painter();
-    let (fill, stroke) = if pressed {
-        (PRESSED_COLOR, PRESSED_COLOR)
-    } else {
-        (Color32::TRANSPARENT, palette::OVERLAY1)
-    };
-    painter.circle(
-        rect.center(),
-        BUTTON_RADIUS - 1.0,
-        fill,
-        Stroke::new(1.5, stroke),
-    );
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// A controller with `held` held and the left stick at `stick`.
+    fn holding(held: &[Button], stick: [f32; 2]) -> State {
+        State {
+            stick,
+            held: held.to_vec(),
+            ..State::default()
+        }
+    }
+
     #[test]
     fn the_controller_flies_as_the_keyboard_and_the_joystick_do() {
-        let idle = State::default().input();
-        assert_eq!(idle, Input::default(), "nothing held");
-        let state = State {
-            stick: [-0.5, 0.9],
-            r2: true,
-            l2: true,
-            l1: true,
-            ..State::default()
-        };
-        let input = state.input();
+        assert_eq!(State::default().input(), Input::default(), "nothing held");
+        let input = holding(&[Button::RightTrigger2, Button::LeftTrigger2], [-0.5, 0.9]).input();
         assert!(input.thrust && input.fine, "R2 thrusts, L2 is fine control");
         assert_eq!(
             input.turn, 0.5,
             "left turns left, as hard as pushed; up does not count"
         );
-        let cross = State {
-            south: true,
-            stick: [1.0, 0.0],
-            ..State::default()
-        };
-        assert!(cross.input().thrust, "Cross thrusts");
-        assert_eq!(cross.input().turn, -1.0, "full right");
+        let cross = holding(&[Button::South], [1.0, 0.0]).input();
+        assert!(cross.thrust, "Cross thrusts");
+        assert_eq!(cross.turn, -1.0, "full right");
     }
 
     #[test]
     fn the_shoulder_buttons_zoom() {
-        let held = |l1, r1| State {
-            l1,
-            r1,
-            ..State::default()
-        };
-        assert_eq!(held(false, true).zoom(), 1.0, "R1 in");
-        assert_eq!(held(true, false).zoom(), -1.0, "L1 out");
-        assert_eq!(held(true, true).zoom(), 0.0, "both: neither");
+        let (l1, r1) = (Button::LeftTrigger, Button::RightTrigger);
+        assert_eq!(holding(&[r1], [0.0; 2]).zoom(), 1.0, "R1 in");
+        assert_eq!(holding(&[l1], [0.0; 2]).zoom(), -1.0, "L1 out");
+        assert_eq!(holding(&[l1, r1], [0.0; 2]).zoom(), 0.0, "both: neither");
         assert!(
-            !held(true, false).input().fine,
-            "L1 is no longer fine control"
+            !holding(&[l1], [0.0; 2]).input().fine,
+            "L1 is not fine control"
         );
     }
 }

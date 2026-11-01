@@ -1663,7 +1663,7 @@ dependencies = [
 
 [[package]]
 name = "nabla"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "cpal",
  "eframe",
@@ -1689,18 +1689,18 @@ dependencies = [
 
 [[package]]
 name = "nabla-core"
-version = "0.14.0"
+version = "0.15.0"
 
 [[package]]
 name = "nabla-optimization"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "nabla-core",
 ]
 
 [[package]]
 name = "nabla-solutions"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "nabla-core",
  "nabla-optimization",
@@ -1708,7 +1708,7 @@ dependencies = [
 
 [[package]]
 name = "nabla-synth"
-version = "0.14.0"
+version = "0.15.0"
 
 [[package]]
 name = "naga"

@@ -1,5 +1,7 @@
 //! Orbit commands: preview edits never change an engaged target until confirmed.
 
+use log::Level;
+
 use super::{RightView, Vec3, ViewerApp, input_row, palette, world};
 use crate::controller_guide::{self, Icon};
 use crate::formula::{self, Formula};
@@ -7,6 +9,7 @@ use crate::game::Objective;
 use crate::gamepad::{Button, State};
 use crate::keys;
 use crate::orbit::{self, Phase, Prediction, Target};
+use crate::span::span;
 use crate::theme::icons::outline;
 
 #[derive(Default)]
@@ -396,6 +399,7 @@ impl ViewerApp {
         {
             return;
         }
+        let _span = span!(Level::Trace, "forecast");
         let path = if self.assisted() {
             self.game.prediction()
         } else {

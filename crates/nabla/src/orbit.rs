@@ -1,10 +1,12 @@
 //! Circular-orbit capture with bounded thrust/attitude feedback and a finite prediction.
 //! This is a practical flight assist, not a global feasibility or stability certificate.
 
+use log::Level;
 use nabla_core::{Control, Params, State};
 
 use crate::game::{hold_torque, wrap};
 use crate::physics::{Physics, gravity_acceleration};
+use crate::span::span;
 use crate::world::World;
 
 pub const MAX_ALTITUDE: f64 = 100_000.0;
@@ -228,6 +230,7 @@ pub fn forecast_steps(h: f64) -> usize {
 
 /// Run a copy of the controller, including its coast/hold state, on a separate physics plant.
 pub fn forecast(world: &World, mut state: State, mut pilot: Pilot) -> Vec<[f64; 2]> {
+    let _span = span!(Level::Trace, "orbit forecast");
     if pilot.target.validate_input(world).is_err() || !clear(world, &state) {
         return Vec::new();
     }
@@ -263,6 +266,12 @@ pub fn clear(world: &World, s: &State) -> bool {
 
 /// Bound both the duration and work. Reject unsafe substeps and captures that do not settle.
 pub fn predict(world: &World, state: State, target: Target) -> Result<Prediction, String> {
+    let _span = span!(
+        Level::Debug,
+        "orbit capture check, body {}, altitude {:.1}",
+        target.body,
+        target.altitude
+    );
     target.validate(world)?;
     if !clear(world, &state) {
         return Err("Too close to a body to capture an orbit".to_owned());

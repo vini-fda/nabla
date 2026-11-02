@@ -1,8 +1,11 @@
 //! Portable, versioned TOML saves. Runtime physics resources are rebuilt on load.
 
+use log::Level;
 use nabla_core::problem::Case;
 use nabla_core::{State, Task};
 use serde::{Deserialize, Serialize};
+
+use crate::span::span;
 
 pub const MAX_SAVE_BYTES: usize = 1024 * 1024;
 pub const MAX_GRAVITY_CONSTANT: f64 = 1e4;
@@ -101,6 +104,7 @@ impl World {
     /// # Errors
     /// Rejects malformed, unsupported, oversized or physically invalid saves.
     pub fn from_toml(source: &str) -> Result<Self, String> {
+        let _span = span!(Level::Debug, "parsing a world, {} bytes", source.len());
         if source.len() > MAX_SAVE_BYTES {
             return Err("World saves must be at most 1 MiB".to_owned());
         }

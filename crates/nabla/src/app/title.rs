@@ -16,6 +16,7 @@ use crate::game::Steering;
 use crate::gamepad;
 use crate::keys;
 use crate::theme::{self, icons, palette};
+use crate::version::build_version;
 
 /// Largest the title gets, in points, with room to spare.
 const TITLE_SIZE: f32 = 112.0;
@@ -458,7 +459,13 @@ impl ViewerApp {
     fn help_page_ui(&mut self, ui: &mut egui::Ui) {
         use keys::{ENTER, caps, joiner};
 
-        page_heading(ui, icons::outline::QUESTION, "Help");
+        ui.horizontal(|ui| {
+            page_heading(ui, icons::outline::QUESTION, "Help");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.weak(concat!("Nabla ", build_version!()));
+            });
+        });
+        ui.add_space(4.0);
         input_group(ui, "Title screen", |ui| {
             input_row(
                 ui,

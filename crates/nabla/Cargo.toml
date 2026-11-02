@@ -38,6 +38,8 @@ rapier2d = { version = "0.36.1", features = ["enhanced-determinism"] }
 rfd = "0.17.2"
 serde = { version = "1.0", features = ["derive"] }
 toml = "1.1.8"
+# `std::time::Instant` on the web too, where the standard one panics (src/span.rs).
+web-time = "1.1.0"
 
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -67,6 +69,7 @@ features = [
   "BaseAudioContext",
   "Gamepad",
   "GamepadButton",
+  "Location",
   "MessagePort",
   "Navigator",
   "Response",

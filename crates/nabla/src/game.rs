@@ -31,13 +31,16 @@ use std::f64::consts::TAU;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use egui::{Color32, Pos2, Rect, Sense, Vec2, pos2, vec2};
+use log::Level;
 use nabla_core::problem::{Case, Outcome, Trajectory};
 use nabla_core::solutions::StoredSolution;
 use nabla_core::{Control, Controller, Params, State, Task, step};
+use web_time::Instant;
 
 use crate::orbit::{self, Pilot, Prediction, Target};
 use crate::physics::Physics;
 use crate::replay::Replay;
+use crate::span::span;
 use crate::theme::{icons, palette};
 use crate::world::World;
 
@@ -156,12 +159,26 @@ impl Autopilot {
             controller
         } else {
             self.k = 0;
+            let _span = span!(Level::Debug, "{}: new controller", solution.name);
             catch_unwind(|| (solution.controller)(task))
                 .map_err(|_panic| format!("{} panicked starting up", solution.name))?
         };
         let controller = self.controller.insert(controller);
         let k = self.k;
-        let u = catch_unwind(AssertUnwindSafe(|| controller.control(k, s)));
+        let started = Instant::now();
+        let u = {
+            let _span = span!(Level::Trace, "{}: control at step {k}", solution.name);
+            catch_unwind(AssertUnwindSafe(|| controller.control(k, s)))
+        };
+        let took = started.elapsed().as_secs_f64();
+        if took > task.params.h {
+            log::debug!(
+                "{}: control at step {k} took {:.1} ms, over the {:.0} ms sampling period",
+                solution.name,
+                took * 1e3,
+                task.params.h * 1e3
+            );
+        }
         let u = u.map_err(|_panic| format!("{} panicked at its step {k}", solution.name))?;
         if !u.is_admissible(&task.params) {
             return Err(format!(
@@ -284,6 +301,7 @@ impl Game {
         }
         if self.objective != objective {
             self.disengage();
+            log::info!("Objective: {}", objective.label());
             self.objective = objective;
             self.landed = None;
             self.manual |= self.time > 0.0;
@@ -308,6 +326,11 @@ impl Game {
             }
         };
         self.select_objective(objective)?;
+        log::info!(
+            "Autopilot engaged: {}, policy {}",
+            objective.label(),
+            solution.name
+        );
         self.autopilot = Some(controller);
         self.fault = None;
         self.hold = None;
@@ -318,7 +341,9 @@ impl Game {
     }
 
     pub fn disengage(&mut self) {
-        self.autopilot = None;
+        if self.autopilot.take().is_some() {
+            log::info!("Autopilot off");
+        }
         self.hold = None;
     }
 
@@ -402,6 +427,7 @@ impl Game {
         if self.paused {
             return;
         }
+        let _span = span!(Level::Trace, "advance, t = {:.3} s + {dt:.3} s", self.time);
         self.time += dt.clamp(0.0, MAX_FRAME_TIME);
         let h = self.replay.h();
         let task = self.replay.case.task;
@@ -411,6 +437,7 @@ impl Game {
             let s = self.replay.trajectory.states[k];
             if self.objective == Objective::ReachB && self.landed.is_none() && task.reached(&s) {
                 self.landed = Some(k);
+                log::info!("Landed at step {k}");
             }
             let piloted = self.autopilot_control(&task, &s);
             if piloted.is_none() && self.landed.is_none() {

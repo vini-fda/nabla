@@ -3,10 +3,13 @@
 //! the control policies.
 
 use egui_plot::{AxisHints, GridInput, GridMark, Legend, Line, Plot, PlotPoint, VLine};
+use log::Level;
 use nabla_core::State;
 use nabla_core::problem::{Case, Outcome};
 use nabla_core::solutions::{SOLUTIONS, StoredSolution};
 use nabla_core::suite;
+
+use web_time::Instant;
 
 use crate::camera::{Camera, Vec3};
 use crate::canvas_buttons::{self, Button};
@@ -22,7 +25,9 @@ use crate::plume::Plume;
 use crate::replay::{Replay, Series};
 use crate::ship3d::{self, DepthMap, SHIP_GLB, ShipModel, ShipRenderer};
 use crate::sound::Sound;
+use crate::span::span;
 use crate::theme::{self, icons, palette};
+use crate::version::build_version;
 
 mod orbits;
 mod title;
@@ -122,6 +127,12 @@ const START_RADIUS_PX: f32 = 5.0;
 
 /// Size of the icon that shows whether a controller is connected, in points.
 const CONTROLLER_STATUS_SIZE: f32 = 20.0;
+
+/// A frame longer than this, in seconds, is logged as slow: the flight falls behind real time, as
+/// the game simulates no more than this at once.
+const SLOW_FRAME: f64 = 0.1;
+/// Slow frames are logged at most once this often, in seconds, not to add to the slowness.
+const SLOW_FRAME_LOG_PERIOD: f64 = 1.0;
 /// Below this width (in points), e.g. on phones, the panels are shown one at a time.
 const COMPACT_WIDTH: f32 = 800.0;
 
@@ -257,6 +268,8 @@ pub struct ViewerApp {
     follow_ship: bool,
     /// Show the keyboard and mouse help over the canvas.
     show_help: bool,
+    /// When the last slow frame was logged, in the UI's time.
+    slow_frame_logged_at: f64,
     /// The flight on the selected case.
     game: Game,
     /// What letting go of the turn does: kept from flight to flight.
@@ -347,6 +360,7 @@ impl Default for ViewerApp {
             show_plume: true,
             follow_ship: true,
             show_help: false,
+            slow_frame_logged_at: f64::NEG_INFINITY,
             policy_outcome: (policy.simulate)(&case).outcome,
             game: Game::new(case.clone()),
             steering: Steering::default(),
@@ -384,6 +398,8 @@ impl Default for ViewerApp {
 impl ViewerApp {
     /// Called once before the first frame: a flight on the default case.
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        log::info!("Nabla {}", build_version!());
+        let _span = span!(Level::Debug, "app setup");
         theme::apply(&cc.egui_ctx);
         egui_extras::install_image_loaders(&cc.egui_ctx);
 
@@ -392,6 +408,7 @@ impl ViewerApp {
             .as_ref()
             .ok_or_else(|| "not running on wgpu".to_owned())
             .and_then(|render_state| {
+                let _span = span!(Level::Debug, "3D view setup");
                 let model = ShipModel::load(SHIP_GLB)?;
                 // egui's render pass, into which the ship is drawn: see `MULTISAMPLING`.
                 let samples = if cfg!(target_arch = "wasm32") {
@@ -423,7 +440,9 @@ impl ViewerApp {
 
     /// Score the policy on the starting conditions, for comparison with the flight.
     fn score_policy(&mut self) {
+        let _span = span!(Level::Debug, "scoring {}", self.policy.name);
         self.policy_outcome = (self.policy.simulate)(&self.selected_case()).outcome;
+        log::debug!("{}: {:?}", self.policy.name, self.policy_outcome);
     }
 
     /// The flight, and its present as `(k, tau)`.
@@ -440,6 +459,7 @@ impl ViewerApp {
 
     /// Start a flight on the starting conditions, from their start, following the ship.
     fn start_game(&mut self) {
+        let _span = span!(Level::Debug, "starting a flight");
         let restarting = self.screen == Screen::Flight;
         let previous = self.game.objective();
         let engage = if restarting {
@@ -448,6 +468,7 @@ impl ViewerApp {
             self.autopilot_on_start
         };
         self.game = Game::in_world(self.selected_case(), self.selected_world());
+        log::info!("Flight started in {}", self.game.world.name);
         self.reset_orbit_controls();
         if restarting && previous == Objective::ReachB {
             self.choose_objective(Objective::ReachB);
@@ -548,6 +569,15 @@ impl ViewerApp {
         if view {
             self.toggle_controller_guide();
         }
+    }
+
+    /// Whether a frame that `took` seconds, at the UI's time `now`, is one to log as slow.
+    fn slow_frame_to_log(&mut self, took: f64, now: f64) -> bool {
+        let log = took > SLOW_FRAME && now - self.slow_frame_logged_at >= SLOW_FRAME_LOG_PERIOD;
+        if log {
+            self.slow_frame_logged_at = now;
+        }
+        log
     }
 
     /// Shows or hides the User inputs window, opening on the controller's tab.
@@ -1178,6 +1208,7 @@ impl ViewerApp {
 
     /// The plots of the flight so far, which grows every frame.
     fn plots_ui(&self, ui: &mut egui::Ui) {
+        let _span = span!(Level::Trace, "plots");
         let plots = Plots::new(&self.game.replay);
         let t = self.game.time();
         ui.heading("State plots");
@@ -1240,6 +1271,7 @@ impl ViewerApp {
     /// side panel's floating triangle: the gizmo and the buttons in the top right corner
     /// move left of it.
     fn canvas_ui(&mut self, ui: &mut egui::Ui, inset: f32) {
+        let _span = span!(Level::Trace, "canvas");
         let (rect, response) =
             ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
         // Where the gizmo and the buttons go, in its top right corner.
@@ -1928,14 +1960,18 @@ impl ViewerApp {
 impl eframe::App for ViewerApp {
     /// Called each time the UI needs repainting, which may be many times per second.
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let started = Instant::now();
+        let _span = span!(Level::Trace, "frame");
         self.poll_world_file();
         self.notifications.tick(ui.input(|i| i.time));
         match self.gamepads.poll(ui.ctx()) {
             Some(gamepad::Connection::Connected(name)) => {
+                log::info!("{name} connected");
                 self.notifications
                     .post(format!("{name} connected"), palette::GREEN);
             }
             Some(gamepad::Connection::Disconnected(name)) => {
+                log::info!("{name} disconnected");
                 self.notifications
                     .post(format!("{name} disconnected"), palette::YELLOW);
             }
@@ -1955,6 +1991,16 @@ impl eframe::App for ViewerApp {
             (self.screen == Screen::Flight && !game.paused).then(|| (&game.replay, game.time()));
         let levels = heard.map(|(r, t)| (r.thrust_fraction(t) as f32, r.torque_fraction(t) as f32));
         self.sound.update(&ctx, levels);
+
+        let took = started.elapsed().as_secs_f64();
+        if self.slow_frame_to_log(took, ctx.input(|i| i.time)) {
+            log::warn!(
+                "Slow frame: {:.0} ms, {:?}, policy {}",
+                took * 1e3,
+                self.screen,
+                self.policy.name
+            );
+        }
     }
 }
 
@@ -2559,6 +2605,15 @@ fn time_plot(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn slow_frames_are_logged_at_most_once_a_period() {
+        let mut app = ViewerApp::default();
+        assert!(!app.slow_frame_to_log(SLOW_FRAME, 0.0), "not slow");
+        assert!(app.slow_frame_to_log(2.0 * SLOW_FRAME, 0.0));
+        assert!(!app.slow_frame_to_log(2.0 * SLOW_FRAME, 0.5), "too soon");
+        assert!(app.slow_frame_to_log(2.0 * SLOW_FRAME, SLOW_FRAME_LOG_PERIOD));
+    }
 
     #[test]
     fn create_shows_the_controller_guide_whatever_tab_was_picked() {

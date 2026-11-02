@@ -149,6 +149,20 @@ The `#dev` suffix skips the service worker, which otherwise caches the app for o
 
 Every push to `main` deploys the web build to GitHub Pages (`.github/workflows/pages.yml` at the repository root).
 
+## Logging
+
+Natively, the app logs to stderr, by default its warnings and what happens in a session. `RUST_LOG` says what else, as in:
+
+```sh
+RUST_LOG=nabla=debug cargo nabla                  # also the occasional costly operations
+RUST_LOG=nabla=trace cargo nabla                  # also those of every frame and sample
+RUST_LOG=warn,nabla::game=trace cargo nabla       # one module only
+```
+
+On the web, the page's address says it, as in `?log=debug`, and the log is in the browser's console.
+
+Costly operations log their start and their end, with how long they took: `let _span = span!(Level::Debug, "...");` (`src/span.rs`). Frames over 100 ms are logged as warnings, at most once a second, and with `debug`, so is any control sample over the sampling period.
+
 ## Development
 
 See the repository root: `cargo xtask check` runs the same checks as CI, plus the web build, and `.githooks/pre-commit` runs the format and lint checks before each commit (enable it with `git config core.hooksPath .githooks`).

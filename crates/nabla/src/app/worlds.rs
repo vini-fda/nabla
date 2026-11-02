@@ -119,13 +119,17 @@ impl ViewerApp {
         self.world_file = None;
         match result {
             Ok(Some(world)) => {
+                log::info!("World loaded: {}", world.name);
                 self.select_world(world);
                 self.custom_world = true;
                 self.screen = Screen::Title;
                 self.title_page = TitlePage::Start;
             }
             Ok(None) => self.world_error = None,
-            Err(error) => self.world_error = Some(error),
+            Err(error) => {
+                log::warn!("World file: {error}");
+                self.world_error = Some(error);
+            }
         }
     }
 }

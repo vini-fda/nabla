@@ -1,10 +1,12 @@
 //! Fixed-substep Rapier collisions and Newtonian gravity acting only on the player.
 
+use log::Level;
 use nabla_core::{Control, State};
 use rapier2d::prelude::{
     ColliderBuilder, MassProperties, PhysicsWorld, RigidBodyBuilder, RigidBodyHandle, Vector,
 };
 
+use crate::span::span;
 use crate::world::{CelestialBody, World};
 
 /// Sum G M (body - player) / r^3. Inside a body, use a uniform solid sphere's field,
@@ -41,6 +43,7 @@ pub struct Physics {
 
 impl Physics {
     pub fn new(save: &World) -> Self {
+        let _span = span!(Level::Debug, "physics of {} bodies", save.bodies.len());
         let mut world = PhysicsWorld {
             gravity: Vector::ZERO,
             ..PhysicsWorld::default()
@@ -86,6 +89,7 @@ impl Physics {
 
     /// One control period, recording substeps for rendering through collisions.
     pub fn step(&mut self, h: f64, u: Control) -> Vec<State> {
+        let _span = span!(Level::Trace, "physics step");
         let count = (h * 120.0).ceil() as usize;
         let dt = (h / count as f64) as f32;
         self.world.integration_parameters.dt = dt;

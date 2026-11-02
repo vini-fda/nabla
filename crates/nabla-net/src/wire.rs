@@ -17,6 +17,10 @@ pub const PROTOCOL: u16 = 1;
 /// The most a stream frame may hold: a world file is at most 1 MiB, and a `Lobby` holds one.
 pub const MAX_STREAM_FRAME: usize = 1024 * 1024 + 4096;
 
+/// The most a client's stream frame may hold: `Hello`, `Join` and `Leave` are far smaller. The
+/// server's glue refuses longer frames before it reads them.
+pub const MAX_CLIENT_FRAME: usize = 4096;
+
 /// The most commands a `Commands` datagram may carry: `K` is far below it.
 pub const MAX_COMMANDS: usize = 32;
 

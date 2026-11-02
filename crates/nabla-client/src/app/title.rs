@@ -57,6 +57,8 @@ pub(super) enum Screen {
     #[default]
     Title,
     Flight,
+    /// Connected to a server: connecting, the lobby, and the flight among other pilots.
+    Online,
 }
 
 /// What the title screen shows below its buttons.
@@ -66,6 +68,8 @@ pub(super) enum TitlePage {
     Start,
     Settings,
     Help,
+    /// The address of a server to fly on.
+    Online,
 }
 
 impl ViewerApp {
@@ -124,6 +128,7 @@ impl ViewerApp {
                             ui.set_width(ui.available_width());
                             match self.title_page {
                                 TitlePage::Start => self.setup_ui(ui),
+                                TitlePage::Online => self.online_page_ui(ui),
                                 TitlePage::Settings => self.settings_ui(ui),
                                 TitlePage::Help => self.help_page_ui(ui),
                             }
@@ -204,7 +209,7 @@ impl ViewerApp {
     fn title_buttons(&mut self, ui: &mut egui::Ui, width: f32) -> bool {
         ui.horizontal(|ui| {
             let spacing = ui.spacing().item_spacing.x;
-            let size = egui::vec2((width - 2.0 * spacing) / 3.0, BUTTON_HEIGHT);
+            let size = egui::vec2((width - 3.0 * spacing) / 4.0, BUTTON_HEIGHT);
             let play_text = icon_text(
                 icons::PLAY,
                 egui::FontId::proportional(BUTTON_TEXT_SIZE),
@@ -223,6 +228,7 @@ impl ViewerApp {
                 })
                 .clicked();
             for (page, icon, label) in [
+                (TitlePage::Online, icons::outline::PLANET, "Online"),
                 (TitlePage::Settings, icons::outline::GEAR_SIX, "Settings"),
                 (TitlePage::Help, icons::outline::QUESTION, "Help"),
             ] {
@@ -244,6 +250,33 @@ impl ViewerApp {
             play
         })
         .inner
+    }
+
+    /// The address of a server, and the button to fly on it.
+    fn online_page_ui(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Fly online");
+        ui.label(
+            "Fly in a world shared with other pilots. The server's address is its https address \
+             and, if its certificate is its own, the certificate's hash after a #.",
+        );
+        ui.add_space(4.0);
+        let address = ui.add(
+            egui::TextEdit::singleline(&mut self.server_address)
+                .hint_text("https://host:4433#sha256=...")
+                .desired_width(f32::INFINITY)
+                .font(egui::TextStyle::Monospace),
+        );
+        let connect = ui
+            .add(egui::Button::new("Connect").fill(palette::GREEN))
+            .clicked()
+            || (address.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+        if let Some(why) = &self.online_error {
+            ui.colored_label(palette::RED, why);
+        }
+        if connect {
+            let ctx = ui.ctx().clone();
+            self.connect_online(&ctx);
+        }
     }
 
     /// The starting conditions: a preset to start from, random ones, the start and goal to

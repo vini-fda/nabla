@@ -12,7 +12,11 @@
 #![warn(clippy::all, rust_2018_idioms)]
 
 pub mod client;
+pub mod frame;
+pub mod link;
 pub mod margin;
+#[cfg(feature = "native")]
+pub mod native;
 pub mod server;
 pub mod sim;
 pub mod wire;

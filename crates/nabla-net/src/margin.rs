@@ -18,8 +18,14 @@ pub const MAX_STRETCH: f64 = 0.05;
 /// remedy, and the client jumps ahead instead.
 pub const JUMP_TICKS: f64 = 6.0;
 
-/// How fast the estimate of the feedback delay follows its measurements.
-const DELAY_SMOOTHING: f64 = 0.1;
+/// How many of the newest reports the estimate of the feedback delay is the least of: about a
+/// quarter of a second, as long as a path's change takes to be followed.
+///
+/// A report that was queued while the client did not run (a hidden tab, a window held by the
+/// mouse) arrives long after it was sent, and looks like a path with a delay of seconds. A
+/// minimum ignores such reports at once, and follows a path that really gets longer within the
+/// window.
+const DELAY_WINDOW: usize = 16;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MarginController {
@@ -29,8 +35,12 @@ pub struct MarginController {
     target: f64,
     /// `e`: the margin of the newest report, less the target, in seconds.
     error: f64,
-    /// `n_f`: the delay of the feedback in ticks, about `RTT / h`.
+    /// `n_f`: the delay of the feedback in ticks, about `RTT / h`: the least of the last
+    /// [`DELAY_WINDOW`] measurements.
     delay_ticks: f64,
+    recent: [f64; DELAY_WINDOW],
+    filled: usize,
+    next: usize,
 }
 
 impl MarginController {
@@ -42,6 +52,9 @@ impl MarginController {
             target,
             error: 0.0,
             delay_ticks: round_trip_ticks.max(1.0),
+            recent: [0.0; DELAY_WINDOW],
+            filled: 0,
+            next: 0,
         }
     }
 
@@ -68,7 +81,13 @@ impl MarginController {
     pub fn observe(&mut self, margin: f64, ticks_ahead: f64) {
         self.error = margin - self.target;
         let round_trip = (ticks_ahead - margin / self.h).max(1.0);
-        self.delay_ticks += DELAY_SMOOTHING * (round_trip - self.delay_ticks);
+        self.recent[self.next] = round_trip;
+        self.next = (self.next + 1) % DELAY_WINDOW;
+        self.filled = (self.filled + 1).min(DELAY_WINDOW);
+        self.delay_ticks = self.recent[..self.filled]
+            .iter()
+            .copied()
+            .fold(f64::INFINITY, f64::min);
     }
 
     /// How many ticks the client should be ahead of the newest snapshot's last tick: the lead
@@ -133,5 +152,24 @@ mod tests {
             c.observe(H, 6.0);
         }
         assert!((c.delay_ticks() - 5.0).abs() < 1e-6, "{}", c.delay_ticks());
+    }
+
+    #[test]
+    fn reports_that_were_queued_are_ignored_and_a_longer_path_is_followed() {
+        let mut c = MarginController::new(H, 0.017, 6.0);
+        for _ in 0..100 {
+            c.observe(H, 6.0);
+        }
+        // A stall's backlog arrives late: it looks like a delay of 200 ticks. While fresh reports
+        // are among the newest, the estimate is theirs.
+        for _ in 0..DELAY_WINDOW - 1 {
+            c.observe(H, 200.0);
+        }
+        assert!((c.delay_ticks() - 5.0).abs() < 1e-9, "{}", c.delay_ticks());
+        // A path that really is longer takes over once the window has passed.
+        for _ in 0..DELAY_WINDOW {
+            c.observe(H, 16.0);
+        }
+        assert!((c.delay_ticks() - 15.0).abs() < 1e-9, "{}", c.delay_ticks());
     }
 }

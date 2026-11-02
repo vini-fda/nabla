@@ -18,7 +18,11 @@ mod gizmo;
 pub mod grid;
 mod highlight;
 mod keys;
+#[cfg(target_arch = "wasm32")]
+mod measure_web;
+pub mod net;
 mod notifications;
+pub mod online;
 mod orbit;
 mod planets;
 mod plume;

@@ -9,6 +9,7 @@ edition = "2024"
 [workspace.dependencies]
 nabla-core = { path = "crates/nabla-core" }
 nabla-net = { path = "crates/nabla-net" }
+nabla-server = { path = "crates/nabla-server" }
 nabla-sim = { path = "crates/nabla-sim" }
 nabla-synth = { path = "crates/nabla-synth" }
 
@@ -243,6 +244,9 @@ opt-level = 3
 [profile.dev.package.nabla-sim]
 opt-level = 3
 
+[profile.dev.package.nabla-server]
+opt-level = 3
+
 [profile.release]
 opt-level = 2  # fast and small wasm
 strip = true
@@ -269,6 +273,9 @@ codegen-units = 256
 codegen-units = 256
 
 [profile.fast.package.nabla-net]
+codegen-units = 256
+
+[profile.fast.package.nabla-server]
 codegen-units = 256
 
 [profile.fast.package.nabla-sim]

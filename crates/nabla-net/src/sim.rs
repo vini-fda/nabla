@@ -496,7 +496,7 @@ impl Sim {
             return;
         };
         let issued = &mut peer.issued;
-        let kinds = client.poll(local, &mut |stamp| {
+        let kinds = client.poll(local, &mut |stamp, _predicted| {
             let command = honest_pilot(seed, i, stamp);
             issued.insert(stamp, command);
             command

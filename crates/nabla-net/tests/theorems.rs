@@ -42,8 +42,16 @@ fn run(scenario: Scenario) -> (Sim, Report) {
 fn one_pilot_on_a_clean_link_is_predicted_exactly() {
     let world = vacuum();
     let peers = vec![Peer::honest(&world, 0.05)];
-    let (_, report) = run(scenario(1, world, 1200, peers, ALL));
+    let (sim, report) = run(scenario(1, world, 1200, peers, ALL));
     assert_eq!(report.ticks, 1200);
+    // Exact prediction means no snapshot ever corrects it, to the last bit.
+    let stats = sim
+        .client(0)
+        .expect("honest")
+        .correction_stats()
+        .expect("playing");
+    assert!(stats.snapshots > 1000, "{stats:?}");
+    assert_eq!(stats.nonzero, 0, "{stats:?}");
     assert!(report.absorbed > 1000, "{}", report.absorbed);
     assert!(report.exact_checks > 3000, "{}", report.exact_checks);
     assert!(report.max_buffered <= 60);

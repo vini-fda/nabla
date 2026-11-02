@@ -54,7 +54,7 @@ const MAX_FRAME_TIME: f64 = 0.1;
 const MIN_VIEW_HALF_SIZE: f64 = 3.0;
 
 /// A control policy flying the ship, in place of the player.
-struct Autopilot {
+pub(crate) struct Autopilot {
     solution: &'static StoredSolution,
     /// The policy's controller, from the sample it was made at on: `None` until the next sample
     /// it flies outside the target set.
@@ -64,7 +64,7 @@ struct Autopilot {
 }
 
 impl Autopilot {
-    fn new(solution: &'static StoredSolution) -> Self {
+    pub(crate) fn new(solution: &'static StoredSolution) -> Self {
         Self {
             solution,
             controller: None,
@@ -75,7 +75,7 @@ impl Autopilot {
     /// The policy's control in state `s`, of the ship with `task`: none in the target set, where
     /// the controller is dropped, to be made afresh once the ship drifts out of it. An error
     /// says why the policy can't fly on: it panicked, or chose an inadmissible control.
-    fn control(&mut self, task: &Task, s: &State) -> Result<Control, String> {
+    pub(crate) fn control(&mut self, task: &Task, s: &State) -> Result<Control, String> {
         if task.reached(s) {
             self.controller = None;
             return Ok(Control::default());

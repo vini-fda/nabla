@@ -35,6 +35,7 @@ gltf = { version = "1.4.1", default-features = false, features = ["utils"] }
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
 log = "0.4.35"
 nabla-core.workspace = true
+nabla-net.workspace = true
 nabla-sim.workspace = true
 nabla-synth.workspace = true
 rfd = "0.17.2"
@@ -43,6 +44,9 @@ web-time = "1.1.0"
 
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The connection to a server, on a thread of its own with a `tokio` runtime (src/net.rs). On the
+# web, `web_sys::WebTransport` is the connection.
+nabla-net = { workspace = true, features = ["native"] }
 # Audio output. On the web, an AudioWorklet plays the sounds instead (src/sound/web.rs).
 cpal = "0.18.2"
 # Without the default `humantime` (timestamps) and `regex` (regex filters in `RUST_LOG`)
@@ -55,8 +59,9 @@ js-sys = "0.3.107"
 wasm-bindgen = "0.2.130"
 wasm-bindgen-futures = "0.4.80"
 
-# The DOM (to hide the loading text), Web Audio with its AudioWorklet (src/sound/web.rs), and the
-# Gamepad API, for the touchpad gilrs doesn't read (src/gamepad.rs).
+# The DOM (to hide the loading text), Web Audio with its AudioWorklet (src/sound/web.rs), the
+# Gamepad API, for the touchpad gilrs doesn't read (src/gamepad.rs), and WebTransport, to fly
+# on a server (src/net.rs), which web-sys gates behind `--cfg=web_sys_unstable_apis`.
 [target.'cfg(target_arch = "wasm32")'.dependencies.web-sys]
 version = "0.3.107"
 features = [
@@ -72,9 +77,18 @@ features = [
   "Location",
   "MessagePort",
   "Navigator",
+  "ReadableStream",
+  "ReadableStreamDefaultReader",
   "Response",
+  "WebTransport",
+  "WebTransportBidirectionalStream",
+  "WebTransportDatagramDuplexStream",
+  "WebTransportHash",
+  "WebTransportOptions",
   "Window",
   "Worklet",
+  "WritableStream",
+  "WritableStreamDefaultWriter",
 ]
 
 # eframe's default features also turn on winit's (Wayland client-side window decorations, and
@@ -85,3 +99,8 @@ winit = "0.30.13"
 
 [lints]
 workspace = true
+
+# The real server, for the flight to be tested against (tests/online_loopback.rs).
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+nabla-server.workspace = true
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "time"] }

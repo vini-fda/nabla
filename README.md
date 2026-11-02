@@ -2,11 +2,12 @@
 
 A ship in the plane with thrust along its heading and a torque. Find a controller that brings it to rest at a goal point in the fewest steps.
 
-This is a finite, discretized version of a control problem described in `docs/main.typ`. The workspace has three crates:
+This is a finite, discretized version of a control problem described in `docs/main.typ`. The workspace has these crates:
 
 - **[`nabla-core`](crates/nabla-core):** the exact sampled-data state-space model of the ship, with the control held constant over each step; the problem: the target set, the `Controller` interface and the fixed test cases every solution must solve; and the [solutions](crates/nabla-core/src/solutions) found so far.
 - **[`nabla-sim`](crates/nabla-sim):** the simulation of a world with no display, sound or network: the world format, the ship's physics among bodies, and how a pilot's input becomes a control. It builds for the web, and is what a multiplayer server shares with the client (`docs/multiplayer.typ`).
 - **[`nabla-net`](crates/nabla-net):** the multiplayer protocol as sans-IO state machines (server, client, margin controller), and a seeded simulated network that checks the theorems of `docs/multiplayer.typ` as assertions.
+- **[`nabla-server`](crates/nabla-server):** the multiplayer server, over WebTransport (HTTP/3 on QUIC), for native and browser pilots alike. It also holds the headless bots and the soak test that fly sixteen of them through an impaired network.
 - **[`nabla-synth`](crates/nabla-synth):** the thruster sounds' synthesizer, also built alone for the web app's AudioWorklet.
 - **[`nabla-client`](crates/nabla-client):** the app, a game: fly the ship to the goal yourself, or let a solution fly it as autopilot.
 
@@ -18,6 +19,8 @@ See [`TASK.md`](TASK.md) for the rules and the interface a solution implements.
 cargo test --workspace --release         # model, app and every solution
 cargo run --release -p nabla-client             # the app, natively
 ```
+
+**Online:** run `cargo run --release -p nabla-server` for a world to fly in with other pilots. It prints an address with its self-signed certificate's hash (`https://localhost:4433#sha256=...`), which the title screen's Online page takes, on the web too (a page opened with `?server=` and the address, percent-encoded, starts with it filled in, and `&connect` connects at once). `cargo run --release -p nabla-server --bin nabla-soak` runs the soak test of `docs/multiplayer.typ`, M4.
 
 Development tasks are in the `xtask` crate (`cargo xtask help`). `cargo xtask check` runs the same checks as CI, plus the web build. `cargo xtask web-dev` serves the web app locally, rebuilding it on every change. Every push to `main` deploys the web app.
 

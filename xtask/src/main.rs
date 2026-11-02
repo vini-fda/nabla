@@ -173,7 +173,9 @@ fn web_dev(sh: &Shell, args: &[String]) -> Result<()> {
 /// The checks of `.github/workflows/ci.yml` for this platform, plus the web build.
 fn check(sh: &Shell) -> Result<()> {
     let cargo = cargo();
-    let _rustflags = sh.push_env("RUSTFLAGS", "-D warnings");
+    // As in CI: the cfg that web-sys gates WebTransport behind, which a `RUSTFLAGS` variable
+    // would otherwise take away from .cargo/config.toml.
+    let _rustflags = sh.push_env("RUSTFLAGS", "-D warnings --cfg=web_sys_unstable_apis");
     let _rustdocflags = sh.push_env("RUSTDOCFLAGS", "-D warnings");
     cmd!(sh, "{cargo} fmt --all -- --check").run()?;
     cmd!(
@@ -198,6 +200,7 @@ fn check(sh: &Shell) -> Result<()> {
     let checks = [
         "nabla-core",
         "nabla-net",
+        "nabla-server",
         "nabla-sim",
         "nabla-synth",
         "nabla-client",

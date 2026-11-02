@@ -16,3 +16,9 @@ xtask = "run -q -p xtask --"
 [target.x86_64-unknown-linux-gnu]
 linker = "clang"
 rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+
+# `web_sys::WebTransport`, which the web app flies on a server with (src/net.rs), is gated behind
+# this flag. A `RUSTFLAGS` variable replaces it, as with the linker above, so CI
+# (.github/workflows/ci.yml) and `cargo xtask check` repeat it.
+[target.wasm32-unknown-unknown]
+rustflags = ["--cfg=web_sys_unstable_apis"]

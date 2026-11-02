@@ -29,6 +29,7 @@ use crate::theme::{self, icons, palette};
 use crate::version::build_version;
 use nabla_sim::span;
 
+mod online;
 mod orbits;
 mod title;
 mod worlds;
@@ -331,6 +332,19 @@ pub struct ViewerApp {
     /// Draws the 3D ship and its plumes; `None` where OpenGL can't (then the canvas shows the
     /// debug view).
     ship3d: Option<(ShipRenderer, Plume)>,
+    /// The flight on a server, while the online screen shows.
+    online: Option<crate::online::Online>,
+    /// The page's address asked for a server to be connected to at once.
+    connect_on_start: bool,
+    /// The server's address as typed on the title screen.
+    server_address: String,
+    online_error: Option<String>,
+    /// The ship the pilot asks a server for, in the lobby.
+    join_request: nabla_sim::world::ShipRequest,
+    /// Frame the camera around the ship, the next time the canvas shows.
+    online_fit: bool,
+    /// How hard the own ship's thrusters fire, for the sound.
+    online_levels: Option<(f32, f32)>,
 }
 
 impl Default for ViewerApp {
@@ -391,8 +405,23 @@ impl Default for ViewerApp {
             compact_view: CompactView::default(),
             view: CanvasView::default(),
             ship3d: None,
+            online: None,
+            connect_on_start: false,
+            server_address: online::DEFAULT_SERVER.to_owned(),
+            online_error: None,
+            join_request: world_default_request(),
+            online_fit: false,
+            online_levels: None,
         }
     }
+}
+
+/// The bundled ship, as the request the lobby starts from.
+fn world_default_request() -> nabla_sim::world::ShipRequest {
+    crate::world::Preset::default().world().players[0]
+        .task
+        .params
+        .into()
 }
 
 impl ViewerApp {
@@ -425,10 +454,16 @@ impl ViewerApp {
             })
             .inspect_err(|e| log::warn!("No 3D view: {e}"))
             .ok();
-        Self {
+        let mut app = Self {
             ship3d,
             ..Self::default()
+        };
+        if let Some((server, connect)) = online::server_from_page() {
+            app.server_address = server;
+            app.title_page = TitlePage::Online;
+            app.connect_on_start = connect;
         }
+        app
     }
 
     /// The starting conditions, with the sampling period set by the slider.
@@ -1430,13 +1465,31 @@ impl ViewerApp {
             return None;
         }
         let game = &self.game;
-        let s = game.state();
+        self.aim_from(
+            response,
+            rect,
+            &game.state(),
+            game.pads.touched(),
+            game.pads.aim_touch(),
+        )
+    }
+
+    /// [`Self::read_aim`] for the ship in state `s`. `touched`: a touch screen's pads are being
+    /// touched, and `touch` is the touch that points, if any.
+    fn aim_from(
+        &self,
+        response: &egui::Response,
+        rect: egui::Rect,
+        s: &State,
+        touched: bool,
+        touch: Option<egui::Pos2>,
+    ) -> Option<(egui::Pos2, f64)> {
         let ship = world(s.x, s.y);
         let on_screen = self.camera.world_to_screen(ship, rect)?;
         let pointer = if !self.pointing_now() {
             None
-        } else if game.pads.touched() {
-            game.pads.aim_touch()
+        } else if touched {
+            touch
         } else {
             response
                 .is_pointer_button_down_on()
@@ -1796,6 +1849,16 @@ impl ViewerApp {
     }
 
     fn draw_ship(&self, painter: &egui::Painter, rect: egui::Rect, state: &State) {
+        self.draw_ship_sized(painter, rect, state, self.circumradius);
+    }
+
+    fn draw_ship_sized(
+        &self,
+        painter: &egui::Painter,
+        rect: egui::Rect,
+        state: &State,
+        circumradius: f32,
+    ) {
         let center = world(state.x, state.y);
         let (sin_theta, cos_theta) = (state.theta as f32).sin_cos();
         let (sin_2alpha, cos_2alpha) = (2.0 * self.alpha).sin_cos();
@@ -1813,7 +1876,7 @@ impl ViewerApp {
             .map(|&(px, py)| {
                 let x = cos_theta * px - sin_theta * py;
                 let y = sin_theta * px + cos_theta * py;
-                let vertex = center + egui::vec2(x, y) * self.circumradius;
+                let vertex = center + egui::vec2(x, y) * circumradius;
                 self.camera.world_to_screen(vertex, rect)
             })
             .collect::<Option<Vec<egui::Pos2>>>()
@@ -1977,9 +2040,14 @@ impl eframe::App for ViewerApp {
             }
             None => {}
         }
+        if std::mem::take(&mut self.connect_on_start) {
+            let ctx = ui.ctx().clone();
+            self.connect_online(&ctx);
+        }
         match self.screen {
             Screen::Title => self.title_ui(ui),
             Screen::Flight => self.flight_ui(ui),
+            Screen::Online => self.online_ui(ui),
         }
 
         let ctx = ui.ctx().clone();
@@ -1989,7 +2057,11 @@ impl eframe::App for ViewerApp {
         let game = &self.game;
         let heard =
             (self.screen == Screen::Flight && !game.paused).then(|| (&game.replay, game.time()));
-        let levels = heard.map(|(r, t)| (r.thrust_fraction(t) as f32, r.torque_fraction(t) as f32));
+        let levels = if self.screen == Screen::Online {
+            self.online_levels
+        } else {
+            heard.map(|(r, t)| (r.thrust_fraction(t) as f32, r.torque_fraction(t) as f32))
+        };
         self.sound.update(&ctx, levels);
 
         let took = started.elapsed().as_secs_f64();

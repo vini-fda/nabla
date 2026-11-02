@@ -30,6 +30,12 @@ pub(super) struct Forecast {
 
 impl ViewerApp {
     pub(super) fn assisted(&self) -> bool {
+        if self.screen == super::Screen::Online {
+            return self
+                .online
+                .as_ref()
+                .is_some_and(crate::online::Online::assisted);
+        }
         self.game.assisted()
     }
 

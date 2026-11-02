@@ -1295,6 +1295,19 @@ mod tests {
         assert!(!g.autopiloted(), "the player flew");
     }
 
+    #[test]
+    fn the_default_policy_lands_in_the_default_world() {
+        let world = crate::world::Preset::PlanetAndMoon.world();
+        let mut g = Game::in_world(world.case(), world);
+        g.engage(Objective::ReachB, &nabla_core::solutions::SOLUTIONS[0])
+            .expect("engages");
+        for _ in 0..600 {
+            g.advance(0.02, Input::default(), Steering::Raw);
+        }
+        assert!(g.landed().is_some(), "landed within 12 s");
+        assert_eq!(g.take_fault(), None);
+    }
+
     /// Runs `g` for `seconds` with no input, `autopilot` flying.
     fn fly_with(g: &mut Game, seconds: f64, autopilot: Option<&'static StoredSolution>) {
         if let Some(solution) = autopilot {

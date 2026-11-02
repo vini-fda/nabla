@@ -91,6 +91,7 @@ To check robustness beyond the suites, run your controller on
 |---|---|
 | `flip_and_burn_tuned` | two-layer feedback: braking-aware velocity setpoint, square-root heading law, constants tuned by coordinate descent |
 | `mpc` | shrinking-horizon MPC on the exact model: seed plans from feedback laws, shortened by projected Gauss–Newton on the 5 terminal residuals, re-solved every step; every plan verified with `step` |
+| `mpc_bounded` | receding-horizon MPC with a hard bound on the planning work of every sample: a feedback law until the goal is within its horizon, then a plan corrected and shortened by projected Gauss–Newton as far as the budget goes; learns an unmodeled acceleration such as gravity from what its predictions miss, so it also lands in worlds with bodies |
 
 To add one, list it in `SOLUTIONS` (`crates/nabla-core/src/solutions.rs`). `cargo test` checks
 that every solution still solves every case of both suites, and the app picks it up.

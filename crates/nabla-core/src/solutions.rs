@@ -2,6 +2,7 @@
 
 pub mod flip_and_burn_tuned;
 pub mod mpc;
+pub mod mpc_bounded;
 
 use crate::Controller;
 use crate::problem::{Case, Task, Trajectory, simulate};
@@ -24,6 +25,12 @@ fn boxed<C: Controller + 'static>(task: &Task) -> Box<dyn Controller> {
 
 /// Every solution. The app starts on the first.
 pub static SOLUTIONS: &[StoredSolution] = &[
+    StoredSolution {
+        name: "mpc_bounded",
+        source: include_str!("solutions/mpc_bounded.rs"),
+        simulate: simulate::<mpc_bounded::Solution>,
+        controller: boxed::<mpc_bounded::Solution>,
+    },
     StoredSolution {
         name: "mpc",
         source: include_str!("solutions/mpc.rs"),

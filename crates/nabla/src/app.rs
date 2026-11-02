@@ -1865,7 +1865,8 @@ impl ViewerApp {
             self.world_files_ui(ui);
             if !self.game.world.bodies.is_empty() {
                 ui.label(
-                    "Orbit assist accounts for gravity. Reach B policies use the vacuum model.",
+                    "Orbit assist accounts for gravity. For Reach B, mpc_bounded learns it in flight; \
+                     the other policies use the vacuum model.",
                 );
             }
             ui.separator();

@@ -146,8 +146,8 @@ jobs:
           --config 'profile.release.package.nabla-core.overflow-checks=true'
           --config 'profile.release.package.nabla-synth.debug-assertions=true'
           --config 'profile.release.package.nabla-synth.overflow-checks=true'
-          --config 'profile.release.package.nabla.debug-assertions=true'
-          --config 'profile.release.package.nabla.overflow-checks=true'
+          --config 'profile.release.package.nabla-client.debug-assertions=true'
+          --config 'profile.release.package.nabla-client.overflow-checks=true'
 
   # The web app: compile for wasm and run the exact trunk build that gets deployed.
   web:
@@ -166,7 +166,7 @@ jobs:
 
       - name: Clippy (wasm32)
         run: |
-          cargo clippy $CARGO_FLAGS -p nabla --lib --target wasm32-unknown-unknown
+          cargo clippy $CARGO_FLAGS -p nabla-client --lib --target wasm32-unknown-unknown
           cargo clippy $CARGO_FLAGS -p nabla-synth --lib --target wasm32-unknown-unknown
 
       - name: Install trunk

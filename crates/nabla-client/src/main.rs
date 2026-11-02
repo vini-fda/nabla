@@ -25,9 +25,11 @@ fn app_icon() -> egui::IconData {
 // When compiling natively:
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result {
-    // Log to stderr. Say what with `RUST_LOG`, as in `RUST_LOG=nabla=trace`: see `span.rs`.
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn,nabla=info"))
-        .init();
+    // Log to stderr. Say what with `RUST_LOG`, as in `RUST_LOG=nabla_client=trace`: see `span.rs`.
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("warn,nabla_client=info"),
+    )
+    .init();
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -37,8 +39,8 @@ fn main() -> eframe::Result {
             .with_title("Nabla")
             .with_icon(app_icon()),
         renderer: eframe::Renderer::Wgpu,
-        depth_buffer: nabla::DEPTH_BUFFER,
-        multisampling: nabla::MULTISAMPLING,
+        depth_buffer: nabla_client::DEPTH_BUFFER,
+        multisampling: nabla_client::MULTISAMPLING,
         // The bundled fonts (theme.rs) and egui's cover the app's text; eframe is built without
         // its `system_fonts` feature, so there is no system fallback to look for.
         system_font_fallback: false,
@@ -47,7 +49,7 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Nabla",
         native_options,
-        Box::new(|cc| Ok(Box::new(nabla::ViewerApp::new(cc)))),
+        Box::new(|cc| Ok(Box::new(nabla_client::ViewerApp::new(cc)))),
     )
 }
 
@@ -76,7 +78,7 @@ fn main() {
     let web_options = eframe::WebOptions {
         // WebGPU where the browser has it, else WebGL 2 (egui-wgpu's default setup).
         renderer: eframe::Renderer::Wgpu,
-        depth_buffer: nabla::DEPTH_BUFFER,
+        depth_buffer: nabla_client::DEPTH_BUFFER,
         ..Default::default()
     };
 
@@ -96,7 +98,7 @@ fn main() {
             .start(
                 canvas,
                 web_options,
-                Box::new(|cc| Ok(Box::new(nabla::ViewerApp::new(cc)))),
+                Box::new(|cc| Ok(Box::new(nabla_client::ViewerApp::new(cc)))),
             )
             .await;
 

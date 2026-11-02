@@ -124,7 +124,7 @@ cargo run --release -p nabla
 
 While working on the viewer, use `cargo nabla`. It builds with the `fast` profile, which keeps release's optimization level but skips its link-time optimization, so after an edit the viewer rebuilds in seconds instead of about a minute.
 
-On macOS, `cargo nabla` (`cargo xtask run --profile fast`) runs the viewer inside an app bundle, `Nabla.app`, with the layered Icon Composer icon (`crates/nabla/macos/nabla_macOS.icon`) that macOS 26 renders with Liquid Glass; a bare executable, as from `cargo run`, can only show a flat rounded icon. `cargo xtask bundle` builds `target/release/Nabla.app` on its own. The Liquid Glass icon needs Xcode 26, for `actool`; without it the bundle gets a flat icon. See `cargo xtask help`.
+On macOS, `cargo nabla` (`cargo xtask run --profile fast`) runs the viewer inside an app bundle, `Nabla.app`, with the layered Icon Composer icon (`crates/nabla-client/macos/nabla_macOS.icon`) that macOS 26 renders with Liquid Glass; a bare executable, as from `cargo run`, can only show a flat rounded icon. `cargo xtask bundle` builds `target/release/Nabla.app` on its own. The Liquid Glass icon needs Xcode 26, for `actool`; without it the bundle gets a flat icon. See `cargo xtask help`.
 
 ```sh
 cargo xtask bundle && open "target/release/Nabla.app"
@@ -154,9 +154,9 @@ Every push to `main` deploys the web build to GitHub Pages (`.github/workflows/p
 Natively, the app logs to stderr, by default its warnings and what happens in a session. `RUST_LOG` says what else, as in:
 
 ```sh
-RUST_LOG=nabla=debug cargo nabla                  # also the occasional costly operations
-RUST_LOG=nabla=trace cargo nabla                  # also those of every frame and sample
-RUST_LOG=warn,nabla::game=trace cargo nabla       # one module only
+RUST_LOG=nabla_client=debug cargo nabla                 # also the occasional costly operations
+RUST_LOG=nabla_client=trace cargo nabla                 # also those of every frame and sample
+RUST_LOG=warn,nabla_client::game=trace cargo nabla      # one module only
 ```
 
 On the web, the page's address says it, as in `?log=debug`, and the log is in the browser's console.

@@ -1,4 +1,4 @@
-//! Math typeset ahead of time: the `formulas` tool (`crates/nabla/formulas`) renders the formulas in
+//! Math typeset ahead of time: the `formulas` tool (`crates/nabla-client/formulas`) renders the formulas in
 //! its `FORMULAS` with Typst into white SVGs in `assets/formulas/`, embedded here as one
 //! [`Formula`] constant each (`formula::THETA`, ...).
 //! They are drawn as images, tinted with the text color and lined up with the text's baseline.

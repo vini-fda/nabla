@@ -1,4 +1,4 @@
-//! The synthesizer for the web app's `AudioWorklet` (`crates/nabla/assets/synth-worklet.js`).
+//! The synthesizer for the web app's `AudioWorklet` (`crates/nabla-client/assets/synth-worklet.js`).
 //!
 //! The worklet runs on the browser's audio rendering thread, whose scope has no DOM and no
 //! `TextDecoder`, so it cannot load the app's wasm-bindgen module. Instead this crate is built

@@ -57,7 +57,11 @@ impl Build {
         let profile = &self.profile;
         let target = self.target.as_ref().map(|t| ["--target", t]);
         let target = target.iter().flatten();
-        cmd!(sh, "{cargo} build --profile {profile} {target...} -p nabla").run()?;
+        cmd!(
+            sh,
+            "{cargo} build --profile {profile} {target...} -p nabla-client"
+        )
+        .run()?;
 
         let mut dir = target_dir();
         if let Some(target) = &self.target {
@@ -182,7 +186,7 @@ fn check(sh: &Shell) -> Result<()> {
         "{cargo} clippy --locked --quiet --workspace --all-targets"
     )
     .run()?;
-    for package in ["nabla", "nabla-synth"] {
+    for package in ["nabla-client", "nabla-synth"] {
         cmd!(
             sh,
             "{cargo} clippy --locked --quiet -p {package} --lib --target wasm32-unknown-unknown"
@@ -191,7 +195,7 @@ fn check(sh: &Shell) -> Result<()> {
     }
     // As in CI: release mode, with debug assertions and overflow checks on for this
     // workspace's crates.
-    let checks = ["nabla-core", "nabla-synth", "nabla"]
+    let checks = ["nabla-core", "nabla-synth", "nabla-client"]
         .iter()
         .flat_map(|package| {
             ["debug-assertions", "overflow-checks"].map(|setting| {

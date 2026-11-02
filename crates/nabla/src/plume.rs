@@ -15,7 +15,7 @@
 //!
 //! The plumes are particle systems without state: each frame recomputes the particles
 //! emitted during the last moments from the trajectory itself, so they stay consistent with
-//! the timeline when the replay is paused, scrubbed or sped up. Each particle leaves its
+//! the flight when it is paused or restarted. Each particle leaves its
 //! nozzle at its emission time with the nozzle's velocity then (the ship's velocity, plus
 //! the spin's `omega x r` at the nozzle) plus the exhaust velocity, so a turning ship sweeps
 //! its jets around like a garden hose. The jets also flap and bunch up by an amount that

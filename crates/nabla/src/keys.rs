@@ -1,8 +1,7 @@
 //! Keyboard, mouse and touch hints. Keys are drawn as keycaps, as in a Mac menu: a key is a
 //! small grey cap with its symbol (an arrow, Shift) or its name ("space", "F") on it. Keys
-//! differ between platforms: Shift is its symbol on macOS and its name elsewhere, and a Mac
-//! laptop has no Home or End keys (fn+Left and fn+Right send them). Phones and tablets get
-//! touch gestures instead.
+//! differ between platforms: Shift is its symbol on macOS and its name elsewhere. Phones and
+//! tablets get touch gestures instead.
 
 use egui::{FontFamily, FontId, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Vec2};
 
@@ -31,11 +30,11 @@ pub enum Key {
 pub const SPACE: Key = Key::Word("space");
 pub const LEFT: Key = Key::Glyph(outline::ARROW_LEFT);
 pub const RIGHT: Key = Key::Glyph(outline::ARROW_RIGHT);
+pub const A: Key = Key::Word("A");
 pub const F: Key = Key::Word("F");
 pub const P: Key = Key::Word("P");
 pub const R: Key = Key::Word("R");
 pub const T: Key = Key::Word("T");
-const FN: Key = Key::Word("fn");
 
 /// The keys a hint shows, for the platform it runs on (in the browser too: egui reads the
 /// platform from the user agent).
@@ -66,24 +65,6 @@ impl Keys {
             Key::Glyph(outline::ARROW_FAT_UP)
         } else {
             Key::Word("Shift")
-        }
-    }
-
-    /// The keys that send Home: fn+Left on a Mac, which has no Home key on a laptop.
-    pub fn home(self) -> &'static [Key] {
-        if self.mac {
-            &[FN, LEFT]
-        } else {
-            &[Key::Word("Home")]
-        }
-    }
-
-    /// The keys that send End: fn+Right on a Mac.
-    pub fn end(self) -> &'static [Key] {
-        if self.mac {
-            &[FN, RIGHT]
-        } else {
-            &[Key::Word("End")]
         }
     }
 }

@@ -1,5 +1,5 @@
-//! Nabla, the viewer for the ship's control policies: runs a solution on a test case, and replays
-//! the run in continuous time on a pannable, zoomable canvas.
+//! Nabla, a game of flying the ship to its goal, on the test cases of the ship control problem,
+//! by hand or with a control policy as autopilot, on a pannable, zoomable canvas.
 
 #![warn(clippy::all, rust_2018_idioms)]
 
@@ -23,7 +23,6 @@ mod ship3d;
 mod sound;
 mod sprites;
 pub mod theme;
-pub mod timeline;
 pub use app::ViewerApp;
 
 /// Multisampling (MSAA samples) the native app asks eframe for. The web painter doesn't

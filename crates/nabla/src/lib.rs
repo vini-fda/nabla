@@ -8,6 +8,7 @@ mod app;
 mod ascii_only;
 pub mod camera;
 mod canvas_buttons;
+mod controller_guide;
 mod controller_shape;
 mod controller_view;
 mod formula;

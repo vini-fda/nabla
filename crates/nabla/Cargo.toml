@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version = "1.99"
 description = "Nabla: fly the 2D ship to its goal, by hand or with a control policy as autopilot, natively and on the web."
 license = "MIT OR Apache-2.0"
-include = ["LICENSE-APACHE", "LICENSE-MIT", "**/*.rs", "Cargo.toml", "assets/fonts/*", "assets/formulas/*", "assets/worlds/*", "src/*.wgsl"]
+include = ["LICENSE-APACHE", "LICENSE-MIT", "**/*.rs", "Cargo.toml", "assets/controller_icons/**/*", "assets/fonts/*", "assets/formulas/*", "assets/worlds/*", "src/*.wgsl"]
 
 [package.metadata.docs.rs]
 all-features = true

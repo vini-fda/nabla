@@ -7,8 +7,10 @@ use std::ops::RangeInclusive;
 use nabla_core::suite;
 
 use super::{
-    CONTROLLER_STATUS_SIZE, ViewerApp, controller_status_ui, input_group, input_row, toggled,
+    CONTROLLER_STATUS_SIZE, HelpTab, ViewerApp, controller_status_ui, input_group, input_row,
+    toggled,
 };
+use crate::controller_guide;
 use crate::formula::{self, Formula};
 use crate::game::Steering;
 use crate::gamepad;
@@ -31,6 +33,8 @@ const FIT_STEPS: f32 = 50.0;
 const FIT_MARGIN: f32 = 1.5;
 /// Widest the column below the title gets, in points.
 const COLUMN_WIDTH: f32 = 540.0;
+/// The card's margin inside its border, in points.
+const CARD_MARGIN: i8 = 16;
 const BUTTON_HEIGHT: f32 = 40.0;
 const BUTTON_TEXT_SIZE: f32 = 16.0;
 const PAGE_HEADING_SIZE: f32 = 24.0;
@@ -65,8 +69,8 @@ pub(super) enum TitlePage {
 
 impl ViewerApp {
     /// The title screen, always all of it in the window: the title shrinks to make room, and if
-    /// that isn't enough the whole screen scales down. Enter, or Cross or Options on a controller,
-    /// plays; Escape goes back from the settings or the help to the starting conditions.
+    /// that isn't enough the whole screen scales down. Enter, or Cross or Options on a controller
+    /// but for on the help, plays; Escape goes back from the settings or the help to the starting conditions.
     pub(super) fn title_ui(&mut self, ui: &mut egui::Ui) {
         let mut play = self.title_keys(ui);
         egui::CentralPanel::default().show(ui, |ui| {
@@ -99,19 +103,30 @@ impl ViewerApp {
             ui.add_space(24.0);
             // As wide as at full scale, so that scaling down doesn't change how text wraps, and
             // with it the height being fitted.
-            let width = (window.x * self.title_fit - margins.x).min(COLUMN_WIDTH);
+            let column =
+                if self.title_page == TitlePage::Help && self.help_tab() == HelpTab::Controller {
+                    controller_guide::WIDTH + 2.0 * f32::from(CARD_MARGIN)
+                } else {
+                    COLUMN_WIDTH
+                };
+            let width = (window.x * self.title_fit - margins.x).min(column);
             let margin = (ui.available_width() - width) / 2.0;
             ui.horizontal(|ui| {
                 ui.add_space(margin);
                 ui.vertical(|ui| {
                     ui.set_width(width);
-                    play |= self.title_buttons(ui, width);
+                    // No wider than usual, for the guide's sake, so they stay put.
+                    let buttons = width.min(COLUMN_WIDTH);
+                    ui.horizontal(|ui| {
+                        ui.add_space((width - buttons) / 2.0);
+                        play |= self.title_buttons(ui, buttons);
+                    });
                     ui.add_space(12.0);
                     egui::Frame::new()
                         .fill(palette::SURFACE0)
                         .stroke(egui::Stroke::new(1.0, palette::BORDER))
                         .corner_radius(10)
-                        .inner_margin(16)
+                        .inner_margin(CARD_MARGIN)
                         .show(ui, |ui| {
                             ui.set_width(ui.available_width());
                             match self.title_page {
@@ -171,9 +186,11 @@ impl ViewerApp {
         if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.title_page = TitlePage::Start;
         }
-        let pad = self.gamepads.state().is_some_and(|pad| {
-            pad.just_pressed(gamepad::Button::South) || pad.just_pressed(gamepad::Button::Start)
-        });
+        // Not from the help, where the controller's buttons are there to try out.
+        let pad = self.title_page != TitlePage::Help
+            && self.gamepads.state().is_some_and(|pad| {
+                pad.just_pressed(gamepad::Button::South) || pad.just_pressed(gamepad::Button::Start)
+            });
         pad || ui.input(|i| i.key_pressed(egui::Key::Enter))
     }
 
@@ -434,11 +451,10 @@ impl ViewerApp {
 
     /// The controls: on the title screen, and in flight on the keyboard and mouse or the touch
     /// screen, and the controller's.
-    fn help_page_ui(&self, ui: &mut egui::Ui) {
-        use keys::{ENTER, Key, caps, joiner};
+    fn help_page_ui(&mut self, ui: &mut egui::Ui) {
+        use keys::{ENTER, caps, joiner};
 
         page_heading(ui, icons::outline::QUESTION, "Help");
-        let controller = self.gamepads.state().is_some();
         input_group(ui, "Title screen", |ui| {
             input_row(
                 ui,
@@ -447,25 +463,13 @@ impl ViewerApp {
                         caps(ui, &[ENTER]);
                         joiner(ui, "/");
                     }
-                    caps(ui, &[Key::Word("Cross")]);
+                    controller_guide::icon_ui(ui, &controller_guide::CROSS);
                 },
-                |ui| ui.label("Play"),
+                |ui| ui.label("Play (Cross: not from Help)"),
             );
         });
         ui.add_space(4.0);
-        Self::user_inputs_ui(ui, controller);
-        if !controller {
-            ui.add_space(8.0);
-            keys::label_with_icons(
-                ui,
-                &[
-                    keys::Run::Icon(icons::outline::GAME_CONTROLLER),
-                    keys::Run::Text(
-                        " Connect a game controller and press a button to see its controls",
-                    ),
-                ],
-            );
-        }
+        self.user_inputs_ui(ui, ui.available_width());
     }
 }
 
@@ -575,7 +579,12 @@ mod tests {
 
     #[test]
     fn every_title_page_fits_every_window() {
-        for page in [TitlePage::Start, TitlePage::Settings, TitlePage::Help] {
+        for (page, tab) in [
+            (TitlePage::Start, HelpTab::Device),
+            (TitlePage::Settings, HelpTab::Device),
+            (TitlePage::Help, HelpTab::Device),
+            (TitlePage::Help, HelpTab::Controller),
+        ] {
             for (width, height) in [
                 (1400.0, 850.0),
                 (700.0, 600.0),
@@ -585,6 +594,7 @@ mod tests {
             ] {
                 let (mut app, ctx) = title_app();
                 app.title_page = page;
+                app.help_tab = Some(tab);
                 let (bottom, window) = show_title(&mut app, &ctx, egui::vec2(width, height));
                 assert!(
                     bottom <= window + 0.5,

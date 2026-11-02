@@ -17,7 +17,7 @@ use crate::theme::palette;
 
 /// The part of the drawing shown: the controller, and the callouts above it. Symmetric about
 /// the controller's axis.
-const VIEW: Rect = Rect::from_min_max(pos2(90.0, 10.0), pos2(662.0, 422.0));
+pub(crate) const VIEW: Rect = Rect::from_min_max(pos2(90.0, 10.0), pos2(662.0, 422.0));
 
 /// A callout, on the left (the right's is mirrored): its labels, its box, and its elbow line,
 /// which leaves the box's bottom at `from`, goes straight down to the height of `to`, the point
@@ -132,18 +132,11 @@ pub fn paint(painter: &Painter, panel: Rect, state: Option<&State>) {
         scale: drawing.width() / VIEW.width(),
         dim: state.is_none(),
     };
+    paint_wireframe(&view, state);
+
+    // The callouts for the bumpers and the triggers.
     let idle = State::default();
     let s = state.unwrap_or(&idle);
-    let held = |button| s.is_held(button);
-
-    view.line(points(shape::BODY, false), true, LINE);
-    view.line(points(shape::BAND, false), true, LINE.gamma_multiply(0.6));
-    view.shape(points(shape::TOUCHPAD, false), s.touchpad.then_some(LIGHT));
-    for right in [false, true] {
-        view.line(points(shape::LIGHT_BAR, right), false, LIGHT);
-    }
-
-    // The bumpers, and the callouts for them and for the triggers.
     for (right, bumper, trigger, depth) in [
         (
             false,
@@ -158,15 +151,35 @@ pub fn paint(painter: &Painter, panel: Rect, state: Option<&State>) {
             s.triggers[1],
         ),
     ] {
-        // Mauve rather than a blue, which would barely stand out from the wireframe's.
-        let lit = held(bumper).then_some(palette::MAUVE);
-        view.shape(points(shape::BUMPER, right), lit);
-        view.callout(&L1, right, lit, None);
-        let pulled = (depth > 0.0 || held(trigger)).then_some(palette::PEACH);
+        view.callout(&L1, right, bumper_lit(s, bumper), None);
+        let pulled = (depth > 0.0 || s.is_held(trigger)).then_some(palette::PEACH);
         view.callout(&L2, right, pulled, Some(depth));
     }
+}
 
-    buttons(&view, s);
+/// The light of a bumper held in `s`.
+fn bumper_lit(s: &State, bumper: Button) -> Option<Color32> {
+    // Mauve rather than a blue, which would barely stand out from the wireframe's.
+    s.is_held(bumper).then_some(palette::MAUVE)
+}
+
+/// The controller itself, lit by `state`, or as if idle without a controller.
+pub(crate) fn paint_wireframe(view: &View<'_>, state: Option<&State>) {
+    let idle = State::default();
+    let s = state.unwrap_or(&idle);
+    let held = |button| s.is_held(button);
+
+    view.line(points(shape::BODY, false), true, LINE);
+    view.line(points(shape::BAND, false), true, LINE.gamma_multiply(0.6));
+    view.shape(points(shape::TOUCHPAD, false), s.touchpad.then_some(LIGHT));
+    for right in [false, true] {
+        view.line(points(shape::LIGHT_BAR, right), false, LIGHT);
+    }
+    for (right, bumper) in [(false, Button::LeftTrigger), (true, Button::RightTrigger)] {
+        view.shape(points(shape::BUMPER, right), bumper_lit(s, bumper));
+    }
+
+    buttons(view, s);
 
     // The sticks: the cap shifts with the stick, and a dot shows where it points.
     for (right, stick, thumb) in [
@@ -238,13 +251,13 @@ fn buttons(view: &View<'_>, s: &State) {
 }
 
 /// Where to draw: the drawing's coordinates mapped to the screen, and whether to draw dimly.
-struct View<'a> {
-    painter: &'a Painter,
+pub(crate) struct View<'a> {
+    pub painter: &'a Painter,
     /// Where `VIEW.min` lands, and the points per drawing unit.
-    origin: Pos2,
-    scale: f32,
+    pub origin: Pos2,
+    pub scale: f32,
     /// No controller: everything at half strength.
-    dim: bool,
+    pub dim: bool,
 }
 
 impl View<'_> {
@@ -261,7 +274,7 @@ impl View<'_> {
     }
 
     /// A line through `points` (closed or not), with its glow.
-    fn line(&self, points: Vec<Pos2>, closed: bool, color: Color32) {
+    pub fn line(&self, points: Vec<Pos2>, closed: bool, color: Color32) {
         let color = self.color(color);
         let points: Vec<Pos2> = points.into_iter().map(|q| self.at(q)).collect();
         let path = |width: f32, color: Color32| {
@@ -310,7 +323,7 @@ impl View<'_> {
     }
 
     /// A small bright dot.
-    fn dot(&self, center: Pos2, color: Color32) {
+    pub fn dot(&self, center: Pos2, color: Color32) {
         let center = self.at(center);
         let color = self.color(color);
         self.painter

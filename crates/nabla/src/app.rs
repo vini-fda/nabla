@@ -10,6 +10,7 @@ use nabla_core::suite;
 
 use crate::camera::{Camera, Vec3};
 use crate::canvas_buttons::{self, Button};
+use crate::controller_guide;
 use crate::controller_view;
 use crate::formula::{self, Formula};
 use crate::game::{self, Aim, Game, Input, Objective, Steering};
@@ -128,6 +129,14 @@ enum CanvasView {
     Ship3d,
     /// A flat triangle with velocity and acceleration arrows, on a labeled grid.
     Debug,
+}
+
+/// What the User inputs panel shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HelpTab {
+    /// The keyboard and mouse, or the touch screen.
+    Device,
+    Controller,
 }
 
 /// What the compact (narrow-screen) layout shows.
@@ -259,6 +268,8 @@ pub struct ViewerApp {
     screen: Screen,
     /// What the title screen shows below its buttons.
     title_page: TitlePage,
+    /// The tab of the User inputs panel the player picked, if any.
+    help_tab: Option<HelpTab>,
     /// The scale the title screen is drawn at to fit the window, part of egui's zoom factor. 1
     /// during the flight.
     title_fit: f32,
@@ -327,6 +338,7 @@ impl Default for ViewerApp {
             reserved: Vec::new(),
             screen: Screen::default(),
             title_page: TitlePage::default(),
+            help_tab: None,
             title_fit: 1.0,
             title_rest: 0.0,
             setup: case,
@@ -848,101 +860,40 @@ impl ViewerApp {
 
     /// The user inputs help: touch gestures on a phone or tablet, keyboard and mouse elsewhere.
     /// With a `controller` connected, its controls too.
-    fn user_inputs_ui(ui: &mut egui::Ui, controller: bool) {
+    fn user_inputs_ui(&mut self, ui: &mut egui::Ui, width: f32) {
         let k = keys::Keys::new(ui.ctx());
         ui.heading("User inputs");
-        if k.touch() {
-            Self::touch_inputs_ui(ui);
-        } else {
-            Self::keyboard_mouse_inputs_ui(ui, k);
+        let shown = self.help_tab();
+        let mut tab = shown;
+        ui.horizontal(|ui| {
+            let device = if k.touch() {
+                "Touch"
+            } else {
+                "Keyboard and mouse"
+            };
+            ui.selectable_value(&mut tab, HelpTab::Device, device);
+            ui.selectable_value(&mut tab, HelpTab::Controller, "Controller");
+        });
+        if tab != shown {
+            self.help_tab = Some(tab);
         }
-        if controller {
-            Self::controller_flight_ui(ui);
+        match tab {
+            HelpTab::Device if k.touch() => Self::touch_inputs_ui(ui),
+            HelpTab::Device => Self::keyboard_mouse_inputs_ui(ui, k),
+            HelpTab::Controller => controller_guide::ui(ui, width, self.gamepads.state()),
         }
     }
 
-    /// The flight's controls on a game controller, named as on a Sony one.
-    fn controller_flight_ui(ui: &mut egui::Ui) {
-        use keys::{Key, caps, joiner};
-
-        input_group(ui, "Controller", |ui| {
-            input_row(
-                ui,
-                |ui| caps(ui, &[Key::Word("left stick")]),
-                |ui| ui.label("Turn, harder the further"),
-            );
-            input_row(
-                ui,
-                |ui| {
-                    caps(ui, &[Key::Word("Cross")]);
-                    joiner(ui, "/");
-                    caps(ui, &[Key::Word("R2")]);
-                },
-                |ui| ui.label("Thrust"),
-            );
-            input_row(
-                ui,
-                |ui| {
-                    caps(ui, &[Key::Word("L2")]);
-                    joiner(ui, "held");
-                },
-                |ui| ui.label(format!("Fine control ({}x power)", game::FINE)),
-            );
-            input_row(
-                ui,
-                |ui| {
-                    caps(ui, &[Key::Word("R1")]);
-                    joiner(ui, "/");
-                    caps(ui, &[Key::Word("L1")]);
-                },
-                |ui| ui.label("Zoom in / out"),
-            );
-            input_row(
-                ui,
-                |ui| caps(ui, &[Key::Word("right stick")]),
-                |ui| ui.label("Aim: turn that way; thrust when facing it"),
-            );
-            input_row(
-                ui,
-                |ui| caps(ui, &[Key::Word("Triangle")]),
-                |ui| ui.label("SAS: hold the heading when not turning"),
-            );
-            input_row(
-                ui,
-                |ui| caps(ui, &[Key::Word("Square")]),
-                |ui| ui.label("Engage the selected objective"),
-            );
-            input_row(
-                ui,
-                |ui| caps(ui, &[Key::Word("Circle")]),
-                |ui| ui.label("Return to manual flight"),
-            );
-            input_row(
-                ui,
-                |ui| caps(ui, &[Key::Word("D-pad left / right")]),
-                |ui| ui.label("Select Reach B / Orbit objective"),
-            );
-            input_row(
-                ui,
-                |ui| caps(ui, &[Key::Word("D-pad up/down")]),
-                |ui| ui.label("Orbit altitude; hold L2 for fine adjustment"),
-            );
-            input_row(
-                ui,
-                |ui| caps(ui, &[Key::Word("R3")]),
-                |ui| ui.label("Select orbit target"),
-            );
-            input_row(
-                ui,
-                |ui| caps(ui, &[Key::Word("Options")]),
-                |ui| ui.label("Pause / resume"),
-            );
-            input_row(
-                ui,
-                |ui| caps(ui, &[Key::Word("Create")]),
-                |ui| ui.label("Show / hide the controller view"),
-            );
-        });
+    /// The tab of the User inputs panel showing: the one last picked, or the controller's while
+    /// one is connected.
+    fn help_tab(&self) -> HelpTab {
+        self.help_tab.unwrap_or_else(|| {
+            if self.gamepads.state().is_some() {
+                HelpTab::Controller
+            } else {
+                HelpTab::Device
+            }
+        })
     }
 
     /// The flight's keys.
@@ -1460,7 +1411,6 @@ impl ViewerApp {
     /// it always shows whole. Escape closes it, as does its button.
     fn help_ui(&mut self, ui: &egui::Ui, canvas: egui::Rect, buttons: egui::Rect) {
         const GAP: f32 = 8.0;
-        let controller = self.gamepads.state().is_some();
         // Laid out at its full size at the layer's origin, unclipped, then scaled and moved into
         // place by the layer's transform, which applies to its input too.
         let area = egui::Area::new(ui.scope_id().with("help"))
@@ -1471,7 +1421,8 @@ impl ViewerApp {
                 egui::Vec2::splat(1.0e4),
             ))
             .show(ui.ctx(), |ui| {
-                egui::Frame::popup(ui.style()).show(ui, |ui| Self::user_inputs_ui(ui, controller));
+                egui::Frame::popup(ui.style())
+                    .show(ui, |ui| self.user_inputs_ui(ui, controller_guide::WIDTH));
             });
         let size = area.response.rect.size();
         let top_right = egui::pos2(buttons.left() - GAP, buttons.top());

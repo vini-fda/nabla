@@ -40,38 +40,40 @@ macro_rules! icon {
 }
 
 pub const CROSS: Icon = icon!("cross");
-const CIRCLE: Icon = icon!("circle");
-const SQUARE: Icon = icon!("square");
+pub const CIRCLE: Icon = icon!("circle");
+pub const SQUARE: Icon = icon!("square");
 const TRIANGLE: Icon = icon!("triangle");
 const L1: Icon = icon!("l1");
-const L2: Icon = icon!("l2");
+pub const L2: Icon = icon!("l2");
 const R1: Icon = icon!("r1");
 const R2: Icon = icon!("r2");
 const OPTIONS: Icon = icon!("options");
 const CREATE: Icon = icon!("create");
-const DPAD_UP: Icon = icon!("dpad-up");
-const DPAD_DOWN: Icon = icon!("dpad-down");
-const DPAD_LEFT: Icon = icon!("dpad-left");
-const DPAD_RIGHT: Icon = icon!("dpad-right");
+pub const DPAD_UP: Icon = icon!("dpad-up");
+pub const DPAD_DOWN: Icon = icon!("dpad-down");
+pub const DPAD_LEFT: Icon = icon!("dpad-left");
+pub const DPAD_RIGHT: Icon = icon!("dpad-right");
 const LEFT_STICK: Icon = icon!("left-stick-left-right");
 const RIGHT_STICK: Icon = icon!("right-stick-all");
-const RIGHT_STICK_CLICK: Icon = icon!("right-stick-click");
+pub const RIGHT_STICK_CLICK: Icon = icon!("right-stick-click");
 
 impl Icon {
     fn image(&self, lit: bool) -> egui::Image<'static> {
         let (uri, svg) = if lit { self.solid } else { self.outline };
         egui::Image::from_bytes(uri, svg)
     }
+
+    /// The icon, as big as a row of `ui`'s text, in place of a key's name.
+    pub fn inline(&self, ui: &Ui) -> egui::Image<'static> {
+        self.image(false)
+            .fit_to_exact_size(Vec2::splat(ui.spacing().interact_size.y))
+            .tint(palette::WHITE)
+    }
 }
 
-/// `icon`, as big as a row of `ui`'s text, in place of a key's name.
+/// [`Icon::inline`], on its own.
 pub fn icon_ui(ui: &mut Ui, icon: &Icon) {
-    let side = ui.spacing().interact_size.y;
-    ui.add(
-        icon.image(false)
-            .fit_to_exact_size(Vec2::splat(side))
-            .tint(palette::WHITE),
-    );
+    ui.add(icon.inline(ui));
 }
 
 /// The map, in the units of the wireframe's outlines: the controller in the middle, at

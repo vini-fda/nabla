@@ -1,8 +1,10 @@
 //! Orbit commands: preview edits never change an engaged target until confirmed.
 
-use super::{RightView, Vec3, ViewerApp, palette, world};
+use super::{RightView, Vec3, ViewerApp, input_row, palette, world};
+use crate::controller_guide::{self, Icon};
 use crate::game::Objective;
 use crate::gamepad::{Button, State};
+use crate::keys;
 use crate::orbit::{self, Prediction, Target};
 
 #[derive(Default)]
@@ -222,9 +224,21 @@ impl ViewerApp {
             match self.game.objective() {
                 Objective::ReachB => {
                     ui.label("Reach B and stop.");
-                    ui.small("D-pad left/right: objective");
-                    ui.small("Square / A: autopilot");
-                    ui.small("Circle: manual");
+                    controls_grid(ui, |ui| {
+                        objective_control_row(ui);
+                        input_row(
+                            ui,
+                            |ui| {
+                                controller_guide::icon_ui(ui, &controller_guide::SQUARE);
+                                if !keys::Keys::new(ui.ctx()).touch() {
+                                    keys::joiner(ui, "/");
+                                    keys::caps(ui, &[keys::A]);
+                                }
+                            },
+                            |ui| ui.small("Autopilot"),
+                        );
+                        control_row(ui, &[&controller_guide::CIRCLE], "Manual");
+                    });
                 }
                 Objective::Orbit(_) => self.orbit_ui(ui),
             }
@@ -264,9 +278,11 @@ impl ViewerApp {
                 ui.end_row();
             });
         ui.horizontal_wrapped(|ui| {
-            engage = ui.button("Engage orbit [Square]").clicked();
+            let square = controller_guide::SQUARE.inline(ui);
+            engage = ui.button(("Engage orbit", square)).clicked();
+            let circle = controller_guide::CIRCLE.inline(ui);
             manual = ui
-                .add_enabled(self.assisted(), egui::Button::new("Manual [Circle]"))
+                .add_enabled(self.assisted(), egui::Button::new(("Manual", circle)))
                 .clicked();
         });
         if target.body != body {
@@ -303,10 +319,16 @@ impl ViewerApp {
         } else {
             ui.label("Preview: checking capture...");
         }
-        ui.small("D-pad left/right: objective");
-        ui.small("D-pad up/down: altitude | L2: fine");
-        ui.small("R3: target");
-        ui.small("Square: engage | Circle: manual");
+        controls_grid(ui, |ui| {
+            objective_control_row(ui);
+            control_row(
+                ui,
+                &[&controller_guide::DPAD_UP, &controller_guide::DPAD_DOWN],
+                "Altitude",
+            );
+            control_row(ui, &[&controller_guide::L2], "Hold for fine altitude");
+            control_row(ui, &[&controller_guide::RIGHT_STICK_CLICK], "Next target");
+        });
     }
 
     pub(super) fn draw_orbits(&self, painter: &egui::Painter, rect: egui::Rect) {
@@ -392,6 +414,36 @@ impl ViewerApp {
             painter.add(egui::Shape::line(run, egui::Stroke::new(2.0, palette::RED)));
         }
     }
+}
+
+/// The objective view's list of controls: a column of icons, then what they do.
+fn controls_grid(ui: &mut egui::Ui, rows: impl FnOnce(&mut egui::Ui)) {
+    ui.add_space(4.0);
+    egui::Grid::new("objective-controls")
+        .num_columns(2)
+        .show(ui, rows);
+}
+
+/// A row of a [`controls_grid`].
+fn control_row(ui: &mut egui::Ui, icons: &[&Icon], action: &str) {
+    input_row(
+        ui,
+        |ui| {
+            for icon in icons {
+                controller_guide::icon_ui(ui, icon);
+            }
+        },
+        |ui| ui.small(action),
+    );
+}
+
+/// The row of a [`controls_grid`] that both objectives share.
+fn objective_control_row(ui: &mut egui::Ui) {
+    control_row(
+        ui,
+        &[&controller_guide::DPAD_LEFT, &controller_guide::DPAD_RIGHT],
+        "Objective",
+    );
 }
 
 #[cfg(test)]

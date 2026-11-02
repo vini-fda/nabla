@@ -1,5 +1,6 @@
 #import "@preview/cetz:0.4.1"
 #import "@preview/lilaq:0.6.0" as lq
+#import "@preview/codly:2.0.0" as codly
 
 #set document(
   title: [Nabla Multiplayer Specification],
@@ -14,6 +15,9 @@
 })
 #show title: set align(center)
 #show raw: set text(size: 0.92em)
+// Code blocks, with line numbers. The TLA+ module lives in tla/NablaNet.tla.
+#show raw.where(block: true): codly.new
+#show figure.where(kind: raw): set block(breakable: true)
 #show heading: set block(above: 1.5em, below: 0.8em)
 
 // Only labeled equations are numbered, so they can be referred to as (1), (2), ...
@@ -1303,7 +1307,7 @@ Each milestone's acceptance test is a theorem of this paper, checked on a runnin
   rules(
     columns: (auto, 1fr, 1fr),
     ([], [Work], [Accepted when]),
-    [M0], [Run the TLA+ module of @tla through SANY and TLC, with larger bounds than we enumerated.], [The invariants of @thm-once hold. Fix the spec first if not.],
+    [M0], [Done for the bounds of @tla (`docs/tla/check.sh`). Run the module of @tla through SANY and TLC again whenever it changes.], [The invariants of @thm-once hold. Fix the spec first if not.],
     [M1], [Extract `nabla-sim`. No behavior changes.], [All existing tests pass. `cargo tree -p nabla-sim` has no egui, wgpu or cpal. It builds for WASM.],
     [M2], [World version 2 (tick rate, arena, allowed ships), `Command`, $Sanitize$, $Wall$, $Grant$. Fix the NaN of @steering.], [@lem-total and @lem-grant as property tests over arbitrary bit patterns. @lem-arena against adversarial pilots.],
     [M3], [`nabla-net` and a seeded simulated network with delay, jitter, loss, reordering, duplication, and hostile clients.], [@thm-once, @thm-contain and @thm-exact as assertions in the simulator, over $10^6$ ticks of seeds. @thm-margin: margins settle as predicted. Speeds in worlds with bodies measured, where @lem-arena gives no bound.],
@@ -1336,137 +1340,9 @@ The order is deliberate. Everything through M3 runs without a network, and is de
 
 This module states the machine of @protocol for a fixed set of ships, without $Join$ and $Leave$ or the hold rule's per-command neutral form. The ship state is the free monoid: `x[i]` is the sequence of commands applied so far. Any deterministic $f$ factors through this sequence, so an equality of sequences proved here is an equality of states for every $f$. That includes the tick rate, the wall and each ship's parameters, which all live inside $f$. $Grant$ and $N_max$ are not modeled.
 
-*Status of this module.* No TLA+ tools were available when this was written, so neither SANY nor TLC has seen it, and it may contain syntax errors. That is milestone M0. What has been checked is the same transition system, enumerated exhaustively by a throwaway Python program, with $"Cmds" = {a, b}$, $"Window" = 3$, $"Drop" = 2$: all invariants below held over 256,105 states and 1,183,634 transitions (one ship, `MaxTick` = 3), and over 100,193 states and 421,401 transitions (two ships, `MaxTick` = 1). Mutants, to see that the invariants can fail: accepting late commands violates `HistoryStable`, removing the monotone guard violates `BaseMonotone`, and removing Advance violates `Lead`. Last-write-wins violates nothing, as @thm-once discusses. Liveness was not checked, as the bounded model has no infinite behaviors of interest, and @thm-live rests on its proof alone.
+*Status of this module.* SANY parses it and TLC finds no violation of any invariant or of the two action properties, with $"Cmds" = {a, b}$, $"Window" = 3$, $"Drop" = 2$ unless stated: 256,105 distinct states (one ship, `MaxTick` = 3), 100,193 (two ships, `MaxTick` = 1), and 5,488,697 (one ship, `Window` = 4, `MaxTick` = 4). The first two counts equal those of the throwaway Python enumeration that preceded the module. SANY found two syntax errors in the first draft, bounds that depended on an earlier bound variable, which are fixed. `docs/tla/check.sh` runs both tools on `docs/tla/NablaNet.tla`, the file this section embeds. Mutants, to see that the invariants can fail: accepting late commands violates `HistoryStable`, removing the monotone guard violates `BaseMonotone`, and removing Advance violates `Lead`. Last-write-wins violates nothing, as @thm-once discusses. Liveness was not checked, as the bounded model has no infinite behaviors of interest, and @thm-live rests on its proof alone. The deadlock check is off, because the bounded model ends when the clock reaches `MaxTick`.
 
-#text(size: 0.88em)[
-```
----------------------------- MODULE NablaNet ----------------------------
-EXTENDS Naturals, Sequences
-
-CONSTANTS Ships, Cmds, Neutral, None, Window, Drop, MaxTick
-ASSUME Neutral \notin Cmds /\ None \notin Cmds \cup {Neutral}
-
-Stamps == 0 .. (MaxTick + 1)
-
-VARIABLES T, x, last, miss, buf,   \* the server
-          k, cmd, baseT, baseX,    \* the clients
-          up, down                 \* datagrams in flight
-
-vars == <<T, x, last, miss, buf, k, cmd, baseT, baseX, up, down>>
-
-Init ==
-  /\ T = 0
-  /\ x = [i \in Ships |-> <<>>]
-  /\ last = [i \in Ships |-> Neutral]
-  /\ miss = [i \in Ships |-> 0]
-  /\ buf = [i \in Ships |-> [s \in Stamps |-> None]]
-  /\ k = [i \in Ships |-> 0]
-  /\ cmd = [i \in Ships |-> [s \in Stamps |-> None]]
-  /\ baseT = [i \in Ships |-> 0]
-  /\ baseX = [i \in Ships |-> <<>>]
-  /\ up = {}
-  /\ down = {}
-
-Issue(i, c) ==
-  /\ k[i] <= MaxTick
-  /\ cmd' = [cmd EXCEPT ![i][k[i]] = c]
-  /\ up' = up \cup {[ship |-> i, tick |-> k[i], cmd |-> c]}
-  /\ k' = [k EXCEPT ![i] = @ + 1]
-  /\ UNCHANGED <<T, x, last, miss, buf, baseT, baseX, down>>
-
-\* Discard: a stamp below T, or at or above T + Window, is not deliverable.
-Deliver(m) ==
-  /\ m \in up
-  /\ T <= m.tick /\ m.tick < T + Window
-  /\ buf[m.ship][m.tick] = None
-  /\ buf' = [buf EXCEPT ![m.ship][m.tick] = m.cmd]
-  /\ UNCHANGED <<T, x, last, miss, k, cmd, baseT, baseX, up, down>>
-
-Chosen(i) ==
-  IF buf[i][T] # None THEN buf[i][T]
-  ELSE IF miss[i] + 1 < Drop THEN last[i]
-  ELSE Neutral
-
-Tick ==
-  /\ T < MaxTick
-  /\ x' = [i \in Ships |-> Append(x[i], Chosen(i))]
-  /\ last' = [i \in Ships |-> Chosen(i)]
-  /\ miss' = [i \in Ships |-> IF buf[i][T] # None THEN 0 ELSE miss[i] + 1]
-  /\ buf' = [i \in Ships |-> [buf[i] EXCEPT ![T] = None]]
-  /\ T' = T + 1
-  /\ down' = down \cup {[ship |-> i, tick |-> T + 1,
-                         x |-> Append(x[i], Chosen(i))] : i \in Ships}
-  /\ UNCHANGED <<k, cmd, baseT, baseX, up>>
-
-\* The guard keeps the base monotone. The update of k is the Advance rule.
-Absorb(m) ==
-  /\ m \in down
-  /\ m.tick > baseT[m.ship]
-  /\ baseT' = [baseT EXCEPT ![m.ship] = m.tick]
-  /\ baseX' = [baseX EXCEPT ![m.ship] = m.x]
-  /\ k' = [k EXCEPT ![m.ship] = IF @ < m.tick THEN m.tick ELSE @]
-  /\ UNCHANGED <<T, x, last, miss, buf, cmd, up, down>>
-
-LoseUp(m) ==
-  /\ m \in up
-  /\ up' = up \ {m}
-  /\ UNCHANGED <<T, x, last, miss, buf, k, cmd, baseT, baseX, down>>
-
-LoseDown(m) ==
-  /\ m \in down
-  /\ down' = down \ {m}
-  /\ UNCHANGED <<T, x, last, miss, buf, k, cmd, baseT, baseX, up>>
-
-Next ==
-  \/ \E i \in Ships, c \in Cmds : Issue(i, c)
-  \/ \E m \in up : Deliver(m) \/ LoseUp(m)
-  \/ Tick
-  \/ \E m \in down : Absorb(m) \/ LoseDown(m)
-
-Spec == Init /\ [][Next]_vars /\ WF_vars(Tick)
-                              /\ SF_vars(\E m \in down : Absorb(m))
-
-Prefix(s, n) == SubSeq(s, 1, n)
-
-\* The prediction: a stamp the client skipped replays as the command before it.
-RECURSIVE Pred(_, _)
-Pred(i, n) ==
-  IF n <= baseT[i] THEN baseX[i]
-  ELSE LET p == Pred(i, n - 1)
-           held == IF Len(p) = 0 THEN Neutral ELSE p[Len(p)]
-       IN  Append(p, IF cmd[i][n - 1] # None THEN cmd[i][n - 1] ELSE held)
-
-TickIntegrity == \A i \in Ships : Len(x[i]) = T
-
-BufferBound ==
-  \A i \in Ships, s \in Stamps : buf[i][s] # None => T <= s /\ s < T + Window
-
-SnapshotTruth == \A i \in Ships : baseX[i] = Prefix(x[i], baseT[i])
-
-BufferFidelity ==
-  \A i \in Ships, s \in Stamps : buf[i][s] # None => buf[i][s] = cmd[i][s]
-
-Provenance ==
-  \A i \in Ships, n \in 1 .. Len(x[i]) :
-    LET c == x[i][n]
-        prev == IF n = 1 THEN Neutral ELSE x[i][n - 1]
-    IN  c = cmd[i][n - 1] \/ c = prev \/ c = Neutral
-
-Lead == \A i \in Ships : baseT[i] <= k[i]
-
-\* Where the replay agrees with the log since the base, it equals the log.
-ExactPrediction ==
-  \A i \in Ships, n \in baseT[i] .. (IF k[i] < T THEN k[i] ELSE T) :
-    (\A t \in (baseT[i] + 1) .. n : Pred(i, n)[t] = x[i][t])
-      => Pred(i, n) = Prefix(x[i], n)
-
-HistoryStable ==
-  [][\A i \in Ships : Prefix(x'[i], Len(x[i])) = x[i]]_vars
-
-BaseMonotone == [][\A i \in Ships : baseT'[i] >= baseT[i]]_vars
-=========================================================================
-```
-]
+#text(size: 0.88em)[#raw(read("tla/NablaNet.tla"), lang: "tla", block: true)]
 
 = How the numbers were obtained <numerics>
 

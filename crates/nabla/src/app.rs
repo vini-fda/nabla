@@ -352,7 +352,7 @@ impl Default for ViewerApp {
             drag_orbits: false,
             show_velocity: true,
             show_acceleration: true,
-            show_path: true,
+            show_path: false,
             show_prediction: true,
             prediction: orbits::Forecast::default(),
             show_collision_meshes: false,

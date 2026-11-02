@@ -137,18 +137,13 @@ jobs:
       # for this workspace's crates only: the dependencies build exactly as in a release build.
       # The release app itself (whole-program LTO) and the macOS bundle are built by
       # release.yml, on version tags only.
-      # Includes the stored-solution tests (every solution still solves every case and matches
-      # its index entry), a real compile of a solution source by the app, and the ASCII lint
+      # Includes the solution tests (every solution still solves every case) and the ASCII lint
       # for the app sources.
       - name: Test
         run: >-
           cargo test $CARGO_FLAGS --workspace --release --target ${{ matrix.target }}
           --config 'profile.release.package.nabla-core.debug-assertions=true'
           --config 'profile.release.package.nabla-core.overflow-checks=true'
-          --config 'profile.release.package.nabla-optimization.debug-assertions=true'
-          --config 'profile.release.package.nabla-optimization.overflow-checks=true'
-          --config 'profile.release.package.nabla-solutions.debug-assertions=true'
-          --config 'profile.release.package.nabla-solutions.overflow-checks=true'
           --config 'profile.release.package.nabla-synth.debug-assertions=true'
           --config 'profile.release.package.nabla-synth.overflow-checks=true'
           --config 'profile.release.package.nabla.debug-assertions=true'

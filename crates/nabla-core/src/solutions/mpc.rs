@@ -5,12 +5,12 @@
 //! in `n` steps when replayed. The controller keeps such a verified plan at all times and spends
 //! its effort on making it shorter:
 //!
-//! * At `k = 0`, from each of a few seed laws (copies of the stored feedback solutions, the first
-//!   being `tolerance_aware_tuned`), the plan is the law's rollout, shortened by a continuation
-//!   on the horizon `n`: each candidate is the plan resampled in time to `n` steps, corrected by
-//!   projected Gauss–Newton until its rollout ends in the target set. The shortening doubles
+//! * At `k = 0`, from each of a few seed laws (one feedback law, with `SEEDS` as its constants),
+//!   the plan is the law's rollout, shortened by a continuation on the horizon `n`: each
+//!   candidate is the plan resampled in time to `n` steps, corrected by projected Gauss–Newton
+//!   until its rollout ends in the target set. The shortening doubles
 //!   after a success and halves after a failure. The shortest plan over the seeds is kept, so no
-//!   case takes longer than with `tolerance_aware_tuned`.
+//!   case takes longer than with the first seed's law.
 //! * At every later step (receding horizon), a working candidate a few steps shorter than the
 //!   remaining plan gets a few more Gauss–Newton iterations. It is shifted along with the plan,
 //!   so its iterations accumulate over steps. A stalled candidate is dropped, and after a failed
@@ -35,7 +35,7 @@
 //!
 //! Every buffer is allocated once, in `new`, with room for `max_steps` controls.
 
-use nabla_core::*;
+use crate::{Control, Controller, Params, State, Task, step};
 use std::f64::consts::PI;
 
 /// The tunable constants.
@@ -55,12 +55,10 @@ pub struct Gains {
     pub step_iters: f64,
     /// Longest wait (steps) between receding-horizon attempts after failures.
     pub patience: f64,
-    /// Seed laws of the initial search (1 to 4).
-    pub seeds: f64,
 }
 
 impl Gains {
-    /// Tuned by coordinate descent on the standard suite (27596 → 27378), accepting only
+    /// Tuned by coordinate descent on the standard suite, accepting only
     /// improvements that also solve 300 random validation cases (seed 12345); the result solves
     /// 2000 cases it never saw (seed 777).
     pub const DEFAULT: Gains = Gains {
@@ -71,13 +69,11 @@ impl Gains {
         init_attempts: 59.59008,
         step_iters: 3.0,
         patience: 7.040000000000001,
-        seeds: 4.0,
     };
 }
 
 /// Halvings of the line search before an iteration gives up.
 const LINE_SEARCH: usize = 4;
-
 
 // ---------------------------------------------------------------------------------------------
 // Portable math.
@@ -198,7 +194,11 @@ pub fn atan2(y: f64, x: f64) -> f64 {
     if x > 0.0 {
         atan(y / x)
     } else if x < 0.0 {
-        if y >= 0.0 { atan(y / x) + PI } else { atan(y / x) - PI }
+        if y >= 0.0 {
+            atan(y / x) + PI
+        } else {
+            atan(y / x) - PI
+        }
     } else if y > 0.0 {
         FRAC_PI_2
     } else if y < 0.0 {
@@ -236,21 +236,57 @@ fn quantize_state(s: &State) -> State {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Seed laws: `tolerance_aware_tuned`, with its constants as a parameter.
+// Seed laws: a two-layer feedback law, with its constants as a parameter.
 
 /// Constants of a baseline law: brake fraction, turn fraction, turn margin, velocity steps,
-/// heading steps, align, deadband, relative deadband (see `tolerance_aware_tuned`).
+/// heading steps, align, deadband, relative deadband.
 type Law = [f64; 8];
 
-/// The seeds of the initial search. The first is `tolerance_aware_tuned`'s `Gains::DEFAULT`, so
-/// that no case takes longer than with it; the others are the constants of
-/// `flip_and_burn_tuned`, of `tolerance_aware`, and a slow, cautious law, to start the search
-/// from differently shaped maneuvers.
+/// The seeds of the initial search, which keeps the shortest plan. Its optimizer only finds local
+/// optima, so each seed starts it from a differently shaped maneuver. The first is the best tuned
+/// law, so that no case takes longer than with it; the others are the constants of
+/// `flip_and_burn_tuned`, of a less tuned law, and a slow, cautious law.
 const SEEDS: [Law; 4] = [
-    [0.9189911838503996, 0.9506236609762766, 0.5972282731682141, 7.677088681433671, 1.9418379423190761, 0.29783295299101137, 0.16706250000000003, 1.1397686269921878],
-    [0.8385254915624212, 1.00595096399606, 0.9871541705259741, 3.889969889864292, 2.087576904999343, 0.36943031601686555, 0.375, 1.1397686269921878],
-    [0.9282739230812116, 1.056248512195863, 0.5429347937892856, 6.199639511971215, 1.5656826787495068, 0.36712137654176014, 0.1875, 0.81],
-    [0.6, 0.8, 1.5, 10.0, 2.0, 0.2, 0.16706250000000003, 1.1397686269921878],
+    [
+        0.9189911838503996,
+        0.9506236609762766,
+        0.5972282731682141,
+        7.677088681433671,
+        1.9418379423190761,
+        0.29783295299101137,
+        0.16706250000000003,
+        1.1397686269921878,
+    ],
+    [
+        0.8385254915624212,
+        1.00595096399606,
+        0.9871541705259741,
+        3.889969889864292,
+        2.087576904999343,
+        0.36943031601686555,
+        0.375,
+        1.1397686269921878,
+    ],
+    [
+        0.9282739230812116,
+        1.056248512195863,
+        0.5429347937892856,
+        6.199639511971215,
+        1.5656826787495068,
+        0.36712137654176014,
+        0.1875,
+        0.81,
+    ],
+    [
+        0.6,
+        0.8,
+        1.5,
+        10.0,
+        2.0,
+        0.2,
+        0.16706250000000003,
+        1.1397686269921878,
+    ],
 ];
 
 /// Longest coast the baseline's finisher looks ahead, in steps.
@@ -272,12 +308,20 @@ struct Baseline {
 impl Baseline {
     fn new(task: &Task) -> Self {
         let p = &task.params;
-        Baseline { task: *task, accel: p.f_max / p.mass, alpha: p.tau_max / p.inertia, law: SEEDS[0] }
+        Baseline {
+            task: *task,
+            accel: p.f_max / p.mass,
+            alpha: p.tau_max / p.inertia,
+            law: SEEDS[0],
+        }
     }
 
     fn spin_down(&self, s: &State) -> Control {
         let p = &self.task.params;
-        Control { thrust: 0.0, torque: (-p.inertia * s.omega / p.h).clamp(-p.tau_max, p.tau_max) }
+        Control {
+            thrust: 0.0,
+            torque: (-p.inertia * s.omega / p.h).clamp(-p.tau_max, p.tau_max),
+        }
     }
 
     fn finishes(&self, s: &State) -> bool {
@@ -297,22 +341,37 @@ impl Baseline {
         }
         let p = &self.task.params;
         let h = p.h;
-        let [brake_fraction, turn_fraction, turn_margin, velocity_steps, heading_steps, align, deadband, relative_deadband] =
-            self.law;
+        let [
+            brake_fraction,
+            turn_fraction,
+            turn_margin,
+            velocity_steps,
+            heading_steps,
+            align,
+            deadband,
+            relative_deadband,
+        ] = self.law;
         let (rx, ry) = (self.task.goal.x - s.x, self.task.goal.y - s.y);
         let dist = norm(rx, ry);
         let a_brake = brake_fraction * self.accel;
         let t_turn = turn_margin * 2.0 * (PI / (turn_fraction * self.alpha)).sqrt() + 2.0 * h;
         let speed = a_brake * ((t_turn * t_turn + 2.0 * dist / a_brake).sqrt() - t_turn);
-        let (vx_des, vy_des) = if dist > 0.0 { (speed * rx / dist, speed * ry / dist) } else { (0.0, 0.0) };
+        let (vx_des, vy_des) = if dist > 0.0 {
+            (speed * rx / dist, speed * ry / dist)
+        } else {
+            (0.0, 0.0)
+        };
         let (ex, ey) = (vx_des - s.vx, vy_des - s.vy);
         let v_err = norm(ex, ey);
-        let active = v_err > deadband * self.task.tolerance.velocity || v_err > relative_deadband * speed;
+        let active =
+            v_err > deadband * self.task.tolerance.velocity || v_err > relative_deadband * speed;
         let accel = (v_err / (velocity_steps * h)).min(self.accel);
         let heading = if active { atan2(ey, ex) } else { s.theta };
         let err = wrap(heading - s.theta);
         let omega_des = err.signum()
-            * (2.0 * turn_fraction * self.alpha * err.abs()).sqrt().min(err.abs() / (heading_steps * h));
+            * (2.0 * turn_fraction * self.alpha * err.abs())
+                .sqrt()
+                .min(err.abs() / (heading_steps * h));
         let torque = (p.inertia * (omega_des - s.omega) / h).clamp(-p.tau_max, p.tau_max);
         let thrust = if active && err.abs() < align {
             (p.mass * accel * err.cos()).clamp(0.0, p.f_max)
@@ -396,7 +455,14 @@ fn step_sens(p: &Params, s: &State, u: &Control) -> (State, Sens) {
     let theta = s.theta + h * s.omega + 0.5 * alpha * h * h;
     let omega = s.omega + alpha * h;
     let next = if u.thrust == 0.0 {
-        State { x: s.x + h * s.vx, y: s.y + h * s.vy, vx: s.vx, vy: s.vy, theta, omega }
+        State {
+            x: s.x + h * s.vx,
+            y: s.y + h * s.vy,
+            vx: s.vx,
+            vy: s.vy,
+            theta,
+            omega,
+        }
     } else {
         State {
             x: s.x + h * s.vx + a * d[0],
@@ -518,7 +584,12 @@ impl Model {
         let mut dr = [[0.0; 6]; 5];
         // Vector groups: position (state 0, 1) and velocity (state 2, 3).
         let groups = [
-            (s.x - self.task.goal.x, s.y - self.task.goal.y, t.position, 0),
+            (
+                s.x - self.task.goal.x,
+                s.y - self.task.goal.y,
+                t.position,
+                0,
+            ),
             (s.vx, s.vy, t.velocity, 2),
         ];
         for (ex, ey, eps, i) in groups {
@@ -635,7 +706,10 @@ impl Solution {
         let cap = task.max_steps;
         Solution {
             task: *task,
-            model: Model { task: *task, margin: gains.margin },
+            model: Model {
+                task: *task,
+                margin: gains.margin,
+            },
             gains,
             baseline: Baseline::new(task),
             plan: vec![Control::default(); cap],
@@ -662,7 +736,15 @@ impl Solution {
     /// prediction if `fresh`, else from the stored one with residual `work_r`. The first
     /// control stays fixed if `fix_first`. Returns the first step in the target set (of the
     /// exact rollout); otherwise `cand` and `work_r` hold the last accepted iterate.
-    fn solve(&mut self, s0: &State, real: &State, n: usize, iters: usize, fresh: bool, fix_first: bool) -> Solve {
+    fn solve(
+        &mut self,
+        s0: &State,
+        real: &State,
+        n: usize,
+        iters: usize,
+        fresh: bool,
+        fix_first: bool,
+    ) -> Solve {
         let p = self.task.params;
         if fresh {
             match self.model.rollout(&mut self.cand, s0, real, n) {
@@ -683,7 +765,10 @@ impl Solution {
                 let sn = &self.cand.sens[k];
                 for (i, l) in lam.iter().enumerate() {
                     let gf = l[0] * sn[0][2] + l[1] * sn[1][2] + l[2] * sn[2][2] + l[3] * sn[3][2];
-                    let gt = l[0] * sn[0][3] + l[1] * sn[1][3] + l[2] * sn[2][3] + l[3] * sn[3][3]
+                    let gt = l[0] * sn[0][3]
+                        + l[1] * sn[1][3]
+                        + l[2] * sn[2][3]
+                        + l[3] * sn[3][3]
                         + l[4] * b4
                         + l[5] * b5;
                     self.jac[k][0][i] = gf * scale[0];
@@ -695,7 +780,8 @@ impl Solution {
                     row[2] = l2 + h * l0;
                     row[3] = l3 + h * l1;
                     row[4] = l4 + l0 * sn[0][0] + l1 * sn[1][0] + l2 * sn[2][0] + l3 * sn[3][0];
-                    row[5] = l5 + h * l4 + l0 * sn[0][1] + l1 * sn[1][1] + l2 * sn[2][1] + l3 * sn[3][1];
+                    row[5] =
+                        l5 + h * l4 + l0 * sn[0][1] + l1 * sn[1][1] + l2 * sn[2][1] + l3 * sn[3][1];
                 }
             }
 
@@ -716,7 +802,9 @@ impl Solution {
                 for (i, row) in m.iter_mut().enumerate() {
                     row[i] += damping * mean + 1e-300;
                 }
-                let Some(sol) = solve5(&m, &r) else { return Solve::Stalled };
+                let Some(sol) = solve5(&m, &r) else {
+                    return Solve::Stalled;
+                };
                 y = sol;
                 if pass == 0 {
                     y0 = y;
@@ -812,7 +900,14 @@ impl Solution {
             self.cand.u[0] = self.plan[self.head];
         }
         let s = self.state;
-        match self.solve(&s, real, self.work, self.gains.step_iters as usize, fresh, true) {
+        match self.solve(
+            &s,
+            real,
+            self.work,
+            self.gains.step_iters as usize,
+            fresh,
+            true,
+        ) {
             Solve::Hit(m) if m < l => {
                 self.accept(m);
                 self.shorten *= 2;
@@ -837,7 +932,7 @@ impl Solution {
     fn init(&mut self, real: &State) {
         self.state = quantize_state(real);
         let mut best = None;
-        for law in SEEDS.iter().take(self.gains.seeds as usize) {
+        for law in &SEEDS {
             // The first seed is the fallback: it gets the whole step budget.
             let limit = best.map_or(self.task.max_steps, |b: usize| 2 * b);
             self.baseline.law = *law;

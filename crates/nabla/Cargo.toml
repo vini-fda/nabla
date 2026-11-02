@@ -3,7 +3,7 @@ name = "nabla"
 version.workspace = true
 edition.workspace = true
 rust-version = "1.99"
-description = "Nabla: replays, plots and compiles control policies of the 2D ship, natively and on the web."
+description = "Nabla: replays and plots control policies of the 2D ship, natively and on the web."
 license = "MIT OR Apache-2.0"
 include = ["LICENSE-APACHE", "LICENSE-MIT", "**/*.rs", "Cargo.toml", "assets/fonts/*", "assets/formulas/*"]
 
@@ -33,8 +33,6 @@ gltf = { version = "1.4.1", default-features = false, features = ["utils"] }
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
 log = "0.4.34"
 nabla-core.workspace = true
-nabla-optimization.workspace = true
-nabla-solutions = { workspace = true, features = ["registry"] }
 nabla-synth.workspace = true
 
 # native:
@@ -44,7 +42,6 @@ cpal = "0.18.2"
 # Without the default `humantime` (timestamps) and `regex` (regex filters in `RUST_LOG`)
 # features, which pull in `jiff` and `regex`: about 13 s of compile time.
 env_logger = { version = "0.11.11", default-features = false, features = ["auto-color"] }
-rfd = "0.17.2"
 
 # web:
 [target.'cfg(target_arch = "wasm32")'.dependencies]

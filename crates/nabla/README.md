@@ -2,13 +2,13 @@
 
 A viewer for the control policies of the 2D ship problem ([`nabla-core`](../nabla-core)), rendered with [egui](https://github.com/emilk/egui). It is also the web app deployed to GitHub Pages: https://vini-fda.github.io/nabla/
 
-Open a solution's Rust source and pick a test case. The viewer compiles and runs the solution on that case with the exact sampled-data model of `nabla-core`. It then replays the run on a pannable, zoomable canvas.
+Pick a solution and a test case. The viewer runs the solution on that case with the exact sampled-data model of `nabla-core`. It then replays the run on a pannable, zoomable canvas.
 
 Playback is continuous in time. Between controller samples the control is held constant, so the state at any `t = k h + τ` is exactly one partial `step` of length `τ` from `s_k`. It is computed, not interpolated. The display sampling time `Δt = h/n` can be made much finer than `h`, for smooth playback on high-refresh displays.
 
 ## What's on screen
 
-- **Left panel**: the solution source (open, reload, compile status and errors), the case picker, the case's parameters and initial state, the outcome (steps to reach the target set), the state and control at the current frame, display options, and sound: the ion thruster's sound (five synthesized styles to choose from), master/ion/RCS volume knobs, and buttons to hear each thruster on its own.
+- **Left panel**: the solution picker, the case picker, the case's parameters and initial state, the outcome (steps to reach the target set), the state and control at the current frame, display options, and sound: the ion thruster's sound (five synthesized styles to choose from), master/ion/RCS volume knobs, and buttons to hear each thruster on its own.
 - **Main canvas**: the ship drawn as an isosceles triangle in a Desmos-style coordinate grid you can pan (drag) and zoom (scroll, anchored at the cursor). It starts as a top-down orthographic view; the axes gizmo in its top right corner turns it to look from any side. Right of it, floating buttons show or hide the gizmo (sphere), follow the ship (rocket) and show or hide the path (a curve between two dots), turning light blue while on, switch dragging the canvas between panning and rotating the camera (arrows), and switch between orthographic and perspective projection (grid). Perspective uses the field of view of Blender's default 50 mm camera, and keeps the plane through the view's center at the same zoom as orthographic. It shows the full path (grey), the part travelled so far (blue), the start, the goal `B` with its position tolerance, and the velocity (green) and acceleration (red) arrows.
 - **Bottom panel**: playback controls, the playback speed (relative to real time), the display sampling time `Δt`, and an After Effects-style timeline. The timeline has a thin yellow mark at every controller sample `t_k = k h` and a playhead. Click or drag to seek, scroll to zoom, shift+scroll to pan, double-click to show the whole run.
 - **Right panel**: x, y, vx, vy, θ, ω and the controls F, τ over the whole run, with a cursor at the current time. Click a plot to jump to that time.
@@ -59,20 +59,9 @@ The plots, plumes and sound follow the flight, and a marker at the canvas's edge
 
 On phones and tablets (and once a touch screen is used), controls appear over the canvas. In the bottom left corner, a joystick turns the ship: push it sideways, and the further it goes the harder it turns (left counterclockwise, right clockwise), with a small dead zone in the middle. It follows the finger that took it until that finger lifts, even off its base. In the bottom right, a thrust pad is held while a finger is on it, and a **fine** latch above it turns on or off with a tap. So one thumb steers while the other thrusts.
 
-## Solutions are Rust source files
+## Solutions
 
-A solution is a `.rs` file defining `pub struct Solution` implementing `nabla_core::Controller` (see [`TASK.md`](../../TASK.md)). To open one:
-
-- use **Open .rs…**,
-- drop the file on the window,
-- pass its path on the command line, or
-- pick a stored solution from the database list.
-
-**Show code** opens a window with the source, syntax highlighted and with line numbers.
-
-To run a source on the selected case, the viewer compiles it with `nabla-optimization`'s harness on a background thread, then asks the compiled binary for the trajectory of that case. Compile errors and crashes are shown in the left panel. With **Recompile when the file is saved**, editing the file in your editor recompiles it and updates the replay in place, keeping the playhead and the view.
-
-Sources that are byte-identical to a stored solution skip compilation: the viewer runs the copy compiled into it (`nabla-solutions`' `registry` feature). That is the only way to run solutions in the web build, which cannot compile Rust.
+The viewer offers the solutions compiled into `nabla-core` (see [`TASK.md`](../../TASK.md)), and starts on the first, `mpc`. **Show code** opens a window with the source, syntax highlighted and with line numbers.
 
 ## Architecture
 
@@ -80,8 +69,7 @@ Sources that are byte-identical to a stored solution skip compilation: the viewe
 src/
 ├── main.rs       # eframe entry point (native + WASM)
 ├── lib.rs        # module wiring
-├── app.rs        # egui UI: source & case, playback, canvas, plots, code window
-├── source.rs    ← solution source files; compiling and running them in the background
+├── app.rs        # egui UI: solution & case, playback, canvas, plots, code window
 ├── replay.rs    ← a solution run on a case, exact states between samples, playback on the Δt grid
 ├── game.rs      ← gameplay mode: a flight that grows a sample at a time from the player's controls, touch joystick and pads
 ├── timeline.rs  ← After Effects-style timeline: sample marks, playhead, zoom
@@ -100,11 +88,10 @@ src/
 From the repository root:
 
 ```sh
-cargo run --release -p nabla                        # opens the best stored solution
-cargo run --release -p nabla -- path/to/solution.rs # opens this source
+cargo run --release -p nabla
 ```
 
-While working on the viewer, use `cargo nabla` (arguments go after `--` as above). It builds with the `fast` profile, which keeps release's optimization level but skips its link-time optimization, so after an edit the viewer rebuilds in seconds instead of about a minute.
+While working on the viewer, use `cargo nabla`. It builds with the `fast` profile, which keeps release's optimization level but skips its link-time optimization, so after an edit the viewer rebuilds in seconds instead of about a minute.
 
 On macOS, `cargo nabla` (`cargo xtask run --profile fast`) runs the viewer inside an app bundle, `Nabla.app`, with the layered Icon Composer icon (`crates/nabla/macos/nabla_macOS.icon`) that macOS 26 renders with Liquid Glass; a bare executable, as from `cargo run`, can only show a flat rounded icon. `cargo xtask bundle` builds `target/release/Nabla.app` on its own. The Liquid Glass icon needs Xcode 26, for `actool`; without it the bundle gets a flat icon. See `cargo xtask help`.
 

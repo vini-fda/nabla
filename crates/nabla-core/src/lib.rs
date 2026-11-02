@@ -5,12 +5,11 @@
 //! * [`model`]: ship dynamics and the exact sampled-data step `Φ_h`.
 //! * [`problem`]: target set, the [`Controller`] interface and the simulation loop.
 //! * [`suite`]: the test cases.
-//!
-//! Evaluating, compiling and searching for policies is `nabla-optimization`; the stored
-//! policies are `nabla-solutions`.
+//! * [`solutions`]: the policies found so far.
 
 pub mod model;
 pub mod problem;
+pub mod solutions;
 pub mod suite;
 
 pub use model::{Control, Params, State, step};

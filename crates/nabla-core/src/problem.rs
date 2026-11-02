@@ -52,9 +52,9 @@ impl Task {
     }
 }
 
-/// A control policy. A solution is Rust source defining `pub struct Solution` implementing this.
+/// A control policy.
 ///
-/// One `Solution` is created per case and then queried at steps `k = 0, 1, 2, …` with the exact
+/// One controller is created per case and then queried at steps `k = 0, 1, 2, …` with the exact
 /// current state, until the target is reached. It may keep internal state (e.g. a plan), and may
 /// call [`step`] to predict the motion.
 pub trait Controller {

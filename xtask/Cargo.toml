@@ -7,9 +7,6 @@ publish = false
 
 [dependencies]
 anyhow = "1.0.104"
-nabla-core.workspace = true
-nabla-optimization.workspace = true
-nabla-solutions.workspace = true
 xshell = "0.2.7"
 
 [lints]

@@ -315,13 +315,13 @@ impl Playback {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nabla_core::solutions::SOLUTIONS;
     use nabla_core::suite;
-    use nabla_solutions::registry::valid;
 
     const H: f64 = 0.1;
 
     fn replay() -> Replay {
-        let (solution, _) = valid().into_iter().next().expect("a stored solution");
+        let solution = &SOLUTIONS[0];
         let case = suite::standard()
             .into_iter()
             .find(|c| c.name == "rest_facing_goal")

@@ -1,6 +1,0 @@
-name	score	max_steps	source_hash
-mpc	27378	3063	cbca814332c2d075
-tolerance_aware_tuned	42942	3269	9ec2b76d56176424
-flip_and_burn_tuned	58754	5037	48bfc17e3da45da6
-tolerance_aware	61911	12879	e2d51dd06f41dfb8
-flip_and_burn	95489	8168	315ae8bed556a6f5

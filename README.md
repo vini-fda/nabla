@@ -2,21 +2,18 @@
 
 A ship in the plane with thrust along its heading and a torque. Find a controller that brings it to rest at a goal point in the fewest steps.
 
-This is a finite, discretized version of a control problem described in `docs/main.typ`. The workspace has four crates:
+This is a finite, discretized version of a control problem described in `docs/main.typ`. The workspace has three crates:
 
-- **[`nabla-core`](crates/nabla-core):** the exact sampled-data state-space model of the ship, with the control held constant over each step, and the problem: the target set, the `Controller` interface and the fixed test cases every solution must solve.
-- **[`nabla-optimization`](crates/nabla-optimization):** evaluation and scoring of control policies, and the harness that compiles a solution given as Rust source and scores it.
-- **[`nabla-solutions`](crates/nabla-solutions):** the solutions found so far ([`solutions/`](solutions)) and their database.
+- **[`nabla-core`](crates/nabla-core):** the exact sampled-data state-space model of the ship, with the control held constant over each step; the problem: the target set, the `Controller` interface and the fixed test cases every solution must solve; and the [solutions](crates/nabla-core/src/solutions) found so far.
+- **[`nabla-synth`](crates/nabla-synth):** the thruster sounds' synthesizer, also built alone for the web app's AudioWorklet.
 - **[`nabla`](crates/nabla):** the app, which replays and plots the solutions.
 
-See [`TASK.md`](TASK.md) for the rules, the interface a solution implements, and the commands.
+See [`TASK.md`](TASK.md) for the rules and the interface a solution implements.
 
-**Web app:** https://vini-fda.github.io/nabla/ replays the stored solutions on every test case in continuous time, with plots, a timeline and the solution's source. The same app runs natively ([`crates/nabla/`](crates/nabla)), where it can also compile and replay any solution file, recompiling when you save it.
+**Web app:** https://vini-fda.github.io/nabla/ replays the solutions on every test case in continuous time, with plots, a timeline and the solution's source. The same app runs natively ([`crates/nabla/`](crates/nabla)).
 
 ```sh
-cargo xtask eval path/to/solution.rs     # score a solution (or several at once)
-cargo xtask leaderboard                  # stored solutions, best first
-cargo test --workspace --release         # model, app and every stored solution
+cargo test --workspace --release         # model, app and every solution
 cargo run --release -p nabla             # the app, natively
 ```
 
@@ -36,7 +33,7 @@ Pushing a version tag `vX.Y.Z` builds the native app and publishes a [GitHub Rel
    git push origin v0.2.0
    ```
 
-`.github/workflows/release.yml` first checks that the tag matches the workspace version and reruns CI. It then builds each target on a native runner and publishes the release with checksums and the notes from `.github/release-notes.md`. Released apps compile solution sources against the tagged version of `nabla-core` and `nabla-optimization` in this repository, so a version's tag must stay in place once released.
+`.github/workflows/release.yml` first checks that the tag matches the workspace version and reruns CI. It then builds each target on a native runner and publishes the release with checksums and the notes from `.github/release-notes.md`.
 
 ### Signing the macOS app
 

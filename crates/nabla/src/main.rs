@@ -27,9 +27,6 @@ fn app_icon() -> egui::IconData {
 fn main() -> eframe::Result {
     env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
 
-    // Optional argument: a solution source file to open.
-    let source = std::env::args_os().nth(1).map(std::path::PathBuf::from);
-
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1400.0, 850.0])
@@ -47,7 +44,7 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Nabla",
         native_options,
-        Box::new(|cc| Ok(Box::new(nabla::ViewerApp::new(cc, source)))),
+        Box::new(|cc| Ok(Box::new(nabla::ViewerApp::new(cc)))),
     )
 }
 
@@ -82,7 +79,7 @@ fn main() {
             .start(
                 canvas,
                 web_options,
-                Box::new(|cc| Ok(Box::new(nabla::ViewerApp::new(cc, None)))),
+                Box::new(|cc| Ok(Box::new(nabla::ViewerApp::new(cc)))),
             )
             .await;
 

@@ -1,5 +1,5 @@
-//! Nabla, the viewer for the ship's control policies: compiles a solution's Rust source, runs it on
-//! a test case, and replays the run in continuous time on a pannable, zoomable canvas.
+//! Nabla, the viewer for the ship's control policies: runs a solution on a test case, and replays
+//! the run in continuous time on a pannable, zoomable canvas.
 
 #![warn(clippy::all, rust_2018_idioms)]
 
@@ -21,7 +21,6 @@ mod plume;
 pub mod replay;
 mod ship3d;
 mod sound;
-pub mod source;
 mod sprites;
 pub mod theme;
 pub mod timeline;

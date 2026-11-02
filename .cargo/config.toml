@@ -5,6 +5,8 @@ bump = "run -q -p xtask -- bump"
 # On macOS it runs inside the app bundle, for the Liquid Glass Dock icon.
 nabla = "run -q -p xtask -- run --profile fast"
 tag = "run -q -p xtask -- tag"
+# The multiplayer server for local play, on loopback: `cargo xtask help`.
+dev-server = "run -q -p xtask -- dev-server"
 # Development tasks, in the `xtask` crate: `cargo xtask help`.
 xtask = "run -q -p xtask --"
 

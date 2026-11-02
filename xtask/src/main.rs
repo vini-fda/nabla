@@ -31,6 +31,14 @@ App (Nabla):
       worker, which otherwise caches the app for offline use. Needs `trunk`
       (`cargo install --locked trunk`).
 
+  dev-server [--world <name|file>] [--port <port>] [--release] [-- <server flags>]
+      Build and run the multiplayer server for local play, on 127.0.0.1 (--port defaults to
+      4433, --world to planet-moon, one of vacuum, planet and planet-moon, or a world file).
+      It makes a self-signed certificate and prints the address to connect to, with the
+      certificate's hash, and the link that opens it in the web app of `web-dev`. Anything after
+      `--` goes to `nabla-server` as it is (`cargo xtask dev-server -- --help`).
+      `cargo dev-server` is this task.
+
 Repository:
   check
       The checks CI runs (.github/workflows/ci.yml) for this platform, plus the web build,
@@ -106,6 +114,7 @@ fn main() -> Result<ExitCode> {
         ("tag", []) => release::tag(&sh)?,
         ("bundle" | "run", _) => return app(&sh, &task, args),
         ("web-dev", args) => web_dev(&sh, args)?,
+        ("dev-server", args) => dev_server(&sh, args)?,
         ("help" | "--help" | "-h", _) => print_help(),
         ("check" | "bump" | "tag", _) => bail!("wrong arguments for `{task}`\n\n{HELP}"),
         _ => bail!("unknown task `{task}`\n\n{HELP}"),
@@ -167,6 +176,41 @@ fn web_dev(sh: &Shell, args: &[String]) -> Result<()> {
         .context("trunk is needed: `cargo install --locked trunk`")?;
     let _app = sh.push_dir("crates/nabla-client");
     cmd!(sh, "trunk serve --port {port} {release...}").run()?;
+    Ok(())
+}
+
+/// The `dev-server` task: the multiplayer server on loopback, until interrupted.
+fn dev_server(sh: &Shell, args: &[String]) -> Result<()> {
+    let mut port = "4433".to_owned();
+    let mut world = "planet-moon".to_owned();
+    let mut release = None;
+    let mut rest: &[String] = &[];
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--port" => port = args.next().context("--port needs a number")?.clone(),
+            "--world" => {
+                world = args
+                    .next()
+                    .context("--world needs a name or a file")?
+                    .clone();
+            }
+            "--release" => release = Some("--release"),
+            "--" => {
+                rest = args.as_slice();
+                break;
+            }
+            _ => bail!("unexpected argument `{arg}`\n\n{HELP}"),
+        }
+    }
+    let bind = format!("127.0.0.1:{port}");
+    let cargo = cargo();
+    cmd!(
+        sh,
+        "{cargo} run {release...} -p nabla-server --bin nabla-server -- --bind {bind} --world {world} {rest...}"
+    )
+    .env("RUST_LOG", std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_owned()))
+    .run()?;
     Ok(())
 }
 

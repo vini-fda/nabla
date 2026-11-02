@@ -84,6 +84,12 @@ async fn run() -> Result<(), String> {
     let address = server.address(&host).map_err(|e| e.to_string())?;
     log::info!("world {name}, {tick_rate} Hz, arena {arena}, up to {max_pilots} pilots");
     log::info!("connect to {address}");
+    if bind.ip().is_loopback() {
+        log::info!(
+            "in the web app of `cargo xtask web-dev`: http://localhost:8080/?server={}&connect#dev",
+            percent_encode(&address.to_string())
+        );
+    }
     let metrics = server.metrics();
     let serving = tokio::spawn(server.serve());
     let mut report = tokio::time::interval(Duration::from_secs(10));
@@ -99,4 +105,16 @@ async fn run() -> Result<(), String> {
     }
     serving.abort();
     Ok(())
+}
+
+/// `text` as a URL query value: everything but letters, digits and `-._~` is escaped.
+fn percent_encode(text: &str) -> String {
+    text.bytes()
+        .map(|b| match b {
+            b'0'..=b'9' | b'a'..=b'z' | b'A'..=b'Z' | b'-' | b'.' | b'_' | b'~' => {
+                char::from(b).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
 }

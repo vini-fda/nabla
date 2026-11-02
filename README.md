@@ -20,7 +20,30 @@ cargo test --workspace --release         # model, app and every solution
 cargo run --release -p nabla-client             # the app, natively
 ```
 
-**Online:** run `cargo run --release -p nabla-server` for a world to fly in with other pilots. It prints an address with its self-signed certificate's hash (`https://localhost:4433#sha256=...`), which the title screen's Online page takes, on the web too (a page opened with `?server=` and the address, percent-encoded, starts with it filled in, and `&connect` connects at once). `cargo run --release -p nabla-server --bin nabla-soak` runs the soak test of `docs/multiplayer.typ`, M4.
+## Running a dev server
+
+To fly with other pilots (or to try the online mode alone), run the multiplayer server on your machine:
+
+```sh
+cargo dev-server                          # the planet-and-moon world, on 127.0.0.1:4433
+cargo dev-server --world vacuum --port 4440
+cargo dev-server --release -- --max-pilots 4   # anything after `--` goes to nabla-server
+```
+
+(`cargo dev-server` is `cargo xtask dev-server`; see `cargo xtask help`. `--world` is `vacuum`, `planet`, `planet-moon` or a world file.) It makes a self-signed certificate, good for two weeks, and logs the address to connect to, which has the certificate's hash after a `#`:
+
+```text
+connect to https://127.0.0.1:4433#sha256=dea539c5...
+in the web app of `cargo xtask web-dev`: http://localhost:8080/?server=...&connect#dev
+```
+
+Then:
+
+- **Native app:** `cargo nabla`, then Online on the title screen, paste the address, Connect, and take a ship in the lobby. Open the app again, or run `cargo run -p nabla-server --bin nabla-bot -- --server '<address>'` for a headless pilot, to have company.
+- **Web app:** `cargo xtask web-dev`, then open the link the server logged. The page's `?server=` is the address, percent-encoded, and `&connect` connects at once. Browsers need WebTransport, which Chrome, Edge and Firefox have, and Safari from 26.4; only Chromium has been tried so far.
+- **Soak test:** `cargo run --release -p nabla-server --bin nabla-soak` flies sixteen bots through a lossy, delaying proxy for ten minutes, and fails if the expectations of `docs/multiplayer.typ`, M4, are not met (`--help` there lists the flags).
+
+For a server others can reach, give it a name and a real certificate: `cargo run --release -p nabla-server -- --bind 0.0.0.0:4433 --cert cert.pem --key key.pem`. Without `--cert` it makes a self-signed one for `--name` hosts, and each client needs the hash. UDP port 4433 must be open, since WebTransport runs on QUIC.
 
 Development tasks are in the `xtask` crate (`cargo xtask help`). `cargo xtask check` runs the same checks as CI, plus the web build. `cargo xtask web-dev` serves the web app locally, rebuilding it on every change. Every push to `main` deploys the web app.
 

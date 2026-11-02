@@ -1,7 +1,8 @@
-//! The steps of a release (see the README) up to the last one, pushing the tag: `bump` sets the
-//! workspace version, and `tag` checks that the checkout is ready and tags it.
+//! The steps of a release (see the README): `bump` sets the workspace version, and `tag` checks
+//! that the checkout is ready, tags it and offers to push the tag, which publishes the release.
 
 use std::fmt;
+use std::io::{self, Write as _};
 use std::ops::Range;
 use std::str::FromStr;
 
@@ -105,9 +106,42 @@ pub fn bump(sh: &Shell, part: &str) -> Result<()> {
     Ok(())
 }
 
+/// What an answer to a yes/no question with yes as the default means, if anything.
+fn parse_answer(answer: &str) -> Option<bool> {
+    match answer.trim().to_lowercase().as_str() {
+        "" | "y" | "yes" => Some(true),
+        "n" | "no" => Some(false),
+        _ => None,
+    }
+}
+
+/// Ask `question` until it gets an answer. With no input left to read, the answer is no: Enter
+/// is a yes, but a closed stdin is not.
+#[expect(
+    clippy::print_stdout,
+    reason = "the question is for the person running the task"
+)]
+fn confirm(question: &str) -> Result<bool> {
+    loop {
+        print!("{question} [Y/n] ");
+        io::stdout().flush()?;
+        let mut answer = String::new();
+        if io::stdin().read_line(&mut answer)? == 0 {
+            println!();
+            return Ok(false);
+        }
+        if let Some(answer) = parse_answer(&answer) {
+            return Ok(answer);
+        }
+    }
+}
+
 /// The `tag` task: check that the checkout is what should be released, tag it with the workspace
-/// version, and leave only the push. Running it again after a failed push is fine.
-#[expect(clippy::print_stdout, reason = "the push command is the task's output")]
+/// version, and offer to push the tag. Running it again after a declined or failed push is fine.
+#[expect(
+    clippy::print_stdout,
+    reason = "saying the tag was not pushed is the task's output"
+)]
 pub fn tag(sh: &Shell) -> Result<()> {
     let branch = cmd!(sh, "git branch --show-current").read()?;
     if branch != "main" {
@@ -169,7 +203,11 @@ pub fn tag(sh: &Shell) -> Result<()> {
         );
     }
 
-    println!("{tag} is ready to publish:\n\n    git push origin {tag}");
+    if confirm(&format!("Push {tag} to origin, publishing the release?"))? {
+        cmd!(sh, "git push origin {tag_ref}").run()?;
+    } else {
+        println!("Not pushed. To publish it later, run `cargo tag` again.");
+    }
     Ok(())
 }
 
@@ -205,6 +243,19 @@ mod tests {
     #[test]
     fn versions_compare_numerically() {
         assert!(version(0, 10, 0) > version(0, 9, 9), "compared as text");
+    }
+
+    #[test]
+    fn answers_default_to_yes() {
+        for yes in ["\n", "y\n", "Y\n", "yes\n", " YES \r\n"] {
+            assert_eq!(parse_answer(yes), Some(true), "{yes:?}");
+        }
+        for no in ["n\n", "N\n", "no\n", "NO\r\n"] {
+            assert_eq!(parse_answer(no), Some(false), "{no:?}");
+        }
+        for unclear in ["maybe\n", "yep\n", "v1.2.3\n"] {
+            assert_eq!(parse_answer(unclear), None, "{unclear:?}");
+        }
     }
 
     #[test]

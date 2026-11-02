@@ -40,7 +40,8 @@ Repository:
       `cargo bump` is this task.
   tag
       Check that this is `main`, clean and level with origin, and that the version in
-      Cargo.toml is new; then create its tag `vX.Y.Z`, ready to push. `cargo tag` is this task.
+      Cargo.toml is new; then create its tag `vX.Y.Z` and ask whether to push it, which
+      publishes the release. `cargo tag` is this task.
 ";
 
 /// The options shared by every task: which build of the app to use.

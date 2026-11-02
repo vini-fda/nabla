@@ -217,6 +217,7 @@ async fn own(
                 with(&metrics, |m| {
                     m.tick(began.elapsed(), late);
                     m.pilots = machine.pilots();
+                    m.held = machine.held();
                     sent.add_to(m);
                 });
             }

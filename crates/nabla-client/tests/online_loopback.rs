@@ -11,7 +11,7 @@ use nabla_core::solutions::SOLUTIONS;
 use nabla_net::Config;
 use nabla_net::client::Stage;
 use nabla_server::impair::{Impairment, Proxy};
-use nabla_server::{Identity, Server, Settings};
+use nabla_server::{Identity, Metrics, Server, Settings};
 use nabla_sim::steering::{Input, Steering};
 use nabla_sim::world::{Preset, ShipRequest};
 
@@ -34,7 +34,11 @@ fn hands(who: usize, seconds: f64) -> Hands {
 /// Fly two clients for `seconds`, pilot 0 with the default ship and pilot 1 with a stronger one,
 /// and pilot 1's autopilot, if `autopilot_after` says when to engage it (from the start of the
 /// flight), flying until it lands or the time is up.
-fn two_pilots(preset: Preset, seconds: f64, autopilot_after: Option<f64>) -> ([Online; 2], bool) {
+fn two_pilots(
+    preset: Preset,
+    seconds: f64,
+    autopilot_after: Option<f64>,
+) -> ([Online; 2], bool, Metrics) {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -48,7 +52,7 @@ fn two_pilots(preset: Preset, seconds: f64, autopilot_after: Option<f64>) -> ([O
         f_max: 12.0,
         tau_max: 8.0,
     };
-    let (address, _proxy) = runtime.block_on(async {
+    let (address, metrics, _proxy) = runtime.block_on(async {
         let server = Server::bind(Settings {
             bind: "127.0.0.1:0".parse().expect("an address"),
             world,
@@ -70,8 +74,9 @@ fn two_pilots(preset: Preset, seconds: f64, autopilot_after: Option<f64>) -> ([O
         .await
         .expect("a proxy");
         address.url = format!("https://127.0.0.1:{}", proxy.addr().port());
+        let metrics = server.metrics();
         tokio::spawn(server.serve());
-        (address, proxy)
+        (address, metrics, proxy)
     });
 
     let mut clients = [
@@ -118,24 +123,31 @@ fn two_pilots(preset: Preset, seconds: f64, autopilot_after: Option<f64>) -> ([O
         landed = clients[1].take_landed();
         std::thread::sleep(Duration::from_millis(4));
     }
+    let metrics = metrics.lock().expect("the metrics").clone();
     drop(runtime);
-    (clients, landed)
+    (clients, landed, metrics)
 }
 
 #[test]
 fn two_pilots_in_a_vacuum_at_100_ms_are_never_corrected() {
-    let (clients, _) = two_pilots(Preset::Vacuum, 15.0, None);
+    let (clients, _, metrics) = two_pilots(Preset::Vacuum, 15.0, None);
     for (i, client) in clients.iter().enumerate() {
         assert_eq!(client.stage(), Stage::Playing, "{i}");
         let info = client.info();
         assert!(info.corrections.snapshots > 600, "{i}: {info:?}");
         assert_eq!(info.ships, 2, "{i}");
-        // thm-exact, over a real transport: nothing was lost and nothing was late, so the
-        // prediction was never wrong.
-        assert_eq!(info.corrections.nonzero, 0, "{i}: {info:?}");
         let rtt = info.rtt.expect("QUIC measured a round trip");
         assert!((0.09..0.2).contains(&rtt), "{rtt}");
     }
+    // thm-exact, over a real transport: a prediction is wrong only for a command the server did
+    // not apply. A machine busy enough to stall a client makes some late, so it is the ticks
+    // held that bound the corrections, and with none held there are none.
+    let corrected: u64 = clients.iter().map(|c| c.info().corrections.nonzero).sum();
+    assert!(
+        corrected <= metrics.held,
+        "{corrected} corrections for {} ticks held",
+        metrics.held
+    );
     let (pa, pb) = (
         clients[0].params().expect("playing"),
         clients[1].params().expect("playing"),
@@ -148,7 +160,7 @@ fn two_pilots_in_a_vacuum_at_100_ms_are_never_corrected() {
 
 #[test]
 fn among_bodies_the_corrections_match_the_replay_table() {
-    let (clients, _) = two_pilots(Preset::PlanetAndMoon, 15.0, None);
+    let (clients, _, _) = two_pilots(Preset::PlanetAndMoon, 15.0, None);
     for (i, client) in clients.iter().enumerate() {
         let c = client.info().corrections;
         assert!(c.snapshots > 600, "{i}: {c:?}");
@@ -159,7 +171,7 @@ fn among_bodies_the_corrections_match_the_replay_table() {
 
 #[test]
 fn an_autopilot_lands_through_a_real_server_while_another_pilot_flies_by_hand() {
-    let (clients, landed) = two_pilots(Preset::Vacuum, 40.0, Some(3.0));
+    let (clients, landed, _) = two_pilots(Preset::Vacuum, 40.0, Some(3.0));
     assert!(landed, "the autopilot lands within 40 s");
     for (i, client) in clients.iter().enumerate() {
         assert_eq!(client.stage(), Stage::Playing, "{i}");

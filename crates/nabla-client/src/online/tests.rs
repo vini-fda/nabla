@@ -691,3 +691,39 @@ fn a_late_frame_still_hears_the_thrust_of_the_tick_it_is_in() {
         );
     }
 }
+
+#[test]
+fn a_prediction_is_corrected_only_for_a_command_the_server_held() {
+    // `thm-exact`: a correction needs an applied command other than the one predicted with, and
+    // the only way to that is a tick with no command. So a client whose frames stall, which
+    // real-time tests cannot rule out on a busy machine, sees at most one for each such tick.
+    let flight = |stalls: bool| {
+        let world = vacuum();
+        let ours = ShipRequest::from(world.default_ship());
+        let mut rig = Rig::new(world, 0.050, 0.0, 21);
+        rig.add(ours);
+        rig.join_all(&[ours]);
+        rig.run(1.0, &scripted);
+        let start = rig.server.held();
+        let base = rig.clients[0].info().corrections.nonzero;
+        for _ in 0..20_000 {
+            // 80 ms without frames around each change of the pilot's input, every 1.3 s or so.
+            let phase = (rig.now + 0.08) / 1.3;
+            rig.stalled[0] = stalls && phase.fract() < 0.08 / 1.3;
+            rig.step(&scripted);
+        }
+        rig.stalled[0] = false;
+        rig.run(0.5, &scripted);
+        (
+            rig.server.held() - start,
+            rig.clients[0].info().corrections.nonzero - base,
+        )
+    };
+    assert_eq!(flight(false), (0, 0), "(held, corrected) with no stall");
+    let (held, corrected) = flight(true);
+    assert!(corrected > 0, "the stalls changed nothing: {held} held");
+    assert!(
+        corrected <= held,
+        "{corrected} corrections for {held} ticks held"
+    );
+}

@@ -86,6 +86,8 @@ struct Slot {
     last: Command,
     /// `miss[i]`: ticks in a row with no command.
     miss: u32,
+    /// Whether a command has been applied yet: the ticks before the first are not its pilot's.
+    commanded: bool,
     /// How early the newest command came, for the next snapshot, in microseconds.
     margin_us: i32,
     newest_stamp: Option<Tick>,
@@ -106,6 +108,8 @@ pub struct ServerMachine {
     /// How many ships have joined in all, to pick spawn places.
     joined: usize,
     logs: BTreeMap<ShipId, ShipLog>,
+    /// Ticks of ships already under command that came with no command for them.
+    held: u64,
 }
 
 impl ServerMachine {
@@ -133,12 +137,19 @@ impl ServerMachine {
             next_ship: 0,
             joined: 0,
             logs: BTreeMap::new(),
+            held: 0,
         })
     }
 
     /// The tick that runs next, `T`: so there have been `T` of them.
     pub fn tick_number(&self) -> Tick {
         self.tick
+    }
+
+    /// How many times a ship already under command got no command for its tick, which came late,
+    /// was lost, or was never sent. Only then can a prediction be wrong (`thm-exact`).
+    pub fn held(&self) -> u64 {
+        self.held
     }
 
     pub fn world(&self) -> &World {
@@ -315,6 +326,8 @@ impl ServerMachine {
             } else {
                 slot.miss.saturating_add(1)
             };
+            self.held += u64::from(delivered.is_none() && slot.commanded);
+            slot.commanded |= delivered.is_some();
             if self.config.keep_log
                 && let Some(log) = self.logs.get_mut(id)
             {
@@ -405,6 +418,7 @@ impl ServerMachine {
                 buf: BTreeMap::new(),
                 last: Command::default(),
                 miss: 0,
+                commanded: false,
                 margin_us: 0,
                 newest_stamp: None,
             },

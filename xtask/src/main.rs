@@ -154,7 +154,7 @@ fn app(sh: &Shell, task: &str, args: Vec<String>) -> Result<ExitCode> {
     if cfg!(target_os = "macos") {
         bin = bundle::refresh(sh, &bin)?;
     }
-    run(&bin)
+    run(&bin, task == "run")
 }
 
 /// The `web-dev` task: `trunk serve` for the web app, until interrupted.
@@ -276,8 +276,13 @@ fn print_help() {
 
 /// Run `bin` in place of this process where the platform allows, so the app gets the
 /// terminal's signals (Ctrl+C) directly.
-fn run(bin: &Path) -> Result<ExitCode> {
+fn run(bin: &Path, dev_log: bool) -> Result<ExitCode> {
     let mut command = std::process::Command::new(bin);
+    if dev_log {
+        // Timestamps, sources and `debug` for this workspace's crates: see `dev_log` in the app.
+        // The user's own `RUST_LOG` still says what is logged.
+        command.env("NABLA_LOG_STYLE", "dev");
+    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt as _;

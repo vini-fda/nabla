@@ -26,10 +26,18 @@ fn app_icon() -> egui::IconData {
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result {
     // Log to stderr. Say what with `RUST_LOG`, as in `RUST_LOG=nabla_client=trace`: see `span.rs`.
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("warn,nabla_client=info"),
-    )
-    .init();
+    // `cargo nabla` asks for the dev format, with timestamps and sources, and more of it.
+    if std::env::var("NABLA_LOG_STYLE").is_ok_and(|style| style == "dev") {
+        let mut builder = env_logger::Builder::from_env(
+            env_logger::Env::default().default_filter_or(nabla_client::dev_log::DEFAULT_FILTER),
+        );
+        nabla_client::dev_log::format(&mut builder).init();
+    } else {
+        env_logger::Builder::from_env(
+            env_logger::Env::default().default_filter_or("warn,nabla_client=info"),
+        )
+        .init();
+    }
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

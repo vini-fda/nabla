@@ -159,6 +159,14 @@ RUST_LOG=nabla_client=trace cargo nabla                 # also those of every fr
 RUST_LOG=warn,nabla_client::game=trace cargo nabla      # one module only
 ```
 
+`cargo nabla` logs in a development format: UTC timestamps, the thread (if it is not the main one) and the source line, and `debug` for this workspace's crates, as in
+
+```text
+2026-11-02T20:56:46.472Z INFO  nabla_client::app::online crates/nabla-client/src/app/online.rs:67: Connecting to https://127.0.0.1:4433
+```
+
+Set `RUST_LOG` as above to say otherwise; with it unset, the filter is `info` for everything and `debug` for `nabla-*`. Any other way of starting the app (`cargo run -p nabla-client`, a release build) keeps the lean format, unless `NABLA_LOG_STYLE=dev` is in the environment.
+
 On the web, the page's address says it, as in `?log=debug`, and the log is in the browser's console.
 
 Costly operations log their start and their end, with how long they took: `let _span = span!(Level::Debug, "...");` (`src/span.rs`). Frames over 100 ms are logged as warnings, at most once a second, and with `debug`, so is any control sample over the sampling period.

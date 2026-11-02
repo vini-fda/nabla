@@ -206,6 +206,7 @@ fn style(style: &mut egui::Style) {
     spacing.button_padding = egui::vec2(10.0, 4.0);
     spacing.window_margin = Margin::same(12);
     spacing.interact_size.y = 24.0;
+    spacing.scroll.kinetic.rubber_band = false;
 
     let r = CornerRadius::same(6);
     let v = &mut style.visuals;

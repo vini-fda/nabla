@@ -30,7 +30,7 @@ fn main() -> eframe::Result {
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1400.0, 850.0])
-            .with_min_inner_size([700.0, 450.0])
+            .with_min_inner_size([700.0, 600.0])
             .with_title("Nabla")
             .with_icon(app_icon()),
         renderer: eframe::Renderer::Wgpu,

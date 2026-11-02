@@ -257,6 +257,11 @@ pub struct ViewerApp {
     screen: Screen,
     /// What the title screen shows below its buttons.
     title_page: TitlePage,
+    /// The scale the title screen is drawn at to fit the window, part of egui's zoom factor. 1
+    /// during the flight.
+    title_fit: f32,
+    /// The height of what's below the title on the title screen, in points, last time it showed.
+    title_rest: f32,
     /// The starting conditions picked on the title screen: a preset's, named after it, or the
     /// player's own.
     setup: Case,
@@ -320,6 +325,8 @@ impl Default for ViewerApp {
             reserved: Vec::new(),
             screen: Screen::default(),
             title_page: TitlePage::default(),
+            title_fit: 1.0,
+            title_rest: 0.0,
             setup: case,
             h: suite::H,
             show_code: false,

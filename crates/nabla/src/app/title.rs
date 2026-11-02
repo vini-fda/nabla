@@ -13,8 +13,20 @@ use crate::gamepad;
 use crate::keys;
 use crate::theme::{self, icons, palette};
 
-/// The title's size, in points.
+/// Largest the title gets, in points, with room to spare.
 const TITLE_SIZE: f32 = 112.0;
+/// Smallest it gets, in points. Past this the whole screen scales down instead.
+const MIN_TITLE_SIZE: f32 = 48.0;
+/// Least space above the title, in points.
+const MIN_TOP_SPACE: f32 = 12.0;
+/// Smallest the screen scales down to, so that a window with no height to speak of (minimized,
+/// say) doesn't ask for a zoom of zero.
+const MIN_FIT: f32 = 0.25;
+/// Steps of scale per unit. Every new scale makes egui lay out its fonts again.
+const FIT_STEPS: f32 = 50.0;
+/// How far above the current scale the screen must fit to scale back up, in steps: past a step,
+/// so that rounding in the layout at either of two scales can't flip between them.
+const FIT_MARGIN: f32 = 1.5;
 /// Widest the column below the title gets, in points.
 const COLUMN_WIDTH: f32 = 540.0;
 const BUTTON_HEIGHT: f32 = 40.0;
@@ -50,53 +62,89 @@ pub(super) enum TitlePage {
 }
 
 impl ViewerApp {
-    /// The title screen. Enter, or Cross or Options on a controller, plays; Escape goes back from
-    /// the settings or the help to the starting conditions.
+    /// The title screen, always all of it in the window: the title shrinks to make room, and if
+    /// that isn't enough the whole screen scales down. Enter, or Cross or Options on a controller,
+    /// plays; Escape goes back from the settings or the help to the starting conditions.
     pub(super) fn title_ui(&mut self, ui: &mut egui::Ui) {
         let mut play = self.title_keys(ui);
         egui::CentralPanel::default().show(ui, |ui| {
-            let top = (ui.available_height() * 0.06).max(12.0);
-            egui::ScrollArea::vertical()
-                .auto_shrink(false)
-                .show(ui, |ui| {
-                    ui.add_space(top);
-                    ui.vertical_centered(|ui| {
-                        ui.label(
-                            egui::RichText::new("Nabla")
-                                .font(theme::title_font(TITLE_SIZE))
-                                .color(palette::WHITE),
-                        );
-                    });
-                    ui.add_space(24.0);
-                    let width = ui.available_width().min(COLUMN_WIDTH);
-                    let margin = (ui.available_width() - width) / 2.0;
-                    ui.horizontal(|ui| {
-                        ui.add_space(margin);
-                        ui.vertical(|ui| {
-                            ui.set_width(width);
-                            play |= self.title_buttons(ui, width);
-                            ui.add_space(12.0);
-                            egui::Frame::new()
-                                .fill(palette::SURFACE0)
-                                .stroke(egui::Stroke::new(1.0, palette::BORDER))
-                                .corner_radius(10)
-                                .inner_margin(16)
-                                .show(ui, |ui| {
-                                    ui.set_width(ui.available_width());
-                                    match self.title_page {
-                                        TitlePage::Start => self.setup_ui(ui),
-                                        TitlePage::Settings => self.settings_ui(ui),
-                                        TitlePage::Help => self.help_page_ui(ui),
-                                    }
-                                });
-                            ui.add_space(24.0);
+            let window = ui.ctx().content_rect().size();
+            let available = ui.available_size();
+            let margins = window - available;
+            let title_font = theme::title_font(TITLE_SIZE);
+            let line = ui.fonts_mut(|fonts| fonts.row_height(&title_font)) / TITLE_SIZE;
+            let spacing = ui.spacing().item_spacing.y;
+            let room = available.y - self.title_rest - MIN_TOP_SPACE - spacing;
+            let size = (room / line).clamp(MIN_TITLE_SIZE, TITLE_SIZE);
+            let spare = (room - size * line).max(0.0);
+            ui.add_space((available.y * 0.06).clamp(MIN_TOP_SPACE, MIN_TOP_SPACE + spare));
+            ui.vertical_centered(|ui| {
+                ui.label(
+                    egui::RichText::new("Nabla")
+                        .font(theme::title_font(size))
+                        .color(palette::WHITE),
+                );
+            });
+            let below_title = ui.cursor().top();
+            ui.add_space(24.0);
+            // As wide as at full scale, so that scaling down doesn't change how text wraps, and
+            // with it the height being fitted.
+            let width = (window.x * self.title_fit - margins.x).min(COLUMN_WIDTH);
+            let margin = (ui.available_width() - width) / 2.0;
+            ui.horizontal(|ui| {
+                ui.add_space(margin);
+                ui.vertical(|ui| {
+                    ui.set_width(width);
+                    play |= self.title_buttons(ui, width);
+                    ui.add_space(12.0);
+                    egui::Frame::new()
+                        .fill(palette::SURFACE0)
+                        .stroke(egui::Stroke::new(1.0, palette::BORDER))
+                        .corner_radius(10)
+                        .inner_margin(16)
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            match self.title_page {
+                                TitlePage::Start => self.setup_ui(ui),
+                                TitlePage::Settings => self.settings_ui(ui),
+                                TitlePage::Help => self.help_page_ui(ui),
+                            }
                         });
-                    });
                 });
+            });
+            if !play {
+                let rest = ui.cursor().top() - below_title;
+                let needed = margins.y + MIN_TOP_SPACE + MIN_TITLE_SIZE * line + spacing + rest;
+                self.fit_title(ui.ctx(), rest, window.y * self.title_fit / needed);
+            }
         });
         if play {
+            // The flight is at the player's own zoom.
+            let ctx = ui.ctx();
+            ctx.set_zoom_factor(ctx.zoom_factor() / self.title_fit);
+            self.title_fit = 1.0;
             self.score_policy();
             self.start_game();
+        }
+    }
+
+    /// Scales the title screen for the next pass, given the height `rest` of what's below the
+    /// title and the scale `fits` at which it all just fits, without showing this pass if its
+    /// layout is out of date. The scale is on top of the player's own zoom (Cmd and +).
+    fn fit_title(&mut self, ctx: &egui::Context, rest: f32, fits: f32) {
+        let fit = self.title_fit;
+        let target = if fits < fit || fits >= fit + FIT_MARGIN / FIT_STEPS {
+            ((fits * FIT_STEPS).floor() / FIT_STEPS).clamp(MIN_FIT, 1.0)
+        } else {
+            fit
+        };
+        let stale = target != fit || (rest - self.title_rest).abs() > 0.5;
+        self.title_rest = rest;
+        if stale {
+            ctx.set_zoom_factor(ctx.zoom_factor() / fit * target);
+            self.title_fit = target;
+            ctx.request_discard("title screen layout");
+            ctx.request_repaint();
         }
     }
 
@@ -476,6 +524,80 @@ fn icon_text(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Draws the title screen in a window of `size`, as eframe does: its size in points depends on
+    /// the zoom. Returns the bottom of what was drawn, and the window's height, both in points.
+    fn show_title(app: &mut ViewerApp, ctx: &egui::Context, size: egui::Vec2) -> (f32, f32) {
+        let mut result = (0.0, 0.0);
+        // Scaling takes a few frames at most.
+        for _ in 0..4 {
+            let window = size / ctx.zoom_factor();
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, window)),
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| app.title_ui(ui));
+            output.textures_delta.clear();
+            let bottom = output
+                .shapes
+                .iter()
+                .map(|clipped| clipped.shape.visual_bounding_rect().max.y)
+                .filter(|y| y.is_finite())
+                .fold(0.0, f32::max);
+            result = (bottom, window.y);
+        }
+        result
+    }
+
+    fn title_app() -> (ViewerApp, egui::Context) {
+        let ctx = egui::Context::default();
+        theme::apply(&ctx);
+        egui_extras::install_image_loaders(&ctx);
+        (ViewerApp::default(), ctx)
+    }
+
+    #[test]
+    fn every_title_page_fits_every_window() {
+        for page in [TitlePage::Start, TitlePage::Settings, TitlePage::Help] {
+            for (width, height) in [
+                (1400.0, 850.0),
+                (700.0, 600.0),
+                (700.0, 450.0),
+                (390.0, 844.0),
+                (844.0, 390.0),
+            ] {
+                let (mut app, ctx) = title_app();
+                app.title_page = page;
+                let (bottom, window) = show_title(&mut app, &ctx, egui::vec2(width, height));
+                assert!(
+                    bottom <= window + 0.5,
+                    "{page:?} in {width}x{height}: drawn down to {bottom}, window ends at {window}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_tall_window_needs_no_scaling() {
+        let (mut app, ctx) = title_app();
+        app.title_page = TitlePage::Settings;
+        show_title(&mut app, &ctx, egui::vec2(1400.0, 1400.0));
+        assert_eq!(app.title_fit, 1.0);
+        assert_eq!(ctx.zoom_factor(), 1.0);
+    }
+
+    #[test]
+    fn the_players_zoom_survives_scaling_and_comes_back_after_it() {
+        let (mut app, ctx) = title_app();
+        ctx.set_zoom_factor(1.25);
+        show_title(&mut app, &ctx, egui::vec2(700.0, 450.0));
+        assert!(app.title_fit < 1.0);
+        assert!((ctx.zoom_factor() / app.title_fit - 1.25).abs() < 1e-4);
+        // Growing the window scales back up, to the same zoom.
+        show_title(&mut app, &ctx, egui::vec2(3000.0, 3000.0));
+        assert_eq!(app.title_fit, 1.0);
+        assert!((ctx.zoom_factor() - 1.25).abs() < 1e-4);
+    }
 
     #[test]
     fn showing_loaded_conditions_preserves_out_of_editor_range_state() {

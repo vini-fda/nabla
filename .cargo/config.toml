@@ -4,6 +4,9 @@
 nabla = "run -q -p xtask -- run --profile fast"
 # Development tasks, in the `xtask` crate: `cargo xtask help`.
 xtask = "run -q -p xtask --"
+# The release steps, also in `xtask`: see "Releasing" in the README.
+bump = "run -q -p xtask -- bump"
+tag = "run -q -p xtask -- tag"
 
 # Linux links with mold (https://github.com/rui314/mold), much faster than the default
 # linker. Needs mold and clang installed. Clang is the linker driver because it always

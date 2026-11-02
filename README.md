@@ -25,13 +25,20 @@ On Linux, builds link with [mold](https://github.com/rui314/mold) through clang 
 
 Pushing a version tag `vX.Y.Z` builds the native app and publishes a [GitHub Release](https://github.com/vini-fda/nabla/releases). The builds are for macOS on Apple silicon (an app bundle), Linux x86-64 and Windows 64-bit. Pushes to `main` only run CI and deploy the web app; they never release.
 
-1. Set the workspace `version` in `Cargo.toml` (`[workspace.package]`, shared by every crate), and commit.
-2. Tag and push:
+1. Bump the workspace `version` in `Cargo.toml` (`[workspace.package]`, shared by every crate) and `Cargo.lock`, then commit and get the commit onto `main`:
 
    ```sh
-   git tag -a v0.2.0 -m "v0.2.0"
+   cargo bump minor  # or major, or patch
+   ```
+
+2. On `main`, tag it and push the tag:
+
+   ```sh
+   cargo tag
    git push origin v0.2.0
    ```
+
+   `cargo tag` only tags if the checkout is `main`, has no uncommitted changes and is level with `origin/main`, and if the version in `Cargo.toml` is newer than every existing tag. It then prints the push command.
 
 `.github/workflows/release.yml` first checks that the tag matches the workspace version and reruns CI. It then builds each target on a native runner and publishes the release with checksums and the notes from `.github/release-notes.md`.
 

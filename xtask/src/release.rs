@@ -101,7 +101,7 @@ pub fn bump(sh: &Shell, part: &str) -> Result<()> {
     let cargo = cargo();
     cmd!(sh, "{cargo} update --quiet --workspace").run()?;
 
-    println!("{old} -> {new}. Commit it, and once it is on `main`, run `cargo tag`.");
+    println!("{old} -> {new}");
     Ok(())
 }
 

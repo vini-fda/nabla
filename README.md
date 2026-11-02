@@ -6,11 +6,11 @@ This is a finite, discretized version of a control problem described in `docs/ma
 
 - **[`nabla-core`](crates/nabla-core):** the exact sampled-data state-space model of the ship, with the control held constant over each step; the problem: the target set, the `Controller` interface and the fixed test cases every solution must solve; and the [solutions](crates/nabla-core/src/solutions) found so far.
 - **[`nabla-synth`](crates/nabla-synth):** the thruster sounds' synthesizer, also built alone for the web app's AudioWorklet.
-- **[`nabla`](crates/nabla):** the app, which replays and plots the solutions.
+- **[`nabla`](crates/nabla):** the app, a game: fly the ship to the goal yourself, or let a solution fly it as autopilot.
 
 See [`TASK.md`](TASK.md) for the rules and the interface a solution implements.
 
-**Web app:** https://vini-fda.github.io/nabla/ replays the solutions on every test case in continuous time, with plots, a timeline and the solution's source. The same app runs natively ([`crates/nabla/`](crates/nabla)).
+**Web app:** https://vini-fda.github.io/nabla/ lets you fly the ship on every test case, with the keyboard, touch or a game controller, with plots of the state and controls. An autopilot can fly it instead with any of the solutions, whose source it shows. The same app runs natively ([`crates/nabla/`](crates/nabla)).
 
 ```sh
 cargo test --workspace --release         # model, app and every solution

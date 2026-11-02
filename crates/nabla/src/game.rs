@@ -1,5 +1,5 @@
-//! Gameplay mode: the player flies the ship to the goal, in place of a control policy, and time
-//! runs freely instead of along a timeline.
+//! The game: the player flies the ship to the goal, and time runs freely. An [`Autopilot`] can
+//! fly it instead, with one of the control policies.
 //!
 //! The flight runs on the same exact sampled-data model a solution is scored on. At each sample
 //! `t_k = k h` the controls the player holds become `u_k`, held for the whole step, and
@@ -19,19 +19,23 @@
 //! ship: an [`Aim`] turns the ship toward the pointer and thrusts once it faces it, within a
 //! cone. Both the assist and the aim use the attitude law of `docs/main.typ` ("Problem:
 //! pointing").
+//!
+//! Engaged, the [`Autopilot`] takes over from the player: at every sample, the policy's
+//! controller reads the exact state and chooses the control, as when a solution is scored. It is
+//! made afresh when engaged, from wherever the ship is then, and again whenever the ship leaves
+//! the target set, in which it holds no control.
 
 use std::collections::HashMap;
 use std::f64::consts::TAU;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use egui::{Color32, Pos2, Rect, Sense, Vec2, pos2, vec2};
 use nabla_core::problem::{Case, Outcome, Trajectory};
-use nabla_core::{Control, Params, State, step};
+use nabla_core::solutions::StoredSolution;
+use nabla_core::{Control, Controller, Params, State, Task, step};
 
 use crate::replay::Replay;
 use crate::theme::{icons, palette};
-
-/// Name of the flight's "solution", as the replay shows it.
-const PLAYER: &str = "you";
 
 /// Fraction of the maximum thrust and torque applied under fine control.
 pub const FINE: f64 = 0.1;
@@ -116,6 +120,57 @@ impl Input {
     }
 }
 
+/// A control policy flying the ship, in place of the player.
+struct Autopilot {
+    solution: &'static StoredSolution,
+    /// The policy's controller, from the sample it was made at on: `None` until the next sample
+    /// it flies outside the target set.
+    controller: Option<Box<dyn Controller>>,
+    /// The samples the controller has flown: the `k` it is queried at next.
+    k: usize,
+}
+
+impl Autopilot {
+    fn new(solution: &'static StoredSolution) -> Self {
+        Self {
+            solution,
+            controller: None,
+            k: 0,
+        }
+    }
+
+    /// The policy's control in state `s`, of the ship with `task`: none in the target set, where
+    /// the controller is dropped, to be made afresh once the ship drifts out of it. An error
+    /// says why the policy can't fly on: it panicked, or chose an inadmissible control.
+    fn control(&mut self, task: &Task, s: &State) -> Result<Control, String> {
+        if task.reached(s) {
+            self.controller = None;
+            return Ok(Control::default());
+        }
+        let solution = self.solution;
+        let controller = if let Some(controller) = self.controller.take() {
+            controller
+        } else {
+            self.k = 0;
+            catch_unwind(|| (solution.controller)(task))
+                .map_err(|_panic| format!("{} panicked starting up", solution.name))?
+        };
+        let controller = self.controller.insert(controller);
+        let k = self.k;
+        let u = catch_unwind(AssertUnwindSafe(|| controller.control(k, s)));
+        let u = u.map_err(|_panic| format!("{} panicked at its step {k}", solution.name))?;
+        if !u.is_admissible(&task.params) {
+            return Err(format!(
+                "{} chose an inadmissible control at its step {k}: \
+                 F = {}, tau = {}",
+                solution.name, u.thrust, u.torque
+            ));
+        }
+        self.k += 1;
+        Ok(u)
+    }
+}
+
 /// A flight on one case.
 pub struct Game {
     /// The flight so far: every sample up to the present, and the state at the end of the
@@ -129,6 +184,12 @@ pub struct Game {
     landed: Option<usize>,
     /// The heading the stability assist holds, while it does.
     hold: Option<f64>,
+    /// The autopilot, while it flies.
+    autopilot: Option<Autopilot>,
+    /// Some sample before the landing was flown by the player rather than the autopilot.
+    manual: bool,
+    /// Why the autopilot stopped flying, if it failed: to show the player, once.
+    fault: Option<String>,
     pub pads: Pads,
 }
 
@@ -140,11 +201,14 @@ impl Game {
             outcome: Outcome::Timeout,
         };
         Self {
-            replay: Replay::new(PLAYER, case, trajectory),
+            replay: Replay::new(case, trajectory),
             time: 0.0,
             paused: false,
             landed: None,
             hold: None,
+            autopilot: None,
+            manual: false,
+            fault: None,
             pads: Pads::default(),
         }
     }
@@ -171,6 +235,16 @@ impl Game {
         self.landed
     }
 
+    /// Whether the autopilot flew every sample up to the landing (or up to now, before it).
+    pub fn autopiloted(&self) -> bool {
+        !self.manual
+    }
+
+    /// Why the autopilot last stopped flying on its own, if it failed since the last call.
+    pub fn take_fault(&mut self) -> Option<String> {
+        self.fault.take()
+    }
+
     /// With the stability assist, the heading it holds, or, while the player turns, the one it
     /// would hold if they let go now: where braking would stop the spin. `None` without it.
     pub fn sas_heading(&self, steering: Steering) -> Option<f64> {
@@ -185,25 +259,70 @@ impl Game {
     }
 
     /// Run the flight `dt` real seconds on, unless paused, with `input` held at the samples
-    /// this passes, steering as `steering` says.
-    pub fn advance(&mut self, dt: f64, input: Input, steering: Steering) {
+    /// this passes, steering as `steering` says. With an `autopilot`, its policy flies instead,
+    /// and the input does nothing; should the policy fail, the player takes over, and
+    /// [`Self::take_fault`] says why.
+    pub fn advance(
+        &mut self,
+        dt: f64,
+        input: Input,
+        steering: Steering,
+        autopilot: Option<&'static StoredSolution>,
+    ) {
         if self.paused {
             return;
         }
         self.time += dt.clamp(0.0, MAX_FRAME_TIME);
         let h = self.replay.h();
         let task = self.replay.case.task;
-        let trajectory = &mut self.replay.trajectory;
         // Every sample up to the present gets its control, so the step under way is known.
-        while trajectory.controls.len() as f64 * h <= self.time {
-            let k = trajectory.controls.len();
-            let s = trajectory.states[k];
+        while self.replay.trajectory.controls.len() as f64 * h <= self.time {
+            let k = self.replay.trajectory.controls.len();
+            let s = self.replay.trajectory.states[k];
             if self.landed.is_none() && task.reached(&s) {
                 self.landed = Some(k);
             }
-            let u = steer(input, steering, &mut self.hold, &task.params, &s);
+            let piloted = self.autopilot_control(autopilot, &task, &s);
+            if piloted.is_none() && self.landed.is_none() {
+                self.manual = true;
+            }
+            let u =
+                piloted.unwrap_or_else(|| steer(input, steering, &mut self.hold, &task.params, &s));
+            let trajectory = &mut self.replay.trajectory;
             trajectory.controls.push(u);
             trajectory.states.push(step(&task.params, &s, &u));
+        }
+    }
+
+    /// The control the autopilot flying `solution`, if any, chooses in state `s`. A new one
+    /// starts afresh, and one that fails is dropped, with the fault kept.
+    fn autopilot_control(
+        &mut self,
+        solution: Option<&'static StoredSolution>,
+        task: &Task,
+        s: &State,
+    ) -> Option<Control> {
+        // Not again in the frame it failed in: the app switches it off after.
+        let Some(solution) = solution.filter(|_| self.fault.is_none()) else {
+            self.autopilot = None;
+            return None;
+        };
+        let autopilot = match &mut self.autopilot {
+            Some(a) if std::ptr::eq(a.solution, solution) => a,
+            slot => slot.insert(Autopilot::new(solution)),
+        };
+        match autopilot.control(task, s) {
+            Ok(u) => {
+                // The assist holds the heading the autopilot leaves, not one from before it.
+                self.hold = None;
+                Some(u)
+            }
+            Err(fault) => {
+                log::warn!("Autopilot off: {fault}");
+                self.autopilot = None;
+                self.fault = Some(fault);
+                None
+            }
         }
     }
 
@@ -684,7 +803,7 @@ mod tests {
             thrust: true,
             ..Input::default()
         };
-        g.advance(2.5 * h, thrust, Steering::Raw);
+        g.advance(2.5 * h, thrust, Steering::Raw, None);
         let r = &g.replay;
         assert_eq!(
             r.trajectory.controls.len(),
@@ -704,17 +823,17 @@ mod tests {
     #[test]
     fn long_frames_are_capped_and_pause_stops_time() {
         let mut g = game();
-        g.advance(10.0, Input::default(), Steering::Raw);
+        g.advance(10.0, Input::default(), Steering::Raw, None);
         assert!((g.time() - MAX_FRAME_TIME).abs() < 1e-12, "capped");
         g.paused = true;
-        g.advance(0.05, Input::default(), Steering::Raw);
+        g.advance(0.05, Input::default(), Steering::Raw, None);
         assert!((g.time() - MAX_FRAME_TIME).abs() < 1e-12, "paused");
     }
 
     /// Runs `g` for `seconds` with `input` held, steering as `steering` says.
     fn fly(g: &mut Game, seconds: f64, input: Input, steering: Steering) {
         for _ in 0..(seconds / 0.05).round() as usize {
-            g.advance(0.05, input, steering);
+            g.advance(0.05, input, steering, None);
         }
     }
 
@@ -857,10 +976,115 @@ mod tests {
     }
 
     #[test]
+    fn the_autopilot_flies_as_the_policy_is_scored() {
+        use nabla_core::solutions::SOLUTIONS;
+        for solution in SOLUTIONS {
+            let case = suite::find("agile").expect("case exists");
+            let scored = (solution.simulate)(&case);
+            let n = scored.outcome.steps().expect("solved");
+            let mut g = Game::new(case);
+            // Pressing everything: the policy flies, not the player.
+            let input = Input {
+                thrust: true,
+                turn: 1.0,
+                ..aim(1.0, 0.1)
+            };
+            let h = g.replay.h();
+            while g.landed().is_none() && g.time() < 60.0 {
+                g.advance(h, input, Steering::Sas, Some(solution));
+            }
+            assert_eq!(g.landed(), Some(n), "{}: as scored", solution.name);
+            assert!(g.autopiloted(), "{}: all the way", solution.name);
+            let flown = &g.replay.trajectory;
+            assert_eq!(
+                flown.controls[..n],
+                scored.controls[..],
+                "{}",
+                solution.name
+            );
+        }
+    }
+
+    #[test]
+    fn the_autopilot_takes_over_mid_flight_and_holds_still_at_the_goal() {
+        let solution = &nabla_core::solutions::SOLUTIONS[0];
+        let mut g = game();
+        let thrust = Input {
+            thrust: true,
+            turn: 0.5,
+            ..Input::default()
+        };
+        fly(&mut g, 1.0, thrust, Steering::Raw);
+        let mut flown = 0.0;
+        while g.landed().is_none() && flown < 60.0 {
+            g.advance(0.05, Input::default(), Steering::Raw, Some(solution));
+            flown += 0.05;
+        }
+        assert!(g.landed().is_some(), "lands");
+        assert!(!g.autopiloted(), "the player flew first");
+        // The ship stays at the goal: the autopilot holds no control in the target set, and
+        // brings the ship back should it drift out.
+        let landed = g.landed().expect("landed");
+        fly_with(&mut g, 10.0, Some(solution));
+        let task = g.replay.case.task;
+        for s in &g.replay.trajectory.states[landed..] {
+            let distance = (s.x - task.goal.x).hypot(s.y - task.goal.y);
+            assert!(
+                distance < 3.0 * task.tolerance.position,
+                "off by {distance}"
+            );
+        }
+        assert_eq!(g.take_fault(), None, "no fault");
+    }
+
+    /// A policy that thrusts harder than any ship can.
+    struct Overthrust;
+
+    impl Controller for Overthrust {
+        fn new(_: &Task) -> Self {
+            Self
+        }
+
+        fn control(&mut self, _: usize, _: &State) -> Control {
+            Control {
+                thrust: f64::INFINITY,
+                torque: 0.0,
+            }
+        }
+    }
+
+    static OVERTHRUST: StoredSolution = StoredSolution {
+        name: "overthrust",
+        source: "",
+        simulate: nabla_core::problem::simulate::<Overthrust>,
+        controller: |task| Box::new(Overthrust::new(task)),
+    };
+
+    #[test]
+    fn an_inadmissible_policy_hands_the_ship_back() {
+        let mut g = game();
+        g.advance(0.05, Input::default(), Steering::Raw, Some(&OVERTHRUST));
+        let fault = g.take_fault().expect("a fault");
+        assert!(fault.contains("inadmissible"), "{fault}");
+        let params = g.replay.case.task.params;
+        for u in &g.replay.trajectory.controls {
+            assert!(u.is_admissible(&params), "the player's controls instead");
+        }
+        assert!(!g.autopiloted(), "the player flew");
+    }
+
+    /// Runs `g` for `seconds` with no input, `autopilot` flying.
+    fn fly_with(g: &mut Game, seconds: f64, autopilot: Option<&'static StoredSolution>) {
+        for _ in 0..(seconds / 0.05).round() as usize {
+            g.advance(0.05, Input::default(), Steering::Raw, autopilot);
+        }
+    }
+
+    #[test]
     fn a_flight_starting_in_the_target_set_lands_at_once() {
         let mut g = Game::new(suite::find("at_goal").expect("case exists"));
         assert_eq!(g.landed(), None, "not before it starts");
-        g.advance(0.001, Input::default(), Steering::Raw);
+        g.advance(0.001, Input::default(), Steering::Raw, None);
         assert_eq!(g.landed(), Some(0), "at the first sample");
     }
 }

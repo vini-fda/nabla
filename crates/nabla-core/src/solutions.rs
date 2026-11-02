@@ -1,9 +1,10 @@
-//! The control policies found so far, compiled in. The app replays them.
+//! The control policies found so far, compiled in. The app's autopilot flies with them.
 
 pub mod flip_and_burn_tuned;
 pub mod mpc;
 
-use crate::problem::{Case, Trajectory, simulate};
+use crate::Controller;
+use crate::problem::{Case, Task, Trajectory, simulate};
 
 /// A control policy, with what the app shows of it.
 pub struct StoredSolution {
@@ -12,6 +13,13 @@ pub struct StoredSolution {
     pub source: &'static str,
     /// Run this solution on a case, recording the trajectory.
     pub simulate: fn(&Case) -> Trajectory,
+    /// A new controller of this solution for `task`, to query a step at a time.
+    pub controller: fn(&Task) -> Box<dyn Controller>,
+}
+
+/// A new controller `C` for `task`, boxed.
+fn boxed<C: Controller + 'static>(task: &Task) -> Box<dyn Controller> {
+    Box::new(C::new(task))
 }
 
 /// Every solution. The app starts on the first.
@@ -20,11 +28,13 @@ pub static SOLUTIONS: &[StoredSolution] = &[
         name: "mpc",
         source: include_str!("solutions/mpc.rs"),
         simulate: simulate::<mpc::Solution>,
+        controller: boxed::<mpc::Solution>,
     },
     StoredSolution {
         name: "flip_and_burn_tuned",
         source: include_str!("solutions/flip_and_burn_tuned.rs"),
         simulate: simulate::<flip_and_burn_tuned::Solution>,
+        controller: boxed::<flip_and_burn_tuned::Solution>,
     },
 ];
 

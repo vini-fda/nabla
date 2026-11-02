@@ -81,7 +81,6 @@ const THRUST_COLOR: egui::Color32 = palette::RED;
 const TORQUE_COLOR: egui::Color32 = palette::SAPPHIRE;
 const CURSOR_COLOR: egui::Color32 = palette::OVERLAY1;
 
-const DEFAULT_CIRCUMRADIUS: f32 = 1.0;
 const DEFAULT_ALPHA: f32 = 0.3;
 
 // HUD-style vector arrows: fixed pixel-per-magnitude scales so arrow length
@@ -174,7 +173,7 @@ const FIT_MARGIN: f32 = 0.15;
 const H_MIN: f64 = 0.01;
 const H_MAX: f64 = 0.1;
 
-/// Case selected at startup.
+/// Case listed first in the presets.
 const DEFAULT_CASE: &str = "agile";
 
 /// A test case and the suite it comes from.
@@ -233,6 +232,8 @@ impl Plots {
 
 pub struct ViewerApp {
     world_setup: crate::world::World,
+    /// `world_setup` came from a file, rather than from a [`Preset`](crate::world::Preset).
+    custom_world: bool,
     world_file: Option<std::sync::mpsc::Receiver<crate::world_io::FileResult>>,
     world_error: Option<String>,
     circumradius: f32,
@@ -322,13 +323,16 @@ pub struct ViewerApp {
 
 impl Default for ViewerApp {
     fn default() -> Self {
-        let case = suite::find(DEFAULT_CASE).expect("the default case exists");
+        let world = crate::world::Preset::default().world();
+        let case = world.case();
         let policy = &SOLUTIONS[0];
         Self {
-            world_setup: crate::world::World::vacuum(&case, DEFAULT_CIRCUMRADIUS),
+            circumradius: world.players[0].radius,
+            h: case.task.params.h,
+            world_setup: world,
+            custom_world: false,
             world_file: None,
             world_error: None,
-            circumradius: DEFAULT_CIRCUMRADIUS,
             alpha: DEFAULT_ALPHA,
             camera: Camera::default(),
             gizmo: ViewGizmo::default(),
@@ -362,7 +366,6 @@ impl Default for ViewerApp {
             title_fit: 1.0,
             title_rest: 0.0,
             setup: case,
-            h: suite::H,
             show_code: false,
             sound: Sound::default(),
             gamepads: Gamepads::default(),
@@ -1863,7 +1866,7 @@ impl ViewerApp {
     fn controls_ui(&mut self, ui: &mut egui::Ui) {
         // Scrolls sideways too, so rows are never cut off if the space is narrower than they are.
         egui::ScrollArea::both().show(ui, |ui| {
-            ui.heading(&self.game.world.name);
+            self.world_selector_ui(ui);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
                 let font = egui::TextStyle::Body.resolve(ui.style());

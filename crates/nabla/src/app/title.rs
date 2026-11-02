@@ -246,7 +246,7 @@ impl ViewerApp {
     fn setup_ui(&mut self, ui: &mut egui::Ui) {
         self.world_picker_ui(ui);
         ui.separator();
-        page_heading(ui, icons::outline::ROCKET, "Starting conditions");
+        ui.heading("Starting conditions");
         let mut picked = None;
         ui.horizontal(|ui| {
             ui.label("Preset:");

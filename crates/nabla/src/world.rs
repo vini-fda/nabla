@@ -46,9 +46,9 @@ pub struct World {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Preset {
-    #[default]
     Vacuum,
     Planet,
+    #[default]
     PlanetAndMoon,
 }
 

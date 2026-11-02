@@ -45,6 +45,21 @@ fn wrap(angle: f64) -> f64 {
 }
 
 impl Controller for Solution {
+    fn prediction(&self, state: &State, steps: usize) -> Vec<State> {
+        let mut copy = Self::new(&self.task);
+        let mut state = *state;
+        let mut states = vec![state];
+        for k in 0..steps.min(500) {
+            if self.task.reached(&state) {
+                break;
+            }
+            let u = copy.control(k, &state);
+            state = crate::step(&self.task.params, &state, &u);
+            states.push(state);
+        }
+        states
+    }
+
     fn new(task: &Task) -> Self {
         let p = &task.params;
         Solution {

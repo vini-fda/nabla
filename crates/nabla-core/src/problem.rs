@@ -15,14 +15,16 @@ use crate::model::{Control, Params, State, step};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 /// Target point `B`.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Goal {
     pub x: f64,
     pub y: f64,
 }
 
 /// Size of the target set around `B`.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Tolerance {
     /// `ε_p`: maximum distance to `B`.
     pub position: f64,
@@ -33,7 +35,8 @@ pub struct Tolerance {
 }
 
 /// Everything a controller is told about a case, except the state.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Task {
     pub params: Params,
     pub goal: Goal,
@@ -64,6 +67,13 @@ pub trait Controller {
 
     /// The control `u_k` to hold during step `k`, given the state `s_k`.
     fn control(&mut self, k: usize, state: &State) -> Control;
+
+    /// Optional display forecast from the next control sample, including `state` as the first
+    /// point. This must not change the live policy. `steps` is capped by the caller; policies
+    /// may return fewer states, or an empty vector when no prediction is available.
+    fn prediction(&self, _state: &State, _steps: usize) -> Vec<State> {
+        Vec::new()
+    }
 }
 
 /// A test case: a task and an initial state.

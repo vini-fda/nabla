@@ -6,3 +6,4 @@ description = "The 2D ship's state-space model, the control problem to solve, an
 publish = false
 
 [dependencies]
+serde = { version = "1.0", features = ["derive"] }

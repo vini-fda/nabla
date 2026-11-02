@@ -1,0 +1,33 @@
+version = 1
+name = "Pure vacuum"
+gravity_constant = 0.0
+
+[[players]]
+radius = 1.0
+
+[players.state]
+x = -15.0
+y = 3.0
+vx = 4.0
+vy = 4.0
+theta = 0.0
+omega = 2.0
+
+[players.task]
+max_steps = 20000
+
+[players.task.params]
+mass = 0.5
+inertia = 0.2
+f_max = 5.0
+tau_max = 5.0
+h = 0.02
+
+[players.task.goal]
+x = 0.0
+y = 0.0
+
+[players.task.tolerance]
+position = 0.1
+velocity = 0.1
+omega = 0.1

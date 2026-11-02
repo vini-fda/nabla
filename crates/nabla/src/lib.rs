@@ -17,12 +17,18 @@ mod gizmo;
 pub mod grid;
 mod highlight;
 mod keys;
+mod notifications;
+mod orbit;
+mod physics;
+mod planets;
 mod plume;
 pub mod replay;
 mod ship3d;
 mod sound;
 mod sprites;
 pub mod theme;
+pub mod world;
+mod world_io;
 pub use app::ViewerApp;
 
 /// Multisampling (MSAA samples) the native app asks eframe for. The web painter doesn't

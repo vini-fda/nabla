@@ -1,7 +1,8 @@
 //! The game: the player flies the ship to the goal, and time runs freely. An [`Autopilot`] can
 //! fly it instead, with one of the control policies.
 //!
-//! The flight runs on the same exact sampled-data model a solution is scored on. At each sample
+//! Vacuum flights run on the same exact sampled-data model a solution is scored on.
+//! Worlds with celestial bodies use Rapier substeps with collision-aware replay samples. At each sample
 //! `t_k = k h` the controls the player holds become `u_k`, held for the whole step, and
 //! `s_(k+1) = step(s_k, u_k)`. So a flight is a [`Replay`] that grows as it goes, and the canvas,
 //! plumes, plots and sound show it as they show a solution's run.
@@ -34,8 +35,11 @@ use nabla_core::problem::{Case, Outcome, Trajectory};
 use nabla_core::solutions::StoredSolution;
 use nabla_core::{Control, Controller, Params, State, Task, step};
 
+use crate::orbit::{self, Pilot, Prediction, Target};
+use crate::physics::Physics;
 use crate::replay::Replay;
 use crate::theme::{icons, palette};
+use crate::world::World;
 
 /// Fraction of the maximum thrust and torque applied under fine control.
 pub const FINE: f64 = 0.1;
@@ -171,8 +175,34 @@ impl Autopilot {
     }
 }
 
+/// The one objective of a flight. Manual control does not change what the ship is aiming for.
+/// Point B and its tolerances come from the flight's case; an orbit carries its own target.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Objective {
+    #[default]
+    ReachB,
+    Orbit(Target),
+}
+
+impl Objective {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ReachB => "Reach B",
+            Self::Orbit(_) => "Orbit",
+        }
+    }
+}
+
+/// Only one controller can own the flight's controls at a time.
+enum FlightController {
+    ReachB(Autopilot),
+    Orbit(Pilot),
+}
+
 /// A flight on one case.
 pub struct Game {
+    pub world: World,
+    physics: Option<Physics>,
     /// The flight so far: every sample up to the present, and the state at the end of the
     /// step under way. Its outcome stays [`Outcome::Timeout`]: a flight has no step budget, and
     /// [`Self::landed`] says when it reached the target set.
@@ -184,8 +214,8 @@ pub struct Game {
     landed: Option<usize>,
     /// The heading the stability assist holds, while it does.
     hold: Option<f64>,
-    /// The autopilot, while it flies.
-    autopilot: Option<Autopilot>,
+    objective: Objective,
+    autopilot: Option<FlightController>,
     /// Some sample before the landing was flown by the player rather than the autopilot.
     manual: bool,
     /// Why the autopilot stopped flying, if it failed: to show the player, once.
@@ -195,18 +225,26 @@ pub struct Game {
 
 impl Game {
     pub fn new(case: Case) -> Self {
+        let world = World::vacuum(&case, 1.0);
+        Self::in_world(case, world)
+    }
+
+    pub fn in_world(case: Case, world: World) -> Self {
         let trajectory = Trajectory {
             states: vec![case.start],
             controls: Vec::new(),
             outcome: Outcome::Timeout,
         };
         Self {
+            physics: (!world.bodies.is_empty()).then(|| Physics::new(&world)),
+            world,
             replay: Replay::new(case, trajectory),
             time: 0.0,
             paused: false,
             landed: None,
             hold: None,
             autopilot: None,
+            objective: Objective::ReachB,
             manual: false,
             fault: None,
             pads: Pads::default(),
@@ -215,6 +253,104 @@ impl Game {
 
     pub fn time(&self) -> f64 {
         self.time
+    }
+
+    pub fn save(&self) -> World {
+        let mut world = self.world.clone();
+        world.players[0].state = self.state();
+        world
+    }
+
+    pub fn objective(&self) -> Objective {
+        self.objective
+    }
+
+    pub fn assisted(&self) -> bool {
+        self.autopilot.is_some()
+    }
+
+    pub fn orbit_pilot(&self) -> Option<&Pilot> {
+        match &self.autopilot {
+            Some(FlightController::Orbit(pilot)) => Some(pilot),
+            _ => None,
+        }
+    }
+
+    /// Selecting a different objective returns to manual control. Feasibility is checked
+    /// separately on engagement, so an obstructed orbit can still be selected and edited.
+    pub fn select_objective(&mut self, objective: Objective) -> Result<(), String> {
+        if let Objective::Orbit(target) = objective {
+            target.validate_input(&self.world)?;
+        }
+        if self.objective != objective {
+            self.disengage();
+            self.objective = objective;
+            self.landed = None;
+            self.manual |= self.time > 0.0;
+        }
+        Ok(())
+    }
+
+    /// Validate the entire request before replacing the current objective or controller.
+    pub fn engage(
+        &mut self,
+        objective: Objective,
+        solution: &'static StoredSolution,
+    ) -> Result<Option<Prediction>, String> {
+        let (controller, prediction) = match objective {
+            Objective::ReachB => (FlightController::ReachB(Autopilot::new(solution)), None),
+            Objective::Orbit(target) => {
+                let prediction = orbit::predict(&self.world, self.next_state(), target)?;
+                (
+                    FlightController::Orbit(Pilot::new(target)),
+                    Some(prediction),
+                )
+            }
+        };
+        self.select_objective(objective)?;
+        self.autopilot = Some(controller);
+        self.fault = None;
+        self.hold = None;
+        if matches!(objective, Objective::Orbit(_)) {
+            self.manual = true; // Orbit captures are not vacuum policy comparison runs.
+        }
+        Ok(prediction)
+    }
+
+    pub fn disengage(&mut self) {
+        self.autopilot = None;
+        self.hold = None;
+    }
+
+    pub fn next_state(&self) -> State {
+        *self.replay.trajectory.states.last().expect("initial state")
+    }
+
+    /// A short forecast from the next control sample, without advancing the live controller.
+    pub fn prediction(&self) -> Vec<[f64; 2]> {
+        let start = self.next_state();
+        match &self.autopilot {
+            Some(FlightController::Orbit(pilot)) => {
+                orbit::forecast(&self.world, start, pilot.clone())
+            }
+            Some(FlightController::ReachB(pilot)) => {
+                let steps = orbit::forecast_steps(self.replay.h());
+                let states = pilot
+                    .controller
+                    .as_ref()
+                    .map_or_else(Vec::new, |controller| {
+                        catch_unwind(AssertUnwindSafe(|| controller.prediction(&start, steps)))
+                            .unwrap_or_default()
+                    });
+                states
+                    .into_iter()
+                    .take(steps + 1)
+                    .take_while(|s| s.x.is_finite() && s.y.is_finite())
+                    .map(|s| [s.x, s.y])
+                    .collect()
+            }
+            None => Vec::new(),
+        }
     }
 
     /// The present as `(k, tau)`, with `t = k h + tau` and `0 <= tau < h`.
@@ -259,16 +395,10 @@ impl Game {
     }
 
     /// Run the flight `dt` real seconds on, unless paused, with `input` held at the samples
-    /// this passes, steering as `steering` says. With an `autopilot`, its policy flies instead,
+    /// this passes, steering as `steering` says. With an engaged controller, it flies instead,
     /// and the input does nothing; should the policy fail, the player takes over, and
     /// [`Self::take_fault`] says why.
-    pub fn advance(
-        &mut self,
-        dt: f64,
-        input: Input,
-        steering: Steering,
-        autopilot: Option<&'static StoredSolution>,
-    ) {
+    pub fn advance(&mut self, dt: f64, input: Input, steering: Steering) {
         if self.paused {
             return;
         }
@@ -279,10 +409,10 @@ impl Game {
         while self.replay.trajectory.controls.len() as f64 * h <= self.time {
             let k = self.replay.trajectory.controls.len();
             let s = self.replay.trajectory.states[k];
-            if self.landed.is_none() && task.reached(&s) {
+            if self.objective == Objective::ReachB && self.landed.is_none() && task.reached(&s) {
                 self.landed = Some(k);
             }
-            let piloted = self.autopilot_control(autopilot, &task, &s);
+            let piloted = self.autopilot_control(&task, &s);
             if piloted.is_none() && self.landed.is_none() {
                 self.manual = true;
             }
@@ -290,28 +420,34 @@ impl Game {
                 piloted.unwrap_or_else(|| steer(input, steering, &mut self.hold, &task.params, &s));
             let trajectory = &mut self.replay.trajectory;
             trajectory.controls.push(u);
-            trajectory.states.push(step(&task.params, &s, &u));
+            if let Some(physics) = &mut self.physics {
+                let mut samples = physics.step(h, u);
+                samples[0] = s;
+                trajectory
+                    .states
+                    .push(*samples.last().expect("physics samples"));
+                self.replay.collision_steps.push(samples);
+            } else {
+                trajectory.states.push(step(&task.params, &s, &u));
+            }
         }
     }
 
     /// The control the autopilot flying `solution`, if any, chooses in state `s`. A new one
     /// starts afresh, and one that fails is dropped, with the fault kept.
-    fn autopilot_control(
-        &mut self,
-        solution: Option<&'static StoredSolution>,
-        task: &Task,
-        s: &State,
-    ) -> Option<Control> {
-        // Not again in the frame it failed in: the app switches it off after.
-        let Some(solution) = solution.filter(|_| self.fault.is_none()) else {
-            self.autopilot = None;
-            return None;
+    fn autopilot_control(&mut self, task: &Task, s: &State) -> Option<Control> {
+        let result = match self.autopilot.as_mut()? {
+            FlightController::ReachB(pilot) => pilot.control(task, s),
+            FlightController::Orbit(pilot) => {
+                let u = pilot.control(&self.world, s, &task.params);
+                if u.is_admissible(&task.params) && orbit::clear(&self.world, s) {
+                    Ok(u)
+                } else {
+                    Err("Orbit assist lost clearance or control authority".to_owned())
+                }
+            }
         };
-        let autopilot = match &mut self.autopilot {
-            Some(a) if std::ptr::eq(a.solution, solution) => a,
-            slot => slot.insert(Autopilot::new(solution)),
-        };
-        match autopilot.control(task, s) {
+        match result {
             Ok(u) => {
                 // The assist holds the heading the autopilot leaves, not one from before it.
                 self.hold = None;
@@ -326,12 +462,28 @@ impl Game {
         }
     }
 
-    /// A view centered on the ship that shows the goal too, as `([x_min, y_min], [x_max, y_max])`.
+    /// A view centered on the ship that includes the goal and celestial bodies.
     pub fn view_bounds(&self) -> ([f64; 2], [f64; 2]) {
         let s = self.state();
-        let goal = self.replay.case.task.goal;
-        let dx = (goal.x - s.x).abs().max(MIN_VIEW_HALF_SIZE);
-        let dy = (goal.y - s.y).abs().max(MIN_VIEW_HALF_SIZE);
+        let (mut dx, mut dy) = match self.objective {
+            Objective::ReachB => {
+                let goal = self.replay.case.task.goal;
+                ((goal.x - s.x).abs(), (goal.y - s.y).abs())
+            }
+            Objective::Orbit(target) => {
+                let body = &self.world.bodies[target.body];
+                (
+                    (f64::from(body.position[0]) - s.x).abs() + target.radius(&self.world),
+                    (f64::from(body.position[1]) - s.y).abs() + target.radius(&self.world),
+                )
+            }
+        };
+        dx = dx.max(MIN_VIEW_HALF_SIZE);
+        dy = dy.max(MIN_VIEW_HALF_SIZE);
+        for body in &self.world.bodies {
+            dx = dx.max((f64::from(body.position[0]) - s.x).abs() + f64::from(body.radius));
+            dy = dy.max((f64::from(body.position[1]) - s.y).abs() + f64::from(body.radius));
+        }
         ([s.x - dx, s.y - dy], [s.x + dx, s.y + dy])
     }
 }
@@ -389,7 +541,7 @@ fn stopping_heading(params: &Params, s: &State) -> f64 {
 /// The torque that turns the ship in state `s` toward `heading` and holds it there: over the
 /// next step, it brings the angular velocity to the speed at which braking at the assist's
 /// acceleration stops the ship on the heading, or, near it, to an exponential approach.
-fn hold_torque(params: &Params, s: &State, heading: f64) -> f64 {
+pub(crate) fn hold_torque(params: &Params, s: &State, heading: f64) -> f64 {
     let error = heading - s.theta;
     let time_constant = SAS_TIME_CONSTANT.max(SAS_MIN_SAMPLES * params.h);
     let braking = (2.0 * sas_acceleration(params) * error.abs()).sqrt();
@@ -737,6 +889,73 @@ mod tests {
     }
 
     #[test]
+    fn saves_current_state_and_reloads_collision_world() {
+        let mut world = crate::world::Preset::PlanetAndMoon.world();
+        world.gravity_constant = 2.5;
+        world.players[0].state = State {
+            x: -20.0,
+            y: -12.0,
+            vx: 100.0,
+            ..State::default()
+        };
+        let mut game = Game::in_world(world.case(), world.clone());
+        let (lo, hi) = game.view_bounds();
+        assert!(
+            lo[1] <= -19.0 && hi[0] >= 14.5,
+            "initial view includes planet and moon"
+        );
+        for _ in 0..30 {
+            game.advance(0.017, Input::default(), Steering::Raw);
+        }
+        assert!(
+            game.state().x <= -7.95,
+            "visible ship does not pass into the planet"
+        );
+        let saved = World::from_toml(&game.save().to_toml().expect("save")).expect("load");
+        assert_eq!(
+            saved.players[0].state,
+            game.state(),
+            "save the present, not the predicted next sample"
+        );
+        assert_eq!(
+            saved.bodies, world.bodies,
+            "static bodies survive flight and serialization"
+        );
+        assert_eq!(
+            saved.gravity_constant, world.gravity_constant,
+            "save custom gravity"
+        );
+        let mut resumed = Game::in_world(saved.case(), saved.clone());
+        assert_eq!(
+            resumed.state(),
+            saved.players[0].state,
+            "load restores the visible state"
+        );
+        resumed.paused = true;
+        resumed.advance(0.1, Input::default(), Steering::Raw);
+        assert_eq!(resumed.save(), saved, "pause leaves save state unchanged");
+        resumed.paused = false;
+        resumed.advance(
+            0.1,
+            Input {
+                thrust: true,
+                ..Input::default()
+            },
+            Steering::Raw,
+        );
+        assert!(
+            resumed.state().x <= -7.95,
+            "rebuilt colliders stop thrust into the planet"
+        );
+        let restarted = Game::in_world(world.case(), world.clone());
+        assert_eq!(
+            restarted.save(),
+            world,
+            "restart rebuilds the original world"
+        );
+    }
+
+    #[test]
     fn input_controls_are_admissible_and_signed() {
         let params = game().replay.case.task.params;
         let turn = |turn| Input {
@@ -803,7 +1022,7 @@ mod tests {
             thrust: true,
             ..Input::default()
         };
-        g.advance(2.5 * h, thrust, Steering::Raw, None);
+        g.advance(2.5 * h, thrust, Steering::Raw);
         let r = &g.replay;
         assert_eq!(
             r.trajectory.controls.len(),
@@ -823,17 +1042,17 @@ mod tests {
     #[test]
     fn long_frames_are_capped_and_pause_stops_time() {
         let mut g = game();
-        g.advance(10.0, Input::default(), Steering::Raw, None);
+        g.advance(10.0, Input::default(), Steering::Raw);
         assert!((g.time() - MAX_FRAME_TIME).abs() < 1e-12, "capped");
         g.paused = true;
-        g.advance(0.05, Input::default(), Steering::Raw, None);
+        g.advance(0.05, Input::default(), Steering::Raw);
         assert!((g.time() - MAX_FRAME_TIME).abs() < 1e-12, "paused");
     }
 
     /// Runs `g` for `seconds` with `input` held, steering as `steering` says.
     fn fly(g: &mut Game, seconds: f64, input: Input, steering: Steering) {
         for _ in 0..(seconds / 0.05).round() as usize {
-            g.advance(0.05, input, steering, None);
+            g.advance(0.05, input, steering);
         }
     }
 
@@ -990,8 +1209,9 @@ mod tests {
                 ..aim(1.0, 0.1)
             };
             let h = g.replay.h();
+            g.engage(Objective::ReachB, solution).expect("engage");
             while g.landed().is_none() && g.time() < 60.0 {
-                g.advance(h, input, Steering::Sas, Some(solution));
+                g.advance(h, input, Steering::Sas);
             }
             assert_eq!(g.landed(), Some(n), "{}: as scored", solution.name);
             assert!(g.autopiloted(), "{}: all the way", solution.name);
@@ -1016,8 +1236,9 @@ mod tests {
         };
         fly(&mut g, 1.0, thrust, Steering::Raw);
         let mut flown = 0.0;
+        g.engage(Objective::ReachB, solution).expect("engage");
         while g.landed().is_none() && flown < 60.0 {
-            g.advance(0.05, Input::default(), Steering::Raw, Some(solution));
+            g.advance(0.05, Input::default(), Steering::Raw);
             flown += 0.05;
         }
         assert!(g.landed().is_some(), "lands");
@@ -1063,7 +1284,8 @@ mod tests {
     #[test]
     fn an_inadmissible_policy_hands_the_ship_back() {
         let mut g = game();
-        g.advance(0.05, Input::default(), Steering::Raw, Some(&OVERTHRUST));
+        g.engage(Objective::ReachB, &OVERTHRUST).expect("engage");
+        g.advance(0.05, Input::default(), Steering::Raw);
         let fault = g.take_fault().expect("a fault");
         assert!(fault.contains("inadmissible"), "{fault}");
         let params = g.replay.case.task.params;
@@ -1075,8 +1297,15 @@ mod tests {
 
     /// Runs `g` for `seconds` with no input, `autopilot` flying.
     fn fly_with(g: &mut Game, seconds: f64, autopilot: Option<&'static StoredSolution>) {
+        if let Some(solution) = autopilot {
+            if !g.assisted() {
+                g.engage(Objective::ReachB, solution).expect("engage");
+            }
+        } else {
+            g.disengage();
+        }
         for _ in 0..(seconds / 0.05).round() as usize {
-            g.advance(0.05, Input::default(), Steering::Raw, autopilot);
+            g.advance(0.05, Input::default(), Steering::Raw);
         }
     }
 
@@ -1084,7 +1313,76 @@ mod tests {
     fn a_flight_starting_in_the_target_set_lands_at_once() {
         let mut g = Game::new(suite::find("at_goal").expect("case exists"));
         assert_eq!(g.landed(), None, "not before it starts");
-        g.advance(0.001, Input::default(), Steering::Raw, None);
+        g.advance(0.001, Input::default(), Steering::Raw);
         assert_eq!(g.landed(), Some(0), "at the first sample");
+    }
+
+    #[test]
+    fn only_the_selected_objective_can_report_reaching_b() {
+        let mut world = crate::world::Preset::Planet.world();
+        world.players[0].state = State {
+            x: 20.0,
+            y: -12.0,
+            ..State::default()
+        };
+        world.players[0].task.goal = nabla_core::problem::Goal { x: 20.0, y: -12.0 };
+        let mut g = Game::in_world(world.case(), world);
+        g.advance(0.0, Input::default(), Steering::Raw);
+        assert_eq!(g.landed(), Some(0));
+        let target = Target::at_current_altitude(&g.world, &g.state(), 0).expect("target");
+        g.select_objective(Objective::Orbit(target))
+            .expect("select");
+        g.advance(0.02, Input::default(), Steering::Raw);
+        assert_eq!(
+            g.landed(),
+            None,
+            "B is irrelevant even in manual orbit flight"
+        );
+        g.select_objective(Objective::ReachB).expect("select B");
+        g.advance(0.02, Input::default(), Steering::Raw);
+        assert!(g.landed().is_some(), "B becomes the objective again");
+    }
+
+    #[test]
+    fn a_failed_objective_change_preserves_the_current_controller() {
+        let world = crate::world::Preset::Planet.world();
+        let mut g = Game::in_world(world.case(), world);
+        let solution = &nabla_core::solutions::SOLUTIONS[0];
+        g.engage(Objective::ReachB, solution).expect("engage B");
+        let invalid = Objective::Orbit(Target {
+            body: 999,
+            altitude: 10.0,
+            clockwise: true,
+        });
+        assert!(g.engage(invalid, solution).is_err());
+        assert!(g.select_objective(invalid).is_err());
+        assert_eq!(g.objective(), Objective::ReachB);
+        assert!(matches!(g.autopilot, Some(FlightController::ReachB(_))));
+    }
+
+    #[test]
+    fn orbit_forecast_uses_a_copy_of_the_live_controller_and_matches_the_next_step() {
+        let world = crate::world::Preset::Planet.world();
+        let mut g = Game::in_world(world.case(), world);
+        let target = Target::at_current_altitude(&g.world, &g.state(), 0).expect("target");
+        g.engage(
+            Objective::Orbit(target),
+            &nabla_core::solutions::SOLUTIONS[0],
+        )
+        .expect("engage");
+        g.advance(0.0, Input::default(), Steering::Raw);
+        let k = g.replay.trajectory.controls.len();
+        let before = g.next_state();
+        let path = g.prediction();
+        assert_eq!(
+            path,
+            g.prediction(),
+            "prediction does not consume live controls"
+        );
+        assert_eq!(g.next_state(), before);
+        assert_eq!(path[0], [before.x, before.y]);
+        g.advance(g.replay.h(), Input::default(), Steering::Raw);
+        let next = g.replay.trajectory.states[k + 1];
+        assert!((path[1][0] - next.x).hypot(path[1][1] - next.y) < 1e-4);
     }
 }

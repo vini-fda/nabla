@@ -39,6 +39,12 @@ pub mod palette {
 
 const PLEX: &[u8] = include_bytes!("../assets/fonts/IBMPlexSans-Regular.ttf");
 const LILEX: &[u8] = include_bytes!("../assets/fonts/Lilex-Regular.ttf");
+/// The title's font: CMU Serif Italic (OFL), Computer Modern's italic, from CTAN's `cm-unicode`,
+/// cut down to printable ASCII: `pyftsubset cmunti.otf --unicodes=U+0020-007E
+/// --layout-features='kern,liga' --no-hinting`. To use another font for the title, swap this file.
+const TITLE: &[u8] = include_bytes!("../assets/fonts/CMUSerif-Italic-subset.otf");
+/// Name of the font family with the title's font.
+const TITLE_FAMILY: &str = "Title";
 /// Phosphor Icons, fill weight (<https://phosphoricons.com>), cut down to the glyphs in [`icons`]:
 /// `pyftsubset Phosphor-Fill.ttf --unicodes=U+E138,... --layout-features='' --no-hinting`, with the
 /// font and codepoints from `@phosphor-icons/web@2.1.1` (`src/fill/`). Add a glyph there first.
@@ -67,19 +73,29 @@ pub mod icons {
         pub const ARROW_FAT_UP: &str = "\u{E52E}";
         pub const ARROW_LEFT: &str = "\u{E058}";
         pub const ARROW_RIGHT: &str = "\u{E06C}";
+        pub const ARROW_U_UP_LEFT: &str = "\u{E08A}";
         pub const ARROWS_OUT_CARDINAL: &str = "\u{E0A4}";
         pub const ARROWS_OUT_SIMPLE: &str = "\u{E0A6}";
+        pub const DICE_FIVE: &str = "\u{E1EE}";
         pub const FIRE: &str = "\u{E242}";
         pub const GAME_CONTROLLER: &str = "\u{E26E}";
+        pub const GEAR_SIX: &str = "\u{E272}";
         pub const GRID_FOUR: &str = "\u{E296}";
         pub const HAND_SWIPE_RIGHT: &str = "\u{EC92}";
         pub const HAND_TAP: &str = "\u{EC90}";
+        pub const HOUSE: &str = "\u{E2C2}";
+        pub const KEYBOARD: &str = "\u{E2D8}";
+        pub const MAP_PIN: &str = "\u{E316}";
+        pub const MONITOR: &str = "\u{E32E}";
         pub const MOUSE_LEFT_CLICK: &str = "\u{E334}";
         pub const MOUSE_SCROLL: &str = "\u{E332}";
         pub const PATH: &str = "\u{E39C}";
         pub const PERSPECTIVE: &str = "\u{EBE6}";
+        pub const QUESTION: &str = "\u{E3E8}";
+        pub const ROCKET: &str = "\u{E3FC}";
         pub const ROCKET_LAUNCH: &str = "\u{E3FE}";
         pub const SEAL_QUESTION: &str = "\u{E608}";
+        pub const SPEAKER_HIGH: &str = "\u{E44A}";
         pub const SPHERE: &str = "\u{EE66}";
 
         /// Name of the font family with the outline glyphs.
@@ -130,7 +146,20 @@ fn install_fonts(ctx: &egui::Context) {
         FontFamily::Name(icons::outline::FAMILY.into()),
         vec![icons::outline::FAMILY.to_owned()],
     );
+    fonts.font_data.insert(
+        TITLE_FAMILY.to_owned(),
+        std::sync::Arc::new(egui::FontData::from_static(TITLE)),
+    );
+    fonts.families.insert(
+        FontFamily::Name(TITLE_FAMILY.into()),
+        vec![TITLE_FAMILY.to_owned()],
+    );
     ctx.set_fonts(fonts);
+}
+
+/// The title's font, at `size` points.
+pub fn title_font(size: f32) -> FontId {
+    FontId::new(size, FontFamily::Name(TITLE_FAMILY.into()))
 }
 
 /// Install the theme and fonts, and force dark mode regardless of the OS setting.
@@ -232,4 +261,46 @@ fn style(style: &mut egui::Style) {
     w.open.bg_stroke = stroke(1.0, OVERLAY0);
     w.open.fg_stroke = stroke(1.0, WHITE);
     w.open.corner_radius = r;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The title's font loads and has the title's glyphs, drawn as wide as the font says: its
+    /// width differs from that of the UI's font, and that of glyphs it lacks (shown as empty boxes
+    /// of one width).
+    #[test]
+    fn title_font_draws_the_title() {
+        let ctx = egui::Context::default();
+        apply(&ctx);
+        let mut widths = [0.0; 3];
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let width = |text: &str, font| {
+                let galley = ui
+                    .painter()
+                    .layout_no_wrap(text.to_owned(), font, Color32::WHITE);
+                galley.size().x
+            };
+            widths = [
+                width("Nabla", title_font(100.0)),
+                width("Nabla", FontId::proportional(100.0)),
+                width(
+                    "\u{4E2D}\u{4E2D}\u{4E2D}\u{4E2D}\u{4E2D}",
+                    title_font(100.0),
+                ),
+            ];
+        });
+        output.textures_delta.clear();
+        let [title, ui_font, missing] = widths;
+        assert!(title > 100.0, "laid out {title} wide");
+        assert!(
+            (title - ui_font).abs() > 1.0,
+            "as wide as the UI's font: {ui_font}"
+        );
+        assert!(
+            (title - missing).abs() > 1.0,
+            "as wide as missing glyphs: {missing}"
+        );
+    }
 }

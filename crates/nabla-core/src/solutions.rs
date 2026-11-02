@@ -75,4 +75,30 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn display_forecasts_are_bounded_and_do_not_change_live_controls() {
+        let case = suite::find("agile").expect("case");
+        for solution in SOLUTIONS {
+            let mut shown = (solution.controller)(&case.task);
+            let mut reference = (solution.controller)(&case.task);
+            let first = shown.control(0, &case.start);
+            assert_eq!(first, reference.control(0, &case.start));
+            let state = crate::step(&case.task.params, &case.start, &first);
+            let prediction = shown.prediction(&state, 30);
+            assert!(
+                prediction.len() > 1 && prediction.len() <= 31,
+                "{}",
+                solution.name
+            );
+            assert_eq!(prediction[0], state);
+            assert_eq!(prediction, shown.prediction(&state, 30));
+            assert_eq!(
+                shown.control(1, &state),
+                reference.control(1, &state),
+                "{}",
+                solution.name
+            );
+        }
+    }
 }

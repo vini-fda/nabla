@@ -72,12 +72,13 @@ jobs:
           key: ${{ matrix.target }}
           save-if: false
 
-      - name: System libraries for eframe
+      # libudev: gilrs reads game controllers through it on Linux.
+      - name: System libraries for eframe and gilrs
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
-            libxkbcommon-dev libwayland-dev libssl-dev libasound2-dev
+            libxkbcommon-dev libwayland-dev libssl-dev libasound2-dev libudev-dev
 
       # The Liquid Glass icon needs Xcode 26; `cargo xtask bundle` falls back to a flat icon
       # otherwise.

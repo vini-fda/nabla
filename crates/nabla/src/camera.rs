@@ -14,6 +14,8 @@ use std::ops::{Add, Mul, Neg, Sub};
 
 use egui::{Pos2, Rect, Vec2};
 
+/// The least and greatest zoom, in pixels per world unit: every way of zooming stays within
+/// them.
 const MIN_SCALE: f32 = 0.01;
 const MAX_SCALE: f32 = 1000.0;
 
@@ -340,6 +342,11 @@ impl Camera {
         self.center = self.center - right * (delta.x / self.scale) + up * (delta.y / self.scale);
     }
 
+    /// Set the zoom to `scale` pixels per world unit, within its limits.
+    pub fn set_scale(&mut self, scale: f32) {
+        self.scale = scale.clamp(MIN_SCALE, MAX_SCALE);
+    }
+
     /// Multiply scale by `factor`, keeping the world point under
     /// `screen_anchor` (on the plane through the center facing the viewer) fixed on screen.
     pub fn zoom_at(&mut self, factor: f32, screen_anchor: Pos2, rect: Rect) {
@@ -565,6 +572,8 @@ mod tests {
         assert!(cam.scale <= MAX_SCALE);
         cam.zoom_at(1e-9, Pos2::new(100.0, 100.0), r);
         assert!(cam.scale >= MIN_SCALE);
+        cam.set_scale(1e9);
+        assert!(cam.scale <= MAX_SCALE, "set too");
     }
 
     #[test]

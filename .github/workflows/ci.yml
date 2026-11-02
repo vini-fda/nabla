@@ -41,11 +41,12 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: System libraries for eframe
+      # libudev: gilrs reads game controllers through it on Linux.
+      - name: System libraries for eframe and gilrs
         run: |
           sudo apt-get update
           sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
-            libxkbcommon-dev libwayland-dev libssl-dev libasound2-dev
+            libxkbcommon-dev libwayland-dev libssl-dev libasound2-dev libudev-dev
 
       - name: Format
         run: cargo fmt --all -- --check
@@ -119,12 +120,13 @@ jobs:
           key: ${{ matrix.target }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: System libraries for eframe
+      # libudev: gilrs reads game controllers through it on Linux.
+      - name: System libraries for eframe and gilrs
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
-            libxkbcommon-dev libwayland-dev libssl-dev libasound2-dev
+            libxkbcommon-dev libwayland-dev libssl-dev libasound2-dev libudev-dev
 
       # Platform specific code (`cfg(target_os)`) is only linted on its own platform.
       - name: Clippy

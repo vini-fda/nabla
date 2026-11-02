@@ -15,8 +15,10 @@ use nabla_solutions::registry::StoredSolution;
 
 use crate::camera::{Camera, Vec3};
 use crate::canvas_buttons::{self, Button};
+use crate::controller_view;
 use crate::formula::{self, Formula};
 use crate::game::{self, Aim, Game, Input, Steering};
+use crate::gamepad::{self, Gamepads};
 use crate::gizmo::ViewGizmo;
 use crate::grid::{GridStyle, draw_grid};
 use crate::keys;
@@ -100,6 +102,13 @@ const AIM_THRUST_COLOR: egui::Color32 = palette::GREEN;
 /// How near the ship (in points) the pointer commands nothing: the heading toward it is not
 /// defined at the ship itself.
 const AIM_DEAD_ZONE_PX: f32 = 12.0;
+/// How far the controller's right stick must be pushed (of its full travel) to aim, and how far
+/// from the ship (in points) its aim is drawn.
+const STICK_AIM_MIN: f32 = 0.5;
+const STICK_AIM_REACH_PX: f32 = 90.0;
+/// How fast the controller's R1 and L1 zoom while held: the zoom's logarithm per second, so
+/// about 4x a second.
+const CONTROLLER_ZOOM_RATE: f32 = 1.4;
 /// The thrust cone's default half-angle, and its range, in degrees.
 const DEFAULT_AIM_CONE: f64 = 10.0;
 const AIM_CONE_RANGE: std::ops::RangeInclusive<f64> = 1.0..=90.0;
@@ -243,6 +252,10 @@ pub struct ViewerApp {
     source: Option<SolutionSource>,
     runner: Runner,
     sound: Sound,
+    /// Game controllers, read every frame.
+    gamepads: Gamepads,
+    /// Show the controller's wireframe, lit by its state, under the flight.
+    show_controller: bool,
     database: Vec<(Entry, &'static StoredSolution, PathBuf)>,
     cases: Vec<CaseEntry>,
     replay: Option<Replay>,
@@ -305,6 +318,8 @@ impl Default for ViewerApp {
             source: None,
             runner: Runner::default(),
             sound: Sound::default(),
+            gamepads: Gamepads::default(),
+            show_controller: false,
             database: Vec::new(),
             cases: Vec::new(),
             replay: None,
@@ -589,6 +604,24 @@ impl ViewerApp {
                 aim: None,
             }
         })
+    }
+
+    /// The controller's switches in gameplay mode, on a press: Triangle turns the stability
+    /// assist on or off (as T), Options pauses or resumes (as P), and Create shows or hides the
+    /// controller view.
+    fn handle_controller_buttons(&mut self) {
+        let (Some(game), Some(pad)) = (&mut self.game, self.gamepads.state()) else {
+            return;
+        };
+        if pad.just_pressed(gamepad::Button::North) {
+            self.steering = toggled(self.steering);
+        }
+        if pad.just_pressed(gamepad::Button::Start) {
+            game.paused = !game.paused;
+        }
+        if pad.just_pressed(gamepad::Button::Select) {
+            self.show_controller = !self.show_controller;
+        }
     }
 
     /// Space: play/pause. Left/Right: one dt. Shift+Left/Right: previous/next controller
@@ -994,6 +1027,11 @@ impl ViewerApp {
         );
         ui.checkbox(&mut self.show_grid, "Grid");
         ui.checkbox(&mut self.show_path, "Path (grey: full, blue: so far)");
+        ui.checkbox(&mut self.show_controller, "Controller view, while flying")
+            .on_hover_text(
+                "A wireframe of the game controller under the flight, lit as you use it. \
+                 The controller's Create button shows or hides it too",
+            );
         ui.add_enabled_ui(!self.debug_view(), |ui| {
             ui.checkbox(&mut self.show_plume, "Thruster plumes");
         });
@@ -1014,7 +1052,8 @@ impl ViewerApp {
 
     /// The user inputs help: touch gestures on a phone or tablet, keyboard and mouse elsewhere;
     /// in gameplay mode, `flying`, the flight's controls in place of the playback's.
-    fn user_inputs_ui(ui: &mut egui::Ui, flying: bool) {
+    /// With a `controller` connected, its controls too, while flying.
+    fn user_inputs_ui(ui: &mut egui::Ui, flying: bool, controller: bool) {
         let k = keys::Keys::new(ui.ctx());
         ui.heading("User inputs");
         if k.touch() {
@@ -1022,6 +1061,68 @@ impl ViewerApp {
         } else {
             Self::keyboard_mouse_inputs_ui(ui, k, flying);
         }
+        if flying && controller {
+            Self::controller_flight_ui(ui);
+        }
+    }
+
+    /// The flight's controls on a game controller, named as on a Sony one.
+    fn controller_flight_ui(ui: &mut egui::Ui) {
+        use keys::{Key, caps, joiner};
+
+        input_group(ui, "Controller", |ui| {
+            input_row(
+                ui,
+                |ui| caps(ui, &[Key::Word("left stick")]),
+                |ui| ui.label("Turn, harder the further"),
+            );
+            input_row(
+                ui,
+                |ui| {
+                    caps(ui, &[Key::Word("Cross")]);
+                    joiner(ui, "/");
+                    caps(ui, &[Key::Word("R2")]);
+                },
+                |ui| ui.label("Thrust"),
+            );
+            input_row(
+                ui,
+                |ui| {
+                    caps(ui, &[Key::Word("L2")]);
+                    joiner(ui, "held");
+                },
+                |ui| ui.label(format!("Fine control ({}x power)", game::FINE)),
+            );
+            input_row(
+                ui,
+                |ui| {
+                    caps(ui, &[Key::Word("R1")]);
+                    joiner(ui, "/");
+                    caps(ui, &[Key::Word("L1")]);
+                },
+                |ui| ui.label("Zoom in / out"),
+            );
+            input_row(
+                ui,
+                |ui| caps(ui, &[Key::Word("right stick")]),
+                |ui| ui.label("Aim: turn that way; thrust when facing it"),
+            );
+            input_row(
+                ui,
+                |ui| caps(ui, &[Key::Word("Triangle")]),
+                |ui| ui.label("SAS: hold the heading when not turning"),
+            );
+            input_row(
+                ui,
+                |ui| caps(ui, &[Key::Word("Options")]),
+                |ui| ui.label("Pause / resume"),
+            );
+            input_row(
+                ui,
+                |ui| caps(ui, &[Key::Word("Create")]),
+                |ui| ui.label("Show / hide the controller view"),
+            );
+        });
     }
 
     /// The flight's keys.
@@ -1692,6 +1793,15 @@ impl ViewerApp {
                 self.camera.zoom_at(factor, hover_pos, rect);
             }
         }
+
+        // The controller's R1 zooms in and L1 out while held, about the canvas's center: the
+        // ship, while following it.
+        let zoom = self.gamepads.state().map_or(0.0, gamepad::State::zoom);
+        if zoom != 0.0 {
+            let dt = ui.input(|i| i.stable_dt).min(0.1);
+            let factor = (zoom * CONTROLLER_ZOOM_RATE * dt).exp();
+            self.camera.zoom_at(factor, rect.center(), rect);
+        }
     }
 
     /// Whether the pointer flies the ship now: in gameplay mode, with pointing on and the
@@ -1703,27 +1813,37 @@ impl ViewerApp {
     /// Where the player points, in pointing mode: the mouse pressed on the canvas, or on a
     /// touch screen the touch that points, on screen, and the heading toward it from the ship,
     /// unless it is too near the ship for one.
+    ///
+    /// Without a pointer, the controller's right stick aims, while pushed far enough, toward
+    /// where it points on screen: a direction, which needs neither Point nor the camera
+    /// following the ship. Its aim is drawn at a fixed distance from the ship.
     fn read_aim(&self, response: &egui::Response, rect: egui::Rect) -> Option<(egui::Pos2, f64)> {
-        if !self.pointing_now() {
-            return None;
-        }
         let game = self.game.as_ref()?;
-        let pointer = if game.pads.touched() {
+        let s = game.state();
+        let ship = world(s.x, s.y);
+        let on_screen = self.camera.world_to_screen(ship, rect)?;
+        let pointer = if !self.pointing_now() {
+            None
+        } else if game.pads.touched() {
             game.pads.aim_touch()
         } else {
             response
                 .is_pointer_button_down_on()
                 .then(|| response.interact_pointer_pos())
                 .flatten()
-        }?;
-        let s = game.state();
-        let ship = world(s.x, s.y);
-        let on_screen = self.camera.world_to_screen(ship, rect)?;
-        if on_screen.distance(pointer) < AIM_DEAD_ZONE_PX {
+        };
+        let target = pointer.or_else(|| {
+            let [x, y] = self.gamepads.state()?.right_stick;
+            // Screen y points down; the stick's y up.
+            let push = egui::vec2(x, -y);
+            (push.length() >= STICK_AIM_MIN)
+                .then(|| on_screen + push.normalized() * STICK_AIM_REACH_PX)
+        })?;
+        if on_screen.distance(target) < AIM_DEAD_ZONE_PX {
             return None;
         }
-        let offset = self.camera.screen_to_world(pointer, rect)? - ship;
-        Some((pointer, f64::from(offset.y).atan2(f64::from(offset.x))))
+        let offset = self.camera.screen_to_world(target, rect)? - ship;
+        Some((target, f64::from(offset.y).atan2(f64::from(offset.x))))
     }
 
     /// The keyboard and mouse help, over the `canvas`, left of its `buttons` and level with
@@ -1732,6 +1852,7 @@ impl ViewerApp {
     fn help_ui(&mut self, ui: &egui::Ui, canvas: egui::Rect, buttons: egui::Rect) {
         const GAP: f32 = 8.0;
         let flying = self.game.is_some();
+        let controller = self.gamepads.state().is_some();
         // Laid out at its full size at the layer's origin, unclipped, then scaled and moved into
         // place by the layer's transform, which applies to its input too.
         let area = egui::Area::new(ui.scope_id().with("help"))
@@ -1742,7 +1863,8 @@ impl ViewerApp {
                 egui::Vec2::splat(1.0e4),
             ))
             .show(ui.ctx(), |ui| {
-                egui::Frame::popup(ui.style()).show(ui, |ui| Self::user_inputs_ui(ui, flying));
+                egui::Frame::popup(ui.style())
+                    .show(ui, |ui| Self::user_inputs_ui(ui, flying, controller));
             });
         let size = area.response.rect.size();
         let top_right = egui::pos2(buttons.left() - GAP, buttons.top());
@@ -1939,6 +2061,10 @@ impl ViewerApp {
             .filter(|r| r.case.name == game.replay.case.name)
             .and_then(|r| Some((r.solution.as_str(), r.outcome().steps()?)));
         game_banner(painter, rect, game, policy);
+        if self.show_controller {
+            let panel = controller_view::panel_rect(rect);
+            controller_view::paint(painter, panel, self.gamepads.state());
+        }
     }
 
     /// Where the player points, from the ship in state `s`: a line to the `pointer`, which
@@ -2192,13 +2318,19 @@ impl eframe::App for ViewerApp {
     /// Called each time the UI needs repainting, which may be many times per second.
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.poll_runner();
+        self.gamepads.poll(ui.ctx());
         self.handle_dropped_files(ui);
         self.watch_source(ui);
 
         // Advance playback first, so every panel shows the same instant.
         self.handle_keys(ui);
+        self.handle_controller_buttons();
         if let Some(game) = &mut self.game {
-            let mut input = Self::keyboard_input(ui).or(game.pads.held());
+            let controller = self
+                .gamepads
+                .state()
+                .map_or_else(Input::default, gamepad::State::input);
+            let mut input = Self::keyboard_input(ui).or(game.pads.held()).or(controller);
             input.aim = self.aiming.map(|(_, heading)| Aim {
                 heading,
                 cone: self.aim_cone.to_radians(),
@@ -2594,7 +2726,7 @@ fn fit_camera(camera: &mut Camera, bounds: ([f64; 2], [f64; 2]), rect: egui::Rec
     let usable = rect.size() * (1.0 - 2.0 * FIT_MARGIN);
     let scale = (usable.x / size.x).min(usable.y / size.y);
     if scale.is_finite() && scale > 0.0 {
-        camera.scale = scale;
+        camera.set_scale(scale);
     }
 }
 

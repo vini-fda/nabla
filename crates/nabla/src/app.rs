@@ -1,17 +1,13 @@
-//! Trajectory viewer: open a solution's Rust source and pick a test case. The source is
-//! compiled and run, and the run is replayed in continuous time on a pannable, zoomable canvas,
-//! next to plots of the state and control signals.
-
-use std::path::{Path, PathBuf};
-use std::time::Duration;
+//! Trajectory viewer: pick a solution and a test case. The solution is run, and the run is
+//! replayed in continuous time on a pannable, zoomable canvas, next to plots of the state and
+//! control signals.
 
 use egui::IdSalt;
 use egui_plot::{AxisHints, GridInput, GridMark, Legend, Line, Plot, PlotPoint, VLine};
 use nabla_core::State;
 use nabla_core::problem::{Case, Outcome, Trajectory};
+use nabla_core::solutions::{SOLUTIONS, StoredSolution};
 use nabla_core::suite;
-use nabla_solutions::db::Entry;
-use nabla_solutions::registry::StoredSolution;
 
 use crate::camera::{Camera, Vec3};
 use crate::canvas_buttons::{self, Button};
@@ -26,7 +22,6 @@ use crate::plume::Plume;
 use crate::replay::{MAX_SUBDIVISIONS, Playback, Replay, Series};
 use crate::ship3d::{self, DepthMap, SHIP_GLB, ShipModel, ShipRenderer};
 use crate::sound::Sound;
-use crate::source::{self, Runner, SolutionSource, Status};
 use crate::theme::{self, icons, palette};
 use crate::timeline::{TimelineView, timeline_ui};
 
@@ -141,9 +136,6 @@ enum CompactView {
 /// Fraction of the canvas left empty around the trajectory by "Fit view".
 const FIT_MARGIN: f32 = 0.15;
 
-/// How often to check the source file for changes.
-const WATCH_INTERVAL: Duration = Duration::from_millis(500);
-
 /// Range of sampling periods offered by the slider (the suites use `suite::H`).
 const H_MIN: f64 = 0.01;
 const H_MAX: f64 = 0.1;
@@ -246,27 +238,18 @@ pub struct ViewerApp {
     h: f64,
     /// Show the source code window.
     show_code: bool,
-    /// Recompile when the source file changes on disk.
-    watch_file: bool,
 
-    source: Option<SolutionSource>,
-    runner: Runner,
+    solution: &'static StoredSolution,
     sound: Sound,
     /// Game controllers, read every frame.
     gamepads: Gamepads,
     /// Show the controller's wireframe, lit by its state, under the flight.
     show_controller: bool,
-    database: Vec<(Entry, &'static StoredSolution, PathBuf)>,
     cases: Vec<CaseEntry>,
     replay: Option<Replay>,
     plots: Option<Plots>,
     fit_pending: bool,
     timeline: TimelineView,
-    /// Rewind and refit the view when the pending trajectory arrives.
-    rewind_pending: bool,
-    /// `egui` time of the last check for changes on disk.
-    last_watch_check: f64,
-    load_error: Option<String>,
     /// Wide layout: show the left (controls) and right (plots) side panels.
     show_controls: bool,
     show_plots: bool,
@@ -275,21 +258,10 @@ pub struct ViewerApp {
     /// Draws the 3D ship and its plumes; `None` where OpenGL can't (then the canvas shows the
     /// debug view).
     ship3d: Option<(ShipRenderer, Plume)>,
-    /// Dropped files read by the browser.
-    #[cfg(target_arch = "wasm32")]
-    dropped_tx: std::sync::mpsc::Sender<DroppedFile>,
-    #[cfg(target_arch = "wasm32")]
-    dropped_rx: std::sync::mpsc::Receiver<DroppedFile>,
 }
-
-/// A dropped file read by the browser: `(name, contents)`.
-#[cfg(target_arch = "wasm32")]
-type DroppedFile = (String, Result<Vec<u8>, String>);
 
 impl Default for ViewerApp {
     fn default() -> Self {
-        #[cfg(target_arch = "wasm32")]
-        let (dropped_tx, dropped_rx) = std::sync::mpsc::channel();
         Self {
             circumradius: DEFAULT_CIRCUMRADIUS,
             alpha: DEFAULT_ALPHA,
@@ -314,37 +286,27 @@ impl Default for ViewerApp {
             case: Some(DEFAULT_CASE.to_owned()),
             h: suite::H,
             show_code: false,
-            watch_file: true,
-            source: None,
-            runner: Runner::default(),
+            solution: &SOLUTIONS[0],
             sound: Sound::default(),
             gamepads: Gamepads::default(),
             show_controller: false,
-            database: Vec::new(),
             cases: Vec::new(),
             replay: None,
             plots: None,
             fit_pending: false,
             timeline: TimelineView::default(),
-            rewind_pending: false,
-            last_watch_check: 0.0,
-            load_error: None,
             show_controls: true,
             show_plots: true,
             compact_view: CompactView::default(),
             view: CanvasView::default(),
             ship3d: None,
-            #[cfg(target_arch = "wasm32")]
-            dropped_tx,
-            #[cfg(target_arch = "wasm32")]
-            dropped_rx,
         }
     }
 }
 
 impl ViewerApp {
-    /// Called once before the first frame. Opens `source` if given, else the best stored one.
-    pub fn new(cc: &eframe::CreationContext<'_>, source: Option<PathBuf>) -> Self {
+    /// Called once before the first frame. Runs the best solution.
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         theme::apply(&cc.egui_ctx);
         egui_extras::install_image_loaders(&cc.egui_ctx);
 
@@ -369,20 +331,11 @@ impl ViewerApp {
             .inspect_err(|e| log::warn!("No 3D view: {e}"))
             .ok();
         let mut app = Self {
-            runner: Runner::new(cc.egui_ctx.clone()),
-            database: source::database(),
             cases: all_cases(),
             ship3d,
             ..Self::default()
         };
-        match source.filter(|p| p.is_file()) {
-            Some(path) => app.open_file(&path),
-            None => {
-                if let Some((_, solution, path)) = app.database.first().cloned() {
-                    app.open_stored(solution, &path);
-                }
-            }
-        }
+        app.run(true);
         app
     }
 
@@ -399,62 +352,19 @@ impl ViewerApp {
         Some(case)
     }
 
-    fn open_file(&mut self, path: &Path) {
-        match SolutionSource::from_file(path) {
-            Ok(source) => {
-                self.set_source(source, true);
-            }
-            Err(e) => self.load_error = Some(e),
-        }
-    }
-
-    /// Open a stored solution: its file when available, else the copy embedded in the viewer.
-    fn open_stored(&mut self, solution: &'static StoredSolution, path: &Path) {
-        if path.is_file() {
-            self.open_file(path);
-        } else {
-            let source = SolutionSource::from_text(solution.name, solution.source.to_owned());
-            self.set_source(source, true);
-        }
-    }
-
-    fn set_source(&mut self, source: SolutionSource, rewind: bool) {
-        self.load_error = None;
-        self.runner.set_source(&source);
-        self.source = Some(source);
-        self.run(rewind);
-    }
-
-    /// Run the current source on the selected case. Precompiled sources replay at once;
-    /// others are compiled and traced in the background, see [`Self::poll_runner`].
+    /// Run the current solution on the selected case.
     fn run(&mut self, rewind: bool) {
-        let (Some(source), Some(case)) = (&self.source, self.selected_case()) else {
+        let Some(case) = self.selected_case() else {
             return;
         };
-        match self.runner.request(source, &case) {
-            Some(trajectory) => self.show_trajectory(case, trajectory, rewind),
-            None => self.rewind_pending |= rewind,
-        }
+        let trajectory = (self.solution.simulate)(&case);
+        self.show_trajectory(case, trajectory, rewind);
     }
 
-    fn poll_runner(&mut self) {
-        let was_busy = self.runner.busy();
-        if let Some((name, trajectory)) = self.runner.poll() {
-            if let Some(case) = self.selected_case().filter(|c| c.name == name) {
-                let rewind = self.rewind_pending;
-                self.show_trajectory(case, trajectory, rewind);
-            }
-        } else if was_busy && matches!(self.runner.status, Status::Failed(_)) {
-            // Do not keep showing a run of an older version of the source.
-            self.replay = None;
-            self.plots = None;
-        }
-    }
-
-    /// Show a new run. Without `rewind`, keep the playhead time and the view, so that
-    /// recompiling an edited source updates the picture in place.
+    /// Show a new run. Without `rewind`, keep the playhead time and the view, so that changing
+    /// the sampling period updates the picture in place.
     fn show_trajectory(&mut self, case: Case, trajectory: Trajectory, rewind: bool) {
-        let name = self.source.as_ref().map_or("solution", |s| s.name.as_str());
+        let name = self.solution.name;
         let previous_time = self.replay.as_ref().map(|r| self.playback.time(r.h()));
         let replay = Replay::new(name, case, trajectory);
         let (h, duration, last) = (replay.h(), replay.duration(), replay.last_frame());
@@ -472,70 +382,6 @@ impl ViewerApp {
         }
         self.plots = Some(Plots::new(&replay));
         self.replay = Some(replay);
-        self.rewind_pending = false;
-    }
-
-    /// Reload the source file when it changed on disk (checked twice a second).
-    fn watch_source(&mut self, ui: &egui::Ui) {
-        let Some(path) = self.source.as_ref().and_then(|s| s.path.clone()) else {
-            return;
-        };
-        if !self.watch_file {
-            return;
-        }
-        ui.ctx().request_repaint_after(WATCH_INTERVAL);
-        let now = ui.input(|i| i.time);
-        if now - self.last_watch_check < WATCH_INTERVAL.as_secs_f64() {
-            return;
-        }
-        self.last_watch_check = now;
-        if !self
-            .source
-            .as_ref()
-            .is_some_and(SolutionSource::modified_on_disk)
-        {
-            return;
-        }
-        match SolutionSource::from_file(&path) {
-            Ok(new) if self.source.as_ref().is_some_and(|old| old.hash == new.hash) => {
-                self.source = Some(new); // touched, not changed
-            }
-            Ok(new) => self.set_source(new, false),
-            Err(e) => self.load_error = Some(e),
-        }
-    }
-
-    /// Open `.rs` files dropped on the window.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn handle_dropped_files(&mut self, ui: &egui::Ui) {
-        let dropped = ui.input(|i| i.raw.dropped_files.clone());
-        for file in dropped {
-            self.open_file(file.path());
-        }
-    }
-
-    /// Open `.rs` files dropped on the page. The browser reads them asynchronously, so the
-    /// contents arrive on a later frame.
-    #[cfg(target_arch = "wasm32")]
-    fn handle_dropped_files(&mut self, ui: &egui::Ui) {
-        let dropped = ui.input(|i| i.raw.dropped_files.clone());
-        for file in dropped {
-            let tx = self.dropped_tx.clone();
-            let ctx = ui.ctx().clone();
-            wasm_bindgen_futures::spawn_local(async move {
-                let name = file.path().display().to_string();
-                // The receiver lives as long as the app.
-                let _ignored = tx.send((name, file.bytes_async().await));
-                ctx.request_repaint();
-            });
-        }
-        while let Ok((name, bytes)) = self.dropped_rx.try_recv() {
-            match bytes.map(String::from_utf8) {
-                Ok(Ok(text)) => self.set_source(SolutionSource::from_text(&name, text), true),
-                Ok(Err(_)) => self.load_error = Some(format!("{name} is not UTF-8 text")),
-                Err(e) => self.load_error = Some(format!("cannot read {name}: {e}")),
-            }
-        }
     }
 
     fn last_frame(&self) -> usize {
@@ -692,107 +538,34 @@ impl ViewerApp {
         self.set_flying(fly);
     }
 
-    fn source_ui(&mut self, ui: &mut egui::Ui) {
+    fn solution_ui(&mut self, ui: &mut egui::Ui) {
         ui.heading("Control policy input");
-        ui.horizontal(|ui| {
-            #[cfg(not(target_arch = "wasm32"))]
-            if ui.button("Open .rs...").clicked()
-                && let Some(path) = rfd::FileDialog::new()
-                    .add_filter("Rust source", &["rs"])
-                    .set_directory(nabla_solutions::db::solutions_dir())
-                    .pick_file()
-            {
-                self.open_file(&path);
-            }
-            let path = self.source.as_ref().and_then(|s| s.path.clone());
-            if ui
-                .add_enabled(path.is_some(), egui::Button::new("Reload"))
-                .on_hover_text("Read the file again and recompile it if it changed")
-                .clicked()
-                && let Some(path) = path
-            {
-                self.open_file(&path);
-            }
-            ui.checkbox(&mut self.show_code, "Show code");
-        });
-
-        let mut stored = None;
-        egui::ComboBox::from_id_salt("database")
-            .selected_text("Open a stored control policy (rust code)...")
+        let mut picked = None;
+        egui::ComboBox::from_id_salt("solution")
+            .selected_text(
+                egui::RichText::new(format!("{}.rs", self.solution.name))
+                    .monospace()
+                    .strong(),
+            )
             .show_ui(ui, |ui| {
-                for (entry, solution, path) in &self.database {
-                    let label = format!("{}.rs  (score {})", solution.name, entry.score);
+                for solution in SOLUTIONS {
+                    let label = format!("{}.rs", solution.name);
                     if ui
-                        .selectable_label(false, egui::RichText::new(label).monospace())
+                        .selectable_label(
+                            solution.name == self.solution.name,
+                            egui::RichText::new(label).monospace(),
+                        )
                         .clicked()
                     {
-                        stored = Some((*solution, path.clone()));
+                        picked = Some(solution);
                     }
                 }
             });
-        if let Some((solution, path)) = stored {
-            self.open_stored(solution, &path);
+        if let Some(solution) = picked {
+            self.solution = solution;
+            self.run(true);
         }
-
-        if let Some(source) = &self.source {
-            let label = ui.label(
-                egui::RichText::new(format!("{}.rs", source.name))
-                    .monospace()
-                    .strong(),
-            );
-            if let Some(path) = &source.path {
-                label.on_hover_text(path.display().to_string());
-            }
-            if let Some(entry) = source.database_entry() {
-                ui.label(format!("Stored in the database, score {}", entry.score));
-            }
-        }
-        ui.add_enabled(
-            self.source.as_ref().is_some_and(|s| s.path.is_some()),
-            egui::Checkbox::new(&mut self.watch_file, "Recompile when the file is saved"),
-        );
-        self.status_ui(ui);
-        ui.label(egui::RichText::new("Drop a .rs file on the window to open it.").weak());
-    }
-
-    fn status_ui(&self, ui: &mut egui::Ui) {
-        let error_color = ui.visuals().error_fg_color;
-        match &self.runner.status {
-            Status::Idle => {}
-            Status::Compiling => {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label("Compiling...");
-                });
-            }
-            Status::Tracing => {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label("Running...");
-                });
-            }
-            Status::Precompiled => {
-                ui.label("Running the copy compiled into the viewer");
-            }
-            Status::Compiled => {
-                ui.label("Compiled and running");
-            }
-            Status::Failed(message) => {
-                ui.colored_label(error_color, "Failed:");
-                egui::ScrollArea::both()
-                    .id_salt("error_scroll")
-                    .max_height(260.0)
-                    .show(ui, |ui| {
-                        ui.add(
-                            egui::Label::new(egui::RichText::new(message).monospace().small())
-                                .extend(),
-                        );
-                    });
-            }
-        }
-        if let Some(error) = &self.load_error {
-            ui.colored_label(error_color, error);
-        }
+        ui.checkbox(&mut self.show_code, "Show code");
     }
 
     fn case_ui(&mut self, ui: &mut egui::Ui) {
@@ -834,7 +607,7 @@ impl ViewerApp {
             self.h = suite::H;
         }
         h.on_hover_text("Sampling period. Double-click to reset.");
-        if self.replay.as_ref().is_some_and(|r| r.h() != self.h) && !self.runner.busy() {
+        if self.replay.as_ref().is_some_and(|r| r.h() != self.h) {
             // Keep the playhead time.
             self.run(false);
         }
@@ -845,32 +618,22 @@ impl ViewerApp {
 
     /// Optional window showing the source with syntax highlighting and line numbers.
     fn code_window(&mut self, ctx: &egui::Context) {
-        let Some(source) = &self.source else {
-            return;
-        };
+        let solution = self.solution;
         let mut open = self.show_code;
-        egui::Window::new(egui::RichText::new(format!("{}.rs", source.name)).monospace())
+        egui::Window::new(egui::RichText::new(format!("{}.rs", solution.name)).monospace())
             .id(egui::Id::unique("source_code_window"))
             .open(&mut open)
             .default_size([640.0, 720.0])
             .show(ctx, |ui| {
-                if let Some(path) = &source.path {
-                    ui.label(
-                        egui::RichText::new(path.display().to_string())
-                            .weak()
-                            .small(),
-                    );
-                    ui.separator();
-                }
                 egui::ScrollArea::both().auto_shrink(false).show(ui, |ui| {
                     ui.horizontal_top(|ui| {
-                        let lines = source.text.lines().count().max(1);
+                        let lines = solution.source.lines().count().max(1);
                         let numbers: Vec<String> = (1..=lines).map(|n| n.to_string()).collect();
                         let numbers = egui::RichText::new(numbers.join("\n"))
                             .monospace()
                             .color(ui.visuals().weak_text_color());
                         ui.add(egui::Label::new(numbers).selectable(false));
-                        crate::highlight::code_view_ui(ui, &source.text);
+                        crate::highlight::code_view_ui(ui, solution.source);
                     });
                 });
             });
@@ -2254,13 +2017,13 @@ impl ViewerApp {
 }
 
 impl ViewerApp {
-    /// The left panel's content: source, case, current state and display options.
+    /// The left panel's content: solution, case, current state and display options.
     fn controls_ui(&mut self, ui: &mut egui::Ui) {
         // Scrolls sideways too, so rows are never cut off if the space is narrower than they are.
         egui::ScrollArea::both().show(ui, |ui| {
             self.mode_ui(ui);
             ui.separator();
-            self.source_ui(ui);
+            self.solution_ui(ui);
             ui.separator();
             self.case_ui(ui);
             self.case_info_ui(ui);
@@ -2317,10 +2080,7 @@ impl ViewerApp {
 impl eframe::App for ViewerApp {
     /// Called each time the UI needs repainting, which may be many times per second.
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.poll_runner();
         self.gamepads.poll(ui.ctx());
-        self.handle_dropped_files(ui);
-        self.watch_source(ui);
 
         // Advance playback first, so every panel shows the same instant.
         self.handle_keys(ui);

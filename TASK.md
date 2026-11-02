@@ -43,15 +43,14 @@ from its `Task`, so a solution should read them from there rather than hardcode 
 | `B` | goal | `task.goal` | varies by case |
 | `ε_p, ε_v, ε_ω` | target-set size (position, speed, angular speed) | `task.tolerance` | `suite::TOLERANCE` |
 | `N_max` | step budget | `task.max_steps` | `suite::MAX_STEPS` |
-| `T_max` | wall-clock limit for evaluating both suites | — | `harness::TIME_LIMIT` |
 
 ## What a solution is
 
-A solution is a Rust source file (any `&str`) that defines `pub struct Solution` implementing
-`nabla_core::Controller`:
+A solution is a module of `crates/nabla-core/src/solutions/` that defines `pub struct Solution`
+implementing `Controller`:
 
 ```rust
-use nabla_core::*;
+use crate::{Control, Controller, State, Task};
 
 pub struct Solution { /* anything */ }
 
@@ -66,8 +65,7 @@ impl Controller for Solution {
   (e.g. for MPC).
 - Cases run in parallel, each on one thread with its own `Solution`. Do not share mutable state
   between cases (e.g. through statics).
-- Only the standard library, `nabla-core` and `nabla-optimization` are available.
-- Evaluating both suites must take under `T_max` of wall-clock time.
+- Only the standard library and `nabla-core` are available.
 
 ## Test cases and score
 
@@ -80,184 +78,19 @@ impl Controller for Solution {
   exist so that a solution cannot just memorize the standard cases.
 
 Random cases (`suite::random`) vary the ship (`m, I, F_max, τ_max`), the goal, and the start
-position, speed, heading and spin, each uniformly within the ranges set there. `cargo xtask eval`
-lists every case of both suites.
+position, speed, heading and spin, each uniformly within the ranges set there.
 
-**Score = the sum of `N` over the standard suite. Lower is better.** The longest case is reported
-too.
+**Score = the sum of `N` over the standard suite. Lower is better.**
 
-There is only one version of the suites: the current one. Changing a case, `h`, the tolerance or
-the budget changes every score, so resubmit the stored solutions afterwards; until then
-`cargo test` and `cargo xtask verify` report their index entries as stale. To check robustness
-beyond the suites, run your controller on `suite::random(prefix, seed, count)` with other seeds.
+To check robustness beyond the suites, run your controller on
+`suite::random(prefix, seed, count)` with other seeds.
 
-## Commands
-
-Run these from this directory:
-
-```sh
-cargo xtask eval path/to/solution.rs              # compile, run, per-case table + score
-cargo xtask eval a.rs b.rs c.rs                   # several: built in parallel, best first
-cargo xtask submit <name> path/to/solution.rs     # store it if every case is solved
-cargo xtask leaderboard                           # stored solutions, best first
-cargo xtask verify                                # re-evaluate every stored solution
-cargo test --workspace --release                  # model tests + one test per solution
-cargo xtask help                                  # every task, including the app's
-```
-
-### How evaluation runs
-
-- **Builds.** Each source becomes its own cargo project, `target/candidates/<source hash>/`,
-  with its own target directory. Builds of different sources never wait on each other's cargo
-  lock. An unchanged source is not rebuilt. A new one also compiles `nabla-core` and
-  `nabla-optimization`, which takes about a second. `target/candidates/` is only a cache, and you can delete it at any time.
-- **Cases.** The compiled candidate runs all cases of both suites in parallel, one thread per
-  core. Workers take the next case from a shared atomic counter (`parallel::map`), so a few long
-  cases do not leave the other cores idle.
-- **Many solutions.** Pass them all to one `cargo xtask eval`. They compile in parallel, then
-  run one at a time, so each run gets every core and the run times stay comparable.
-  For many variants of one solution that differ only in constants, see "Tuning parameters"
-  below instead.
-- **Many processes at once** (e.g. several agents): build the tasks once with
-  `cargo build -p xtask`, then call `target/debug/xtask eval …` directly. `cargo xtask` goes
-  through `cargo run`, which replaces `target/debug/xtask` on every call, even when nothing
-  changed. Several calls launched at the same instant can therefore fail to start.
-- **Trust.** The candidate runs as ordinary native code, with no sandbox. Only evaluate code you
-  trust.
-
-## Tuning parameters
-
-To tune a solution's constants (gains, margins, thresholds), evaluate it many times in a single
-process. `cargo xtask eval` is built for scoring finished solutions: every distinct source is a
-new build, and every run is a new process. A tuner instead calls `eval::evaluate` directly, so
-each point costs one evaluation (the suites in parallel on every core) and nothing else.
-
-**1. Make the solution tunable.** Gather the constants in a struct, with their current values as
-the default, and add a constructor that takes them. `new` uses the default, so the file stays a
-valid solution:
-
-```rust
-#[derive(Clone, Copy, Debug)]
-pub struct Gains {
-    pub brake_fraction: f64,
-    pub align: f64,
-}
-
-impl Gains {
-    pub const DEFAULT: Gains = Gains { brake_fraction: 0.84, align: 0.37 };
-}
-
-impl Solution {
-    pub fn with_gains(task: &Task, gains: Gains) -> Self { /* … */ }
-}
-
-impl Controller for Solution {
-    fn new(task: &Task) -> Self {
-        Solution::with_gains(task, Gains::DEFAULT)
-    }
-    // …
-}
-```
-
-**2. Write the tuner as an example program** of `nabla-optimization`, e.g.
-`crates/nabla-optimization/examples/tune_mine.rs`, that includes the solution file as a module. `Controller::new` only receives the `Task`, so the gains under test
-go through a static, which `new` reads once per case:
-
-```rust
-#[path = "../../../path/to/mine.rs"]
-mod solution;
-
-use nabla_core::{Control, Controller, State, Task, problem, suite};
-use nabla_optimization::{eval, parallel};
-use solution::{Gains, Solution};
-use std::sync::RwLock;
-
-static GAINS: RwLock<Gains> = RwLock::new(Gains::DEFAULT);
-
-struct Tuned(Solution);
-
-impl Controller for Tuned {
-    fn new(task: &Task) -> Self {
-        Tuned(Solution::with_gains(task, *GAINS.read().unwrap()))
-    }
-    fn control(&mut self, k: usize, state: &State) -> Control {
-        self.0.control(k, state)
-    }
-}
-
-/// The score with these gains: infinite if any case of either suite fails.
-fn score(gains: Gains) -> f64 {
-    *GAINS.write().unwrap() = gains;
-    eval::evaluate::<Tuned>().score().map_or(f64::INFINITY, |s| s as f64)
-}
-
-fn main() {
-    // Any search over `score`: coordinate descent, Nelder–Mead, a grid, …
-}
-```
-
-**3. Run it** with the `fast` profile, which skips the release profile's slow whole-program
-LTO:
-
-```sh
-cargo run --profile fast -p nabla-optimization --example tune_mine
-```
-
-The scores are the same as with `cargo xtask eval`, since optimization levels do not change
-floating-point results in Rust. For the current solutions, one point takes a few tens of
-milliseconds.
-
-**4. Store the result.** Copy the best values into `Gains::DEFAULT`, then run
-`cargo xtask eval` and `cargo xtask submit`. The tuner itself is not part of the solution.
-
-Things to keep in mind:
-
-- **Evaluate one point at a time.** Each evaluation already uses every core, and all the cases
-  of one evaluation read the same `GAINS`.
-- **Watch for overfitting.** Only the standard suite is scored, and the holdout cases are just
-  pass/fail. `score` returns infinity when a holdout case fails, so the search avoids those
-  gains, but it can still trade robustness for score on cases outside the suites. Accept an
-  improvement only if it also solves a set of random validation cases. Before submitting, check
-  the result on another set of random cases that the search never saw:
-
-  ```rust
-  *GAINS.write().unwrap() = best;
-  let extra = suite::random("extra", 12345, 2000);
-  let outcomes = parallel::map(&extra, problem::run::<Tuned>);
-  let failed = outcomes.iter().filter(|o| o.steps().is_none()).count();
-  ```
-
-- **Keep the stored source free of tuning hooks.** A stored solution must not read the
-  environment or any other outside state. Its score has to be reproducible from its source
-  alone.
-
-For Claude, the `tune-controller` skill (`.claude/skills/tune-controller/`) follows this
-workflow with a ready-made tuner: coordinate descent with validation cases and a final check.
-
-## The database
-
-- `solutions/<name>.rs`: the source of every stored solution.
-- `solutions/index.tsv`: name, score, longest case and source hash.
-
-`cargo test` checks that every stored solution still solves every case, and that its index entry
-matches its current source and score. Do not edit stored files by hand. Resubmit instead.
+## The solutions
 
 | name | idea |
 |---|---|
-| `flip_and_burn` | two-layer feedback: braking-aware velocity setpoint, square-root heading law |
-| `flip_and_burn_tuned` | same, constants tuned by coordinate descent |
-| `tolerance_aware` | same, plus a coasting spin-down finisher and an `ε_v` deadband, retuned |
-| `tolerance_aware_tuned` | `tolerance_aware` retuned in-process, with validation cases (`tune-controller` skill) |
-| `mpc` | shrinking-horizon MPC on the exact model: seed plans from the feedback laws, shortened by projected Gauss–Newton on the 5 terminal residuals, re-solved every step; every plan verified with `step` |
+| `flip_and_burn_tuned` | two-layer feedback: braking-aware velocity setpoint, square-root heading law, constants tuned by coordinate descent |
+| `mpc` | shrinking-horizon MPC on the exact model: seed plans from feedback laws, shortened by projected Gauss–Newton on the 5 terminal residuals, re-solved every step; every plan verified with `step` |
 
-`cargo xtask leaderboard` shows their current scores.
-
-## Ideas for doing better
-
-- **Bang-bang turns**: plan time-optimal turns instead of tracking a setpoint.
-- **Better flip timing**: compute the exact flip-and-brake switching time instead of using a
-  margin, and start the braking turn earlier.
-- **Turn while moving**: thrust during the turn, not only once aligned.
-- **MPC**: use `step` to optimize a short horizon, warm-started from the baseline.
-- **Endgame**: the target set is enough; exact rest is not needed. Arrive with a speed just under
-  `ε_v` and a spin just under `ε_ω` instead of braking to zero.
+To add one, list it in `SOLUTIONS` (`crates/nabla-core/src/solutions.rs`). `cargo test` checks
+that every solution still solves every case of both suites, and the app picks it up.

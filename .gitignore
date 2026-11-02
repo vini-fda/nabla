@@ -1,9 +1,6 @@
 /target
 .DS_Store
 *.pdf
-# Scratch for tuning solutions (see TASK.md, "Tuning parameters").
-/tuning/
-**/examples/tune_*.rs
 
 # Signing keys: never commit them (see README.md, "Signing the macOS app").
 *.p12

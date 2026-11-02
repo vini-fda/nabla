@@ -4,9 +4,6 @@
 //!   step count on this suite.
 //! * [`holdout`]: more random cases with a different seed. They are not scored, but must be
 //!   solved too, so that a solution cannot just memorize the standard cases.
-//!
-//! There is one version of the suites: the current one. Changing a case, [`H`], [`MAX_STEPS`] or
-//! [`TOLERANCE`] changes scores, so resubmit the stored solutions afterwards (see `TASK.md`).
 
 use crate::model::{Params, State};
 use crate::problem::{Case, Goal, Task, Tolerance};

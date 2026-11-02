@@ -2,7 +2,6 @@
 //! pattern: <https://github.com/matklad/cargo-xtask>). Run `cargo xtask help`.
 
 mod bundle;
-mod solutions;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -13,19 +12,8 @@ use xshell::{Shell, cmd};
 const HELP: &str = "\
 Usage: cargo xtask <task> [options]
 
-Solutions (see TASK.md):
-  eval <solution.rs>...
-      Compile solutions and evaluate them on both suites. One file: a table of every case,
-      then the score. Several: they compile in parallel, then get one line each, best first.
-  submit <name> <solution.rs>
-      Evaluate a solution and, if it solves every case, store it as `solutions/<name>.rs`.
-  leaderboard
-      The stored solutions, best first.
-  verify
-      Re-evaluate every stored solution and check its entry in `solutions/index.tsv`.
-
 App (Nabla):
-  run [--profile <name>] [--target <triple>] [-- <app arguments>...]
+  run [--profile <name>] [--target <triple>]
       Build and run the app. On macOS it runs inside the app bundle, so the Dock shows the
       Liquid Glass icon; an unchanged bundle is only refreshed with the new binary.
       `cargo nabla` is `cargo xtask run --profile fast`.
@@ -101,17 +89,11 @@ fn main() -> Result<ExitCode> {
     let sh = Shell::new()?;
     sh.change_dir(project_root());
     match (task.as_str(), args.as_slice()) {
-        ("eval", paths) => solutions::eval(paths)?,
-        ("submit", [name, path]) => solutions::submit(name, path)?,
-        ("leaderboard", []) => solutions::leaderboard()?,
-        ("verify", []) => solutions::verify()?,
         ("check", []) => check(&sh)?,
         ("bundle" | "run", _) => return app(&sh, &task, args),
         ("web-dev", args) => web_dev(&sh, args)?,
         ("help" | "--help" | "-h", _) => print_help(),
-        ("submit" | "leaderboard" | "verify" | "check", _) => {
-            bail!("wrong arguments for `{task}`\n\n{HELP}")
-        }
+        ("check", _) => bail!("wrong arguments for `{task}`\n\n{HELP}"),
         _ => bail!("unknown task `{task}`\n\n{HELP}"),
     }
     Ok(ExitCode::SUCCESS)
@@ -125,7 +107,6 @@ fn app(sh: &Shell, task: &str, args: Vec<String>) -> Result<ExitCode> {
     };
     let mut flat_icon = false;
     let mut identity = None;
-    let mut passthrough = Vec::new();
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -135,7 +116,6 @@ fn app(sh: &Shell, task: &str, args: Vec<String>) -> Result<ExitCode> {
             "--sign" if task == "bundle" => {
                 identity = Some(args.next().context("--sign needs an identity")?);
             }
-            "--" if task == "run" => passthrough.extend(args.by_ref()),
             _ => bail!("unexpected argument `{arg}`\n\n{HELP}"),
         }
     }
@@ -151,7 +131,7 @@ fn app(sh: &Shell, task: &str, args: Vec<String>) -> Result<ExitCode> {
     if cfg!(target_os = "macos") {
         bin = bundle::refresh(sh, &bin)?;
     }
-    run(&bin, &passthrough)
+    run(&bin)
 }
 
 /// The `web-dev` task: `trunk serve` for the web app, until interrupted.
@@ -201,23 +181,17 @@ fn check(sh: &Shell) -> Result<()> {
     }
     // As in CI: release mode, with debug assertions and overflow checks on for this
     // workspace's crates.
-    let checks = [
-        "nabla-core",
-        "nabla-optimization",
-        "nabla-solutions",
-        "nabla-synth",
-        "nabla",
-    ]
-    .iter()
-    .flat_map(|package| {
-        ["debug-assertions", "overflow-checks"].map(|setting| {
-            [
-                "--config".to_owned(),
-                format!("profile.release.package.{package}.{setting}=true"),
-            ]
+    let checks = ["nabla-core", "nabla-synth", "nabla"]
+        .iter()
+        .flat_map(|package| {
+            ["debug-assertions", "overflow-checks"].map(|setting| {
+                [
+                    "--config".to_owned(),
+                    format!("profile.release.package.{package}.{setting}=true"),
+                ]
+            })
         })
-    })
-    .flatten();
+        .flatten();
     cmd!(
         sh,
         "{cargo} test --locked --quiet --workspace --release {checks...}"
@@ -235,9 +209,8 @@ fn print_help() {
 
 /// Run `bin` in place of this process where the platform allows, so the app gets the
 /// terminal's signals (Ctrl+C) directly.
-fn run(bin: &Path, args: &[String]) -> Result<ExitCode> {
+fn run(bin: &Path) -> Result<ExitCode> {
     let mut command = std::process::Command::new(bin);
-    command.args(args);
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt as _;

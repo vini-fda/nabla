@@ -2,7 +2,7 @@
 name = "nabla-core"
 version.workspace = true
 edition.workspace = true
-description = "The 2D ship's state-space model and the control problem to solve."
+description = "The 2D ship's state-space model, the control problem to solve, and the policies found so far."
 publish = false
 
 [dependencies]

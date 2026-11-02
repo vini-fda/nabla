@@ -876,7 +876,6 @@ impl ViewerApp {
     /// With a `controller` connected, its controls too.
     fn user_inputs_ui(&mut self, ui: &mut egui::Ui, width: f32) {
         let k = keys::Keys::new(ui.ctx());
-        ui.heading("User inputs");
         let shown = self.help_tab();
         let mut tab = shown;
         ui.horizontal(|ui| {
@@ -1318,7 +1317,7 @@ impl ViewerApp {
             .chain(ViewGizmo::area(corner).filter(|_| self.show_gizmo))
             .collect();
         if self.show_help {
-            self.help_ui(ui, rect, buttons);
+            self.help_window(ui.ctx(), rect);
         }
     }
 
@@ -1422,41 +1421,29 @@ impl ViewerApp {
         Some((target, f64::from(offset.y).atan2(f64::from(offset.x))))
     }
 
-    /// The keyboard and mouse help, over the `canvas`, left of its `buttons` and level with
-    /// their top. Where the canvas is too small for it, it shrinks, keeping its proportions, so
-    /// it always shows whole. Escape closes it, as does its button.
-    fn help_ui(&mut self, ui: &egui::Ui, canvas: egui::Rect, buttons: egui::Rect) {
-        const GAP: f32 = 8.0;
-        // Laid out at its full size at the layer's origin, unclipped, then scaled and moved into
-        // place by the layer's transform, which applies to its input too.
-        let area = egui::Area::new(ui.scope_id().with("help"))
-            .order(egui::Order::Foreground)
-            .fixed_pos(egui::Pos2::ZERO)
-            .constrain_to(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::Vec2::splat(1.0e4),
+    /// The user inputs help, in a window that starts in the bottom right corner of the `canvas`,
+    /// no larger than it. Escape closes it, as do its close button and the canvas's button.
+    fn help_window(&mut self, ctx: &egui::Context, canvas: egui::Rect) {
+        const MARGIN: f32 = 8.0;
+        /// With the title bar and the frame's margins: the controller's map at its full size.
+        const DEFAULT_SIZE: egui::Vec2 = egui::vec2(controller_guide::WIDTH + 24.0, 470.0);
+        let room = canvas.shrink(MARGIN);
+        let size = DEFAULT_SIZE.min(room.size());
+        let mut open = self.show_help;
+        egui::Window::new("User inputs")
+            .id(egui::Id::unique("user_inputs_window"))
+            .open(&mut open)
+            .collapsible(false)
+            .vscroll(true)
+            .default_rect(egui::Rect::from_min_max(
+                room.right_bottom() - size,
+                room.right_bottom(),
             ))
-            .show(ui.ctx(), |ui| {
-                egui::Frame::popup(ui.style())
-                    .show(ui, |ui| self.user_inputs_ui(ui, controller_guide::WIDTH));
+            .show(ctx, |ui| {
+                let width = ui.available_width();
+                self.user_inputs_ui(ui, width);
             });
-        let size = area.response.rect.size();
-        let top_right = egui::pos2(buttons.left() - GAP, buttons.top());
-        let room = egui::vec2(
-            top_right.x - canvas.left() - GAP,
-            canvas.bottom() - top_right.y - GAP,
-        );
-        let scale = (room / size).min_elem().clamp(0.1, 1.0);
-        ui.ctx().set_transform_layer(
-            area.response.layer_id,
-            egui::emath::TSTransform::new(
-                egui::vec2(top_right.x - scale * size.x, top_right.y),
-                scale,
-            ),
-        );
-        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-            self.show_help = false;
-        }
+        self.show_help = open && !ctx.input(|i| i.key_pressed(egui::Key::Escape));
     }
 
     /// Everything on the canvas but the gizmo.

@@ -469,6 +469,7 @@ impl ViewerApp {
             );
         });
         ui.add_space(4.0);
+        ui.heading("User inputs");
         self.user_inputs_ui(ui, ui.available_width());
     }
 }

@@ -83,7 +83,7 @@ const LEFT_EDGE: f32 = 32.0;
 const RIGHT_EDGE: f32 = 720.0;
 /// Points per unit at the map's full size.
 const FULL_SCALE: f32 = 0.7;
-/// The map's width at full size, in points.
+/// The map's width at full size, in points. It scales to the width it's given.
 pub const WIDTH: f32 = 861.0;
 /// Narrowest the map gets, at which its text is still legible, in points: below, it's a list.
 const MIN_WIDTH: f32 = 560.0;
@@ -347,7 +347,7 @@ pub fn ui(ui: &mut Ui, width: f32, state: Option<&State>) {
 
 /// The wireframe with the callouts, `width` wide.
 fn map_ui(ui: &mut Ui, width: f32, state: Option<&State>) {
-    let fit = (width / WIDTH).min(1.0);
+    let fit = width / WIDTH;
     let scale = FULL_SCALE * fit;
     let (rect, _) = ui.allocate_exact_size(MAP.size() * scale, egui::Sense::hover());
     let painter = ui.painter_at(rect);

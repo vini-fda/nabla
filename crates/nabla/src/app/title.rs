@@ -488,7 +488,8 @@ mod tests {
         let ctx = egui::Context::default();
         theme::apply(&ctx);
         egui_extras::install_image_loaders(&ctx);
-        drop(ctx.run_ui(egui::RawInput::default(), |ui| app.conditions_ui(ui)));
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| app.conditions_ui(ui));
+        output.textures_delta.clear();
         assert_eq!(
             app.setup, before,
             "displaying a save must not clamp its state"

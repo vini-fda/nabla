@@ -44,14 +44,19 @@ web-time = "1.1.0"
 
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-# The connection to a server, on a thread of its own with a `tokio` runtime (src/net.rs). On the
-# web, `web_sys::WebTransport` is the connection.
-nabla-net = { workspace = true, features = ["native"] }
 # Audio output. On the web, an AudioWorklet plays the sounds instead (src/sound/web.rs).
 cpal = "0.18.2"
 # Without the default `humantime` (timestamps) and `regex` (regex filters in `RUST_LOG`)
 # features, which pull in `jiff` and `regex`: about 13 s of compile time.
 env_logger = { version = "0.11.11", default-features = false, features = ["auto-color"] }
+# The connection to a server, on a thread of its own with a `tokio` runtime (src/net.rs). On the
+# web, `web_sys::WebTransport` is the connection.
+nabla-net = { workspace = true, features = ["native"] }
+
+# The real server, for the flight to be tested against (tests/online_loopback.rs).
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+nabla-server.workspace = true
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "time"] }
 
 # web:
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -99,8 +104,3 @@ winit = "0.30.13"
 
 [lints]
 workspace = true
-
-# The real server, for the flight to be tested against (tests/online_loopback.rs).
-[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-nabla-server.workspace = true
-tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "time"] }

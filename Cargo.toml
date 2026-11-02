@@ -241,10 +241,10 @@ opt-level = 2
 [profile.dev.package.nabla-net]
 opt-level = 3
 
-[profile.dev.package.nabla-sim]
+[profile.dev.package.nabla-server]
 opt-level = 3
 
-[profile.dev.package.nabla-server]
+[profile.dev.package.nabla-sim]
 opt-level = 3
 
 [profile.release]

@@ -1,14 +1,20 @@
 [alias]
 # The release steps, also in `xtask`: see "Releasing" in the README.
 bump = "run -q -p xtask -- bump"
+# The multiplayer server for local play, on loopback: `cargo xtask help`.
+dev-server = "run -q -p xtask -- dev-server"
 # The app, built with the `fast` profile (see Cargo.toml): quick rebuilds while iterating.
 # On macOS it runs inside the app bundle, for the Liquid Glass Dock icon.
 nabla = "run -q -p xtask -- run --profile fast"
 tag = "run -q -p xtask -- tag"
-# The multiplayer server for local play, on loopback: `cargo xtask help`.
-dev-server = "run -q -p xtask -- dev-server"
 # Development tasks, in the `xtask` crate: `cargo xtask help`.
 xtask = "run -q -p xtask --"
+
+# `web_sys::WebTransport`, which the web app flies on a server with (src/net.rs), is gated behind
+# this flag. A `RUSTFLAGS` variable replaces it, as with the linker above, so CI
+# (.github/workflows/ci.yml) and `cargo xtask check` repeat it.
+[target.wasm32-unknown-unknown]
+rustflags = ["--cfg=web_sys_unstable_apis"]
 
 # Linux links with mold (https://github.com/rui314/mold), much faster than the default
 # linker. Needs mold and clang installed. Clang is the linker driver because it always
@@ -18,9 +24,3 @@ xtask = "run -q -p xtask --"
 [target.x86_64-unknown-linux-gnu]
 linker = "clang"
 rustflags = ["-C", "link-arg=-fuse-ld=mold"]
-
-# `web_sys::WebTransport`, which the web app flies on a server with (src/net.rs), is gated behind
-# this flag. A `RUSTFLAGS` variable replaces it, as with the linker above, so CI
-# (.github/workflows/ci.yml) and `cargo xtask check` repeat it.
-[target.wasm32-unknown-unknown]
-rustflags = ["--cfg=web_sys_unstable_apis"]

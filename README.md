@@ -43,15 +43,46 @@ Then:
 - **Web app:** `cargo xtask web-dev`, then open the link the server logged. The page's `?server=` is the address, percent-encoded, and `&connect` connects at once. Browsers need WebTransport, which Chrome, Edge and Firefox have, and Safari from 26.4; only Chromium has been tried so far.
 - **Soak test:** `cargo run --release -p nabla-server --bin nabla-soak` flies sixteen bots through a lossy, delaying proxy for ten minutes, and fails if the expectations of `docs/multiplayer.typ`, M4, are not met (`--help` there lists the flags).
 
-For a server others can reach, give it a name and a real certificate: `cargo run --release -p nabla-server -- --bind 0.0.0.0:4433 --cert cert.pem --key key.pem`. Without `--cert` it makes a self-signed one for `--name` hosts, and each client needs the hash. UDP port 4433 must be open, since WebTransport runs on QUIC.
+For a server others can reach, see [Running a server](#running-a-server).
 
 Development tasks are in the `xtask` crate (`cargo xtask help`). `cargo xtask check` runs the same checks as CI, plus the web build. `cargo xtask web-dev` serves the web app locally, rebuilding it on every change. Every push to `main` deploys the web app.
 
 On Linux, builds link with [mold](https://github.com/rui314/mold) through clang (see `.cargo/config.toml`), so both need to be installed: `sudo apt install mold clang` on Debian and Ubuntu.
 
+## Running a server
+
+`nabla-server` runs on its own, without the app or `xtask`. Each [GitHub Release](https://github.com/vini-fda/nabla/releases) has it for Linux x86-64 and macOS on Apple silicon. To build it from the code, you need [rustup](https://rustup.rs), which installs the toolchain of `rust-toolchain.toml`, and a C compiler (on Linux, also mold and clang, as above):
+
+```sh
+cargo build --release -p nabla-server --bin nabla-server
+./target/release/nabla-server --world planet-moon --name play.example.com
+```
+
+The worlds are built into the binary, so `target/release/nabla-server` can be copied anywhere and run from there. `cargo run --release -p nabla-server --bin nabla-server -- <flags>` does both steps at once.
+
+| Flag | Default | |
+|---|---|---|
+| `--bind ADDR` | `0.0.0.0:4433` | The address and UDP port to listen on |
+| `--world NAME` | `planet-moon` | `vacuum`, `planet`, `planet-moon`, or a world file |
+| `--tick-rate N` | `60` | Ticks per second |
+| `--arena S` | `1000` | The arena's half side |
+| `--max-pilots N` | `16` | How many ships may fly at once |
+| `--name HOST` | `localhost`, `127.0.0.1`, `::1` | A name for the self-signed certificate; repeat it for more |
+| `--cert PEM --key PEM` | | A certificate to use instead of a self-signed one |
+
+It logs the address to connect to, and how the flight is going every ten seconds, until Ctrl-C. `RUST_LOG=debug` logs more.
+
+```text
+connect to https://localhost:4433#sha256=dea539c5...
+```
+
+When listening on every interface, as by default, that address says `localhost`: give other pilots your host instead, keeping the rest, as in `https://play.example.com:4433#sha256=dea539c5...`. The firewall must let UDP through on the port, since WebTransport runs on QUIC.
+
+A self-signed certificate lasts 14 days, and each start makes a new one, so restart the server within that time and give pilots the new address. With `--cert` and `--key`, a certificate clients already trust, clients can leave out the `#sha256=...`.
+
 ## Releasing
 
-Pushing a version tag `vX.Y.Z` builds the native app and publishes a [GitHub Release](https://github.com/vini-fda/nabla/releases). The builds are for macOS on Apple silicon (an app bundle), Linux x86-64 and Windows 64-bit. Pushes to `main` only run CI and deploy the web app; they never release.
+Pushing a version tag `vX.Y.Z` builds the native app and the server, and publishes a [GitHub Release](https://github.com/vini-fda/nabla/releases). The app's builds are for macOS on Apple silicon (an app bundle), Linux x86-64 and Windows 64-bit, and the server's for the same macOS and Linux. Pushes to `main` only run CI and deploy the web app; they never release.
 
 1. Bump the workspace `version` in `Cargo.toml` (`[workspace.package]`, shared by every crate) and `Cargo.lock`, then commit and get the commit onto `main`:
 
@@ -71,7 +102,7 @@ Pushing a version tag `vX.Y.Z` builds the native app and publishes a [GitHub Rel
 
 ### Signing the macOS app
 
-With these secrets in the repository's `release` environment, the release signs `Nabla.app` with a Developer ID, notarizes it and staples the ticket, so Gatekeeper opens it without a warning. Without `MACOS_CERTIFICATE`, the app is signed ad-hoc and the release notes tell users how to allow it.
+With these secrets in the repository's `release` environment, the release signs `Nabla.app` with a Developer ID, notarizes it and staples the ticket, so Gatekeeper opens it without a warning. Without `MACOS_CERTIFICATE`, the app is signed ad-hoc and the release notes tell users how to allow it. The server binary is never signed with a Developer ID, and the notes say how to run it.
 
 The signing runs in its own job, `sign-macos`, after the build: it checks out nothing and runs no cargo, so no build script or dependency ever runs next to the certificate. Only that job uses the environment, and the environment only deploys tags matching `v*.*.*` (Settings → Environments → release), so a workflow pushed on a branch cannot read the secrets.
 

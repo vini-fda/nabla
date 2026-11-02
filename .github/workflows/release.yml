@@ -1,7 +1,7 @@
 name: Release
 
-# Publishes a GitHub Release with native builds of the app for every version tag `vX.Y.Z`.
-# Pushes to main never release. To release, bump the versions and push a tag (see README.md).
+# Publishes a GitHub Release with native builds of the app and the multiplayer server for every
+# version tag `vX.Y.Z`. Pushes to main never release. To release, bump the versions and push a tag (see README.md).
 on:
   push:
     tags: ["v*.*.*"]
@@ -127,6 +127,61 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  # The multiplayer server, as a bare binary. It has a job and artifacts of its own because
+  # `sign-macos` replaces the whole macOS artifact of `build`, which would drop an archive put
+  # there. It needs none of the app's system libraries, and is not signed or notarized (the
+  # release notes say how to run it on macOS).
+  build-server:
+    name: Build the server for ${{ matrix.target }}
+    needs: [version, checks]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          # The oldest supported Ubuntu, so the binary needs the oldest glibc.
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+    runs-on: ${{ matrix.os }}
+    env:
+      NAME: nabla-server-${{ github.ref_name }}-${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the toolchain from rust-toolchain.toml
+        run: |
+          rustup toolchain install
+          rustup target add ${{ matrix.target }}
+
+      # The Linux linker of .cargo/config.toml.
+      - uses: rui314/setup-mold@v1
+        if: runner.os == 'Linux'
+        with:
+          make-default: false
+
+      # A tag's caches could only ever be restored by runs on that same tag: don't save them.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: server-${{ matrix.target }}
+          save-if: false
+
+      - name: Build and package
+        run: |
+          cargo build --locked --release -p nabla-server --bin nabla-server --target ${{ matrix.target }}
+          mkdir -p "dist/$NAME"
+          cp "target/${{ matrix.target }}/release/nabla-server" README.md \
+            crates/nabla-client/LICENSE-MIT crates/nabla-client/LICENSE-APACHE "dist/$NAME/"
+          "dist/$NAME/nabla-server" --help
+          tar -C dist -czf "dist/$NAME.tar.gz" "$NAME"
+          rm -r "dist/$NAME"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: server-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
   # Developer ID signing and notarization of the macOS build, when the `release` environment
   # has the secrets (see README.md). The environment only deploys version tags, and this job runs
   # no repository code: it checks nothing out, builds nothing, and uses only actions/*.
@@ -235,7 +290,7 @@ jobs:
 
   release:
     name: Publish the release
-    needs: [build, sign-macos]
+    needs: [build, build-server, sign-macos]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

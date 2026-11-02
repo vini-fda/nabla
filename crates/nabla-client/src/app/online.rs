@@ -93,8 +93,9 @@ impl ViewerApp {
         if pad.just_pressed(gamepad::Button::North) {
             self.toggle_steering();
         }
-        if pad.just_pressed(gamepad::Button::West) {
-            self.toggle_online_autopilot();
+        let orbit_handled = self.orbit_buttons(&pad);
+        if pad.just_pressed(gamepad::Button::West) && !orbit_handled {
+            self.engage_objective();
         }
         if pad.just_pressed(gamepad::Button::Select) {
             self.toggle_controller_guide();
@@ -128,11 +129,22 @@ impl ViewerApp {
                 self.toggle_steering();
             }
             if plain(egui::Key::A) {
-                self.toggle_online_autopilot();
+                self.toggle_autopilot();
             }
         }
         self.online_controller_buttons();
         let hands = self.online_hands(ui);
+        // Flying, and with a predicted state to take the orbit from.
+        let playing = self
+            .online
+            .as_ref()
+            .is_some_and(|o| o.stage() == Stage::Playing && o.next_state().is_some());
+        if playing && !self.online_ready {
+            // The ship is new: its nearest body is the orbit to offer, and B is the objective.
+            self.reset_orbit_controls();
+            self.choose_objective(super::Objective::ReachB);
+        }
+        self.online_ready = playing;
         let Some(online) = &mut self.online else {
             self.screen = super::Screen::Title;
             return;
@@ -157,6 +169,10 @@ impl ViewerApp {
         }
         if stage != Stage::Playing {
             self.online_levels = None;
+        }
+        if stage == Stage::Playing {
+            self.refresh_orbit_prediction();
+            self.refresh_prediction();
         }
         match (stage, closed) {
             (Stage::Playing, None) => self.online_flight_ui(ui),
@@ -291,22 +307,6 @@ impl ViewerApp {
         self.online_fit = true;
     }
 
-    fn toggle_online_autopilot(&mut self) {
-        let policy = self.policy;
-        let Some(online) = &mut self.online else {
-            return;
-        };
-        if online.assisted() {
-            online.disengage();
-            self.notifications.post("Autopilot off", palette::WHITE);
-        } else if let Err(why) = online.engage(policy) {
-            self.notifications.post(why, palette::RED);
-        } else {
-            self.notifications
-                .post(format!("Autopilot: {}", policy.name), palette::WHITE);
-        }
-    }
-
     /// The flight: a bar along the bottom, the settings panel on the left, the plots on the
     /// right, and the canvas.
     fn online_flight_ui(&mut self, ui: &mut egui::Ui) {
@@ -322,11 +322,18 @@ impl ViewerApp {
         });
         self.show_controls = show_controls;
         let mut show_plots = self.show_plots;
-        let reveal = super::ONLINE_PLOTS_PANEL.show(ui, &mut show_plots, &mut 0, |ui, _| {
-            if let Some(own) = views.first().filter(|view| view.own) {
-                Self::plots_of(ui, &own.replay, own.t);
+        let mut view = self.right_view as usize;
+        let reveal = super::RIGHT_PANEL.show(ui, &mut show_plots, &mut view, |ui, view| {
+            match super::RightView::ALL[view] {
+                super::RightView::Plots => {
+                    if let Some(own) = views.first().filter(|view| view.own) {
+                        Self::plots_of(ui, &own.replay, own.t);
+                    }
+                }
+                super::RightView::Objective => self.objective_ui(ui),
             }
         });
+        self.right_view = super::RightView::ALL[view];
         self.show_plots = show_plots;
         egui::CentralPanel::default().show(ui, |ui| {
             self.online_canvas_ui(ui, super::canvas_inset(reveal), &views);
@@ -406,11 +413,11 @@ impl ViewerApp {
             autopilot = ui
                 .toggle_value(&mut engaged, "Autopilot")
                 .on_hover_ui(|ui| {
-                    keys::tooltip(
-                        ui,
-                        "Fly to B with the policy, from wherever the ship is. Switch it off to take over",
-                        &[keys::A],
+                    let action = format!(
+                        "Autopilot: {}. Switch it off to take over",
+                        self.flight_objective().label()
                     );
+                    keys::tooltip(ui, &action, &[keys::A]);
                 })
                 .changed();
             ui.add_enabled_ui(self.follow_ship && !assisted, |ui| {
@@ -452,7 +459,7 @@ impl ViewerApp {
             self.toggle_steering();
         }
         if autopilot {
-            self.toggle_online_autopilot();
+            self.toggle_autopilot();
         }
     }
 
@@ -486,6 +493,8 @@ impl ViewerApp {
         }
         let painter = ui.painter_at(rect);
         self.draw_online_scene(ui, &painter, rect, views);
+        self.draw_orbits(&painter, rect);
+        self.draw_prediction(&painter, rect);
         if self.show_path {
             let k = (own.t / own.replay.h()).floor() as usize;
             self.draw_path(

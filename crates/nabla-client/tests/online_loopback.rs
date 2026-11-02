@@ -111,7 +111,9 @@ fn two_pilots(preset: Preset, seconds: f64, autopilot_after: Option<f64>) -> ([O
                 .iter()
                 .find(|s| s.name == "flip_and_burn_tuned")
                 .expect("a policy");
-            clients[1].engage(policy).expect("a ship to fly");
+            clients[1]
+                .engage(nabla_client::Objective::ReachB, policy)
+                .expect("a ship to fly");
         }
         landed = clients[1].take_landed();
         std::thread::sleep(Duration::from_millis(4));

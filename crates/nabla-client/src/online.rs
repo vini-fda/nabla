@@ -27,8 +27,9 @@ use nabla_sim::steering::{Input, Steering};
 use nabla_sim::world::{ShipRequest, World};
 use web_time::Instant;
 
-use crate::game::Autopilot;
+use crate::game::{Autopilot, FlightController, Objective, forecast_of, run_controller};
 use crate::net::Transport;
+use crate::orbit::{self, Pilot, Prediction};
 use crate::replay::Replay;
 
 /// `tau_s`: how long a correction takes to fade from the picture, in seconds.
@@ -182,7 +183,7 @@ impl Playout {
 
 /// An autopilot flying the ship.
 struct Engaged {
-    autopilot: Autopilot,
+    controller: FlightController,
     task: Task,
 }
 
@@ -198,6 +199,8 @@ pub struct Online {
     trail: BTreeMap<Tick, Step>,
     playout: Playout,
     engaged: Option<Engaged>,
+    /// What the ship is aiming for, which an autopilot flies to once engaged.
+    objective: Objective,
     fault: Option<String>,
     landed: bool,
 }
@@ -222,6 +225,7 @@ impl Online {
             trail: BTreeMap::new(),
             playout: Playout::default(),
             engaged: None,
+            objective: Objective::ReachB,
             fault: None,
             landed: false,
         }
@@ -276,23 +280,103 @@ impl Online {
         self.landed = false;
     }
 
-    /// Fly the ship by `solution`, from the ship's predicted state on, to the world's goal.
-    ///
-    /// # Errors
-    /// If there is no ship to fly.
-    pub fn engage(&mut self, solution: &'static StoredSolution) -> Result<(), String> {
-        let (Some(world), Some(params)) = (self.machine.world(), self.machine.params()) else {
-            return Err("no ship to fly".to_owned());
-        };
+    /// `h`, the world's tick, in seconds.
+    pub fn h(&self) -> Option<f64> {
+        self.machine.h()
+    }
+
+    /// The ship's task: the world's goal, with the ship's own parameters.
+    fn task(&self) -> Option<Task> {
+        let (world, params) = (self.machine.world()?, self.machine.params()?);
         let mut task = world.spawn(0).task;
         task.params = params;
-        self.engaged = Some(Engaged {
-            autopilot: Autopilot::new(solution),
-            task,
-        });
+        Some(task)
+    }
+
+    pub fn objective(&self) -> Objective {
+        self.objective
+    }
+
+    /// Aim for `objective`. Another one than before takes the ship back from an autopilot.
+    ///
+    /// # Errors
+    /// If an orbit's target is not valid in this world.
+    pub fn select_objective(&mut self, objective: Objective) -> Result<(), String> {
+        if let (Objective::Orbit(target), Some(world)) = (objective, self.machine.world()) {
+            target.validate_input(world)?;
+        }
+        if self.objective != objective {
+            self.engaged = None;
+            self.objective = objective;
+            self.landed = false;
+        }
+        Ok(())
+    }
+
+    /// Fly the ship to `objective`, by `solution` for B and by the orbit assist for an orbit,
+    /// from the ship's predicted state on. Says what an orbit is forecast to do.
+    ///
+    /// # Errors
+    /// If there is no ship to fly, or the orbit cannot be flown from here.
+    pub fn engage(
+        &mut self,
+        objective: Objective,
+        solution: &'static StoredSolution,
+    ) -> Result<Option<Prediction>, String> {
+        let (Some(task), Some(world), Some(start)) =
+            (self.task(), self.machine.world(), self.next_state())
+        else {
+            return Err("no ship to fly".to_owned());
+        };
+        let (controller, prediction) = match objective {
+            Objective::ReachB => (FlightController::ReachB(Autopilot::new(solution)), None),
+            Objective::Orbit(target) => {
+                let prediction = orbit::predict(world, start, target)?;
+                (
+                    FlightController::Orbit(Pilot::new(target)),
+                    Some(prediction),
+                )
+            }
+        };
+        self.select_objective(objective)?;
+        self.engaged = Some(Engaged { controller, task });
         self.fault = None;
         self.landed = false;
-        Ok(())
+        Ok(prediction)
+    }
+
+    /// The orbit assist, while it flies.
+    pub fn orbit_pilot(&self) -> Option<&Pilot> {
+        match &self.engaged.as_ref()?.controller {
+            FlightController::Orbit(pilot) => Some(pilot),
+            FlightController::ReachB(_) => None,
+        }
+    }
+
+    /// The own ship's state at the next tick to issue, `Pred(k)`: where the controllers fly from.
+    pub fn next_state(&self) -> Option<State> {
+        self.trail.get(&self.machine.tick()?).map(|step| step.state)
+    }
+
+    /// The flight's time, in seconds: the next tick to issue, times `h`.
+    pub fn time(&self) -> f64 {
+        match (self.machine.tick(), self.machine.h()) {
+            (Some(k), Some(h)) => f64::from(k) * h,
+            _ => 0.0,
+        }
+    }
+
+    /// A short forecast of the ship's path under the engaged controller, or none.
+    pub fn forecast(&self) -> Vec<[f64; 2]> {
+        match (self.machine.world(), self.next_state(), self.machine.h()) {
+            (Some(world), Some(start), Some(h)) => forecast_of(
+                world,
+                start,
+                self.engaged.as_ref().map(|e| &e.controller),
+                h,
+            ),
+            _ => Vec::new(),
+        }
     }
 
     pub fn disengage(&mut self) {
@@ -350,6 +434,7 @@ impl Online {
         let (Some(params), Some(h)) = (self.machine.params(), self.machine.h()) else {
             return;
         };
+        let world = self.machine.world().cloned();
         let Self {
             machine,
             transport,
@@ -362,19 +447,21 @@ impl Online {
                 input: hands.input,
                 steering: hands.steering,
             };
-            let command = match engaged {
-                Some(flying) => match flying.autopilot.control(&flying.task, predicted) {
-                    Ok(u) => Command::Direct {
-                        thrust: u.thrust,
-                        torque: u.torque,
-                    },
-                    Err(why) => {
-                        *fault = Some(why);
-                        *engaged = None;
-                        manual
+            let command = match (engaged.as_mut(), world.as_ref()) {
+                (Some(flying), Some(world)) => {
+                    match run_controller(&mut flying.controller, world, &flying.task, predicted) {
+                        Ok(u) => Command::Direct {
+                            thrust: u.thrust,
+                            torque: u.torque,
+                        },
+                        Err(why) => {
+                            *fault = Some(why);
+                            *engaged = None;
+                            manual
+                        }
                     }
-                },
-                None => manual,
+                }
+                _ => manual,
             };
             command.sanitize(&params)
         });
@@ -394,6 +481,7 @@ impl Online {
             let keep_from = newest.saturating_sub(TRAIL);
             self.trail = self.trail.split_off(&keep_from);
             if let Some(flying) = &self.engaged
+                && self.objective == Objective::ReachB
                 && let Some(step) = self.trail.get(&newest)
                 && flying.task.reached(&step.state)
             {

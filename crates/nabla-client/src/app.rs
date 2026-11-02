@@ -52,14 +52,6 @@ const CONTROLS_PANEL: SidePanel = SidePanel {
     min_width: 320.0,
     default_width: 320.0,
 };
-/// The plots of a flight on a server, which has no objective to show beside them.
-const ONLINE_PLOTS_PANEL: SidePanel = SidePanel {
-    dock: Dock::Right,
-    id: "online_plots_panel",
-    titles: &["State plots"],
-    min_width: 220.0,
-    default_width: 300.0,
-};
 const RIGHT_PANEL: SidePanel = SidePanel {
     dock: Dock::Right,
     id: "plots_panel",
@@ -351,6 +343,8 @@ pub struct ViewerApp {
     join_request: nabla_sim::world::ShipRequest,
     /// Frame the camera around the ship, the next time the canvas shows.
     online_fit: bool,
+    /// The orbit controls have been set for the ship that is flying.
+    online_ready: bool,
     /// How hard the own ship's thrusters fire, for the sound.
     online_levels: Option<(f32, f32)>,
 }
@@ -419,6 +413,7 @@ impl Default for ViewerApp {
             online_error: None,
             join_request: world_default_request(),
             online_fit: false,
+            online_ready: false,
             online_levels: None,
         }
     }

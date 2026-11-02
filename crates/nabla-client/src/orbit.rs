@@ -55,6 +55,10 @@ impl Target {
             * if self.clockwise { -1.0 } else { 1.0 }
     }
 
+    /// Whether the target names a body and an altitude the world has room for.
+    ///
+    /// # Errors
+    /// Says what is wrong with it.
     pub fn validate_input(self, world: &World) -> Result<(), String> {
         if world.bodies.get(self.body).is_none() {
             return Err("Select a planet or moon".to_owned());
@@ -68,6 +72,9 @@ impl Target {
     }
 
     /// Check target geometry and sampled force requirements before attempting capture.
+    ///
+    /// # Errors
+    /// Says what is wrong with it.
     pub fn validate(self, world: &World) -> Result<(), String> {
         self.validate_input(world)?;
         let source = &world.bodies[self.body];

@@ -58,7 +58,7 @@ pub(crate) struct Autopilot {
     solution: &'static StoredSolution,
     /// The policy's controller, from the sample it was made at on: `None` until the next sample
     /// it flies outside the target set.
-    controller: Option<Box<dyn Controller>>,
+    pub(crate) controller: Option<Box<dyn Controller>>,
     /// The samples the controller has flown: the `k` it is queried at next.
     k: usize,
 }
@@ -137,9 +137,63 @@ impl Objective {
 }
 
 /// Only one controller can own the flight's controls at a time.
-enum FlightController {
+pub(crate) enum FlightController {
     ReachB(Autopilot),
     Orbit(Pilot),
+}
+
+/// The control `controller` chooses in state `s`, of the ship with `task` in `world`.
+///
+/// # Errors
+/// Why it can't fly on: a policy panicked or chose an inadmissible control, or the orbit assist
+/// lost its clearance.
+pub(crate) fn run_controller(
+    controller: &mut FlightController,
+    world: &World,
+    task: &Task,
+    s: &State,
+) -> Result<Control, String> {
+    match controller {
+        FlightController::ReachB(pilot) => pilot.control(task, s),
+        FlightController::Orbit(pilot) => {
+            let u = pilot.control(world, s, &task.params);
+            if u.is_admissible(&task.params) && orbit::clear(world, s) {
+                Ok(u)
+            } else {
+                Err("Orbit assist lost clearance or control authority".to_owned())
+            }
+        }
+    }
+}
+
+/// A short forecast of the ship's path from `start`, the next control sample, under `controller`
+/// if one is engaged, without advancing it. `h` is the sampling period.
+pub(crate) fn forecast_of(
+    world: &World,
+    start: State,
+    controller: Option<&FlightController>,
+    h: f64,
+) -> Vec<[f64; 2]> {
+    match controller {
+        Some(FlightController::Orbit(pilot)) => orbit::forecast(world, start, pilot.clone()),
+        Some(FlightController::ReachB(pilot)) => {
+            let steps = orbit::forecast_steps(h);
+            let states = pilot
+                .controller
+                .as_ref()
+                .map_or_else(Vec::new, |controller| {
+                    catch_unwind(AssertUnwindSafe(|| controller.prediction(&start, steps)))
+                        .unwrap_or_default()
+                });
+            states
+                .into_iter()
+                .take(steps + 1)
+                .take_while(|s| s.x.is_finite() && s.y.is_finite())
+                .map(|s| [s.x, s.y])
+                .collect()
+        }
+        None => Vec::new(),
+    }
 }
 
 /// A flight on one case.
@@ -279,29 +333,12 @@ impl Game {
 
     /// A short forecast from the next control sample, without advancing the live controller.
     pub fn prediction(&self) -> Vec<[f64; 2]> {
-        let start = self.next_state();
-        match &self.autopilot {
-            Some(FlightController::Orbit(pilot)) => {
-                orbit::forecast(&self.world, start, pilot.clone())
-            }
-            Some(FlightController::ReachB(pilot)) => {
-                let steps = orbit::forecast_steps(self.replay.h());
-                let states = pilot
-                    .controller
-                    .as_ref()
-                    .map_or_else(Vec::new, |controller| {
-                        catch_unwind(AssertUnwindSafe(|| controller.prediction(&start, steps)))
-                            .unwrap_or_default()
-                    });
-                states
-                    .into_iter()
-                    .take(steps + 1)
-                    .take_while(|s| s.x.is_finite() && s.y.is_finite())
-                    .map(|s| [s.x, s.y])
-                    .collect()
-            }
-            None => Vec::new(),
-        }
+        forecast_of(
+            &self.world,
+            self.next_state(),
+            self.autopilot.as_ref(),
+            self.replay.h(),
+        )
     }
 
     /// The present as `(k, tau)`, with `t = k h + tau` and `0 <= tau < h`.
@@ -389,17 +426,7 @@ impl Game {
     /// The control the autopilot flying `solution`, if any, chooses in state `s`. A new one
     /// starts afresh, and one that fails is dropped, with the fault kept.
     fn autopilot_control(&mut self, task: &Task, s: &State) -> Option<Control> {
-        let result = match self.autopilot.as_mut()? {
-            FlightController::ReachB(pilot) => pilot.control(task, s),
-            FlightController::Orbit(pilot) => {
-                let u = pilot.control(&self.world, s, &task.params);
-                if u.is_admissible(&task.params) && orbit::clear(&self.world, s) {
-                    Ok(u)
-                } else {
-                    Err("Orbit assist lost clearance or control authority".to_owned())
-                }
-            }
-        };
+        let result = run_controller(self.autopilot.as_mut()?, &self.world, task, s);
         match result {
             Ok(u) => {
                 // The assist holds the heading the autopilot leaves, not one from before it.

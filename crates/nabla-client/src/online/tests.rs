@@ -319,7 +319,9 @@ fn an_autopilot_lands_while_another_pilot_flies_by_hand() {
     rig.add(ours);
     rig.join_all(&[ours, ours]);
     rig.run(3.0, &scripted);
-    rig.clients[1].engage(policy).expect("a ship to fly");
+    rig.clients[1]
+        .engage(Objective::ReachB, policy)
+        .expect("a ship to fly");
     assert!(rig.clients[1].assisted());
     let mut landed_at = None;
     for _ in 0..120_000 {
@@ -507,4 +509,50 @@ fn a_stall_is_made_up_by_a_jump_and_not_by_an_estimate_of_the_path_gone_wild() {
     // And the ship was never taken from its place by it: nothing was ever corrected by more than
     // the stall itself, which the server flew as neutral.
     assert_eq!(client.stage(), Stage::Playing);
+}
+
+#[test]
+fn the_orbit_assist_flies_a_ship_on_a_server_around_a_body() {
+    use crate::orbit::Target;
+
+    // One planet: with the moon in the world, an orbit at the ship's altitude crosses it.
+    let world = Preset::Planet
+        .world()
+        .multiplayer(60, 1000.0, 16)
+        .expect("a server world");
+    let ours = ShipRequest::from(world.default_ship());
+    let mut rig = Rig::new(world, 0.050, 0.0, 12);
+    rig.add(ours);
+    rig.join_all(&[ours]);
+    rig.run(1.0, &scripted);
+    let (state, planet) = {
+        let client = &rig.clients[0];
+        let world = client.world().expect("a world");
+        let state = client.next_state().expect("playing");
+        (state, world.bodies[0].clone())
+    };
+    let target = Target::at_current_altitude(rig.clients[0].world().expect("a world"), &state, 0)
+        .expect("a target");
+    let policy = &SOLUTIONS[0];
+    let forecast = rig.clients[0]
+        .engage(Objective::Orbit(target), policy)
+        .expect("the orbit can be flown from here");
+    assert!(forecast.is_some(), "an orbit has a forecast");
+    assert!(rig.clients[0].orbit_pilot().is_some());
+    rig.run(40.0, &scripted);
+    let client = &mut rig.clients[0];
+    assert!(
+        client.take_fault().is_none(),
+        "the assist never lost the ship"
+    );
+    assert!(client.orbit_pilot().is_some(), "still flying it");
+    let end = client.next_state().expect("playing");
+    let distance =
+        (end.x - f64::from(planet.position[0])).hypot(end.y - f64::from(planet.position[1]));
+    let radius = target.radius(client.world().expect("a world"));
+    assert!(
+        (distance - radius).abs() < 0.3 * radius,
+        "{distance} from the planet's center, for an orbit of radius {radius}"
+    );
+    assert!(!client.forecast().is_empty(), "a forecast of the orbit");
 }

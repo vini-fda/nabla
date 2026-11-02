@@ -58,12 +58,15 @@ const RIGHT_PANEL: SidePanel = SidePanel {
 /// Width of the vertical title bar along a side panel's window edge: all that is left of the
 /// panel when it is collapsed.
 const TITLE_BAR_WIDTH: f32 = 30.0;
+/// Width of the strip along the window edge that a collapsed panel keeps once its title bar
+/// has slid out: its triangle, and where the pointer brings the bar back.
+const TITLE_BAR_TUCKED_WIDTH: f32 = 16.0;
 /// A side panel's unselected tabs in its title bar, against the selected one's white.
 const TITLE_BAR_TAB_COLOR: egui::Color32 = palette::OVERLAY0;
 /// Seconds the pointer must stay away from a collapsed panel's title bar before the bar
 /// slides out of the window, leaving only its triangle.
 const TITLE_BAR_HIDE_DELAY: f64 = 0.5;
-/// How close (in points) the pointer must come to a hidden title bar to bring it back.
+/// How close (in points) the pointer must stay to a collapsed panel's title bar to keep it in.
 const TITLE_BAR_REVEAL_MARGIN: f32 = 16.0;
 /// Seconds the title bar takes to slide out of or back into the window.
 const TITLE_BAR_SLIDE_TIME: f32 = 0.3;
@@ -1910,20 +1913,19 @@ impl ViewerApp {
         self.show_controls = show_controls;
         let mut show_plots = self.show_plots;
         let mut view = self.right_view as usize;
-        RIGHT_PANEL.show(
-            ui,
-            &mut show_plots,
-            &mut view,
-            |ui, view| match RightView::ALL[view] {
-                RightView::Plots => self.plots_ui(ui),
-                RightView::Objective => self.objective_ui(ui),
-            },
-        );
+        let reveal =
+            RIGHT_PANEL.show(
+                ui,
+                &mut show_plots,
+                &mut view,
+                |ui, view| match RightView::ALL[view] {
+                    RightView::Plots => self.plots_ui(ui),
+                    RightView::Objective => self.objective_ui(ui),
+                },
+            );
         self.right_view = RightView::ALL[view];
         self.show_plots = show_plots;
-        // The plots panel's triangle floats over the canvas's corner while it's collapsed.
-        let inset = if show_plots { 0.0 } else { TITLE_BAR_WIDTH };
-        egui::CentralPanel::default().show(ui, |ui| self.canvas_ui(ui, inset));
+        egui::CentralPanel::default().show(ui, |ui| self.canvas_ui(ui, canvas_inset(reveal)));
     }
 
     /// Narrow-screen layout: one full-size view at a time, chosen in the top bar; the game's
@@ -2058,13 +2060,14 @@ struct SidePanel {
 }
 
 impl SidePanel {
+    /// Returns how far the panel's title bar is in the window, from 0 (slid out) to 1.
     fn show(
         &self,
         ui: &mut egui::Ui,
         expanded: &mut bool,
         selected: &mut usize,
         add_contents: impl FnOnce(&mut egui::Ui, usize),
-    ) {
+    ) -> f32 {
         let Self {
             dock,
             id,
@@ -2077,24 +2080,26 @@ impl SidePanel {
         let openness = ctx.animate_bool(id.with("openness"), *expanded);
 
         // Where the title bar is when it is in the window, and where its triangle is: there
-        // also while the collapsed bar has slid out, so it stays visible and clickable.
+        // also while the collapsed bar has slid out, so it stays visible and clickable, in
+        // a narrower strip along the window edge.
         let area = ui.available_rect_before_wrap();
-        let bar = match dock {
-            Dock::Left => area.with_max_x(area.left() + TITLE_BAR_WIDTH),
-            Dock::Right => area.with_min_x(area.right() - TITLE_BAR_WIDTH),
-        };
-        let icon_center = egui::pos2(bar.center().x, title_bar_icon_y(ui, bar));
-
-        let reveal = title_bar_reveal(ui, id, bar, *expanded);
+        let bar = edge_strip(area, dock, TITLE_BAR_WIDTH);
+        let reveal = title_bar_reveal(ui, id, bar, dock, *expanded);
+        let icon_strip = edge_strip(
+            area,
+            dock,
+            egui::lerp(TITLE_BAR_TUCKED_WIDTH..=TITLE_BAR_WIDTH, reveal),
+        );
+        let icon_top = title_bar_icon_y(ui, bar) - TITLE_BAR_WIDTH / 2.0;
 
         let mut toggled = false;
         if !*expanded {
             toggled |= egui::Area::new(id.with("collapsed_icon"))
                 .order(egui::Order::Foreground)
-                .fixed_pos(icon_center - egui::vec2(TITLE_BAR_WIDTH, TITLE_BAR_WIDTH) / 2.0)
+                .fixed_pos(egui::pos2(icon_strip.left(), icon_top))
                 .show(&ctx, |ui| {
                     let (rect, response) = ui.allocate_exact_size(
-                        egui::Vec2::splat(TITLE_BAR_WIDTH),
+                        egui::vec2(icon_strip.width(), TITLE_BAR_WIDTH),
                         egui::Sense::click(),
                     );
                     paint_collapse_icon(ui, &response, rect.center(), dock, openness);
@@ -2160,20 +2165,49 @@ impl SidePanel {
         if toggled {
             *expanded = !*expanded;
         }
+        reveal
     }
+}
+
+/// The strip of `rect` along the edge of `dock`, `width` wide.
+fn edge_strip(rect: egui::Rect, dock: Dock, width: f32) -> egui::Rect {
+    match dock {
+        Dock::Left => rect.with_max_x(rect.left() + width),
+        Dock::Right => rect.with_min_x(rect.right() - width),
+    }
+}
+
+/// How much of the canvas's right edge is taken by the right panel's floating triangle, with
+/// its title bar `reveal` in the window: none with the bar in, which holds the triangle, and
+/// with the bar out, what the canvas's buttons would otherwise overlap of the tucked strip.
+fn canvas_inset(reveal: f32) -> f32 {
+    (TITLE_BAR_TUCKED_WIDTH - canvas_buttons::MARGIN_RIGHT) * (1.0 - reveal)
 }
 
 /// How far a side panel's title bar is in the window, from 0 (slid out) to 1. Once the
 /// panel is collapsed, the bar slides out after the pointer has kept away from `bar` (where
-/// the bar is when in the window) for a while, and slides back in as soon as the pointer
-/// comes near.
-fn title_bar_reveal(ui: &egui::Ui, id: egui::Id, bar: egui::Rect, expanded: bool) -> f32 {
+/// the bar is when in the window) for a while. Once out, it slides back in as soon as the
+/// pointer reaches the window edge: only there, for the bar would push away the canvas's
+/// buttons, just beside the edge, as the pointer comes to them.
+fn title_bar_reveal(
+    ui: &egui::Ui,
+    id: egui::Id,
+    bar: egui::Rect,
+    dock: Dock,
+    expanded: bool,
+) -> f32 {
     let ctx = ui.ctx();
     let now = ui.input(|i| i.time);
+    let last_near_id = id.with("last_near");
+    let last_near = ctx.data_mut(|d| *d.get_temp_mut_or(last_near_id, now));
+    let near_zone = if now - last_near > TITLE_BAR_HIDE_DELAY {
+        edge_strip(bar, dock, TITLE_BAR_TUCKED_WIDTH)
+    } else {
+        bar.expand(TITLE_BAR_REVEAL_MARGIN)
+    };
     let near = ui
         .input(|i| i.pointer.hover_pos())
-        .is_some_and(|p| bar.expand(TITLE_BAR_REVEAL_MARGIN).contains(p));
-    let last_near_id = id.with("last_near");
+        .is_some_and(|p| near_zone.contains(p));
     if expanded || near {
         ctx.data_mut(|d| d.insert_temp(last_near_id, now));
     }
@@ -2584,6 +2618,57 @@ mod tests {
             output.textures_delta.clear();
         }
         (selected, toggled)
+    }
+
+    /// A collapsed panel's title bar's reveal, once settled, with the pointer at `x` from the
+    /// window's right edge, after `away` seconds without one.
+    fn settled_reveal(away: f64, x: f32) -> f32 {
+        let ctx = egui::Context::default();
+        let area = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let bar = edge_strip(area, Dock::Right, TITLE_BAR_WIDTH);
+        let mut reveal = 0.0;
+        let mut frame = |time: f64, pointer: Option<f32>| {
+            let input = egui::RawInput {
+                screen_rect: Some(area),
+                time: Some(time),
+                events: pointer
+                    .map(|x| egui::Event::PointerMoved(egui::pos2(area.right() - x, 300.0)))
+                    .into_iter()
+                    .collect(),
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                reveal = title_bar_reveal(ui, ui.scope_id(), bar, Dock::Right, false);
+            });
+            output.textures_delta.clear();
+        };
+        frame(0.0, None);
+        // Long enough to slide out, unless `away` is short.
+        for i in 1..50 {
+            frame(away * f64::from(i) / 49.0, None);
+        }
+        for i in 1..100 {
+            frame(away + f64::from(i) * 0.02, Some(x));
+        }
+        reveal
+    }
+
+    #[test]
+    fn a_slid_out_title_bar_comes_back_only_from_the_window_edge() {
+        let at_the_edge = TITLE_BAR_TUCKED_WIDTH - 2.0;
+        let on_the_buttons = TITLE_BAR_TUCKED_WIDTH + 2.0;
+        let slid_out = TITLE_BAR_HIDE_DELAY + 1.0;
+        assert!(settled_reveal(slid_out, at_the_edge) > 0.99);
+        assert!(settled_reveal(slid_out, on_the_buttons) < 0.01);
+        // While it is still in, the pointer keeps it there from close by.
+        assert!(settled_reveal(0.0, on_the_buttons) > 0.99);
+    }
+
+    #[test]
+    fn the_canvas_buttons_reach_the_tucked_strip_and_no_further() {
+        let gap = |reveal| canvas_inset(reveal) + canvas_buttons::MARGIN_RIGHT;
+        assert!((gap(0.0) - TITLE_BAR_TUCKED_WIDTH).abs() < 1e-3);
+        assert!((gap(1.0) - canvas_buttons::MARGIN_RIGHT).abs() < 1e-3);
     }
 
     /// The height of a point on the second title, found by clicking down the bar.

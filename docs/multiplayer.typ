@@ -1305,17 +1305,17 @@ Each milestone's acceptance test is a theorem of this paper, checked on a runnin
 
 #figure(
   rules(
-    columns: (auto, 1fr, 1fr),
-    ([], [Work], [Accepted when]),
-    [M0], [Done for the bounds of @tla (`docs/tla/check.sh`). Run the module of @tla through SANY and TLC again whenever it changes.], [The invariants of @thm-once hold. Fix the spec first if not.],
-    [M1], [Extract `nabla-sim`. No behavior changes.], [All existing tests pass. `cargo tree -p nabla-sim` has no egui, wgpu or cpal. It builds for WASM.],
-    [M2], [World version 2 (tick rate, arena, allowed ships), `Command`, $Sanitize$, $Wall$, $Grant$. Fix the NaN of @steering.], [@lem-total and @lem-grant as property tests over arbitrary bit patterns. @lem-arena against adversarial pilots.],
-    [M3], [`nabla-net` and a seeded simulated network with delay, jitter, loss, reordering, duplication, and hostile clients.], [@thm-once, @thm-contain and @thm-exact as assertions in the simulator, over $10^6$ ticks of seeds. @thm-margin: margins settle as predicted. Speeds in worlds with bodies measured, where @lem-arena gives no bound.],
-    [M4], [`nabla-server`, and a headless native bot client.], [16 bots for 10 minutes over loopback with impaired links: no assertion fires, $p_99$ tick time under $h$, bandwidth as in @bandwidth. A 17th `Join` gets `Full`.],
-    [M5], [Native client: lobby screen, prediction, reconciliation, smoothing, interpolation, remote plumes, autopilots.], [Two pilots with different ships fly in one world at 100 ms RTT. In vacuum with no lost changes, corrections are exactly zero (@thm-exact). Elsewhere they match @tab-replay. An autopilot arrives while another pilot flies by hand.],
-    [M6], [Web client, certificates, `RUSTFLAGS`.], [A browser and a native pilot share a world, in Chrome, Firefox and Safari, against a server that has only `serverCertificateHashes` to offer. Repeat @tab-replay native against WASM, and @tab-autopilot in WASM. A hidden tab behaves as specified.],
-    [M7], [Tuning: $q$, $K$, $mu^*$, the ranges and caps, per-connection rate limits, metrics.], [@bandwidth met at $N = 16$. Burst-loss behavior measured against @loss. Idle frames measured against @prop-idle on a real 60 Hz display.],
-    [M8], [*Phase B.* A shared Rapier world, extrapolation into the own frame, the coupling graph, and contact smoothing. Rework @thm-contain and the module of @tla.], [Corrections in contact are measured and judged acceptable by playing. Worst-case bound of @prop-zoh holds in the simulator.],
+    columns: (auto, 1fr, 1fr, auto),
+    ([], [Work], [Accepted when], [Done?]),
+    [M0], [Done for the bounds of @tla (`docs/tla/check.sh`). Run the module of @tla through SANY and TLC again whenever it changes.], [The invariants of @thm-once hold. Fix the spec first if not.], [Yes],
+    [M1], [Extract `nabla-sim`. No behavior changes.], [All existing tests pass. `cargo tree -p nabla-sim` has no egui, wgpu or cpal. It builds for WASM.], [No],
+    [M2], [World version 2 (tick rate, arena, allowed ships), `Command`, $Sanitize$, $Wall$, $Grant$. Fix the NaN of @steering.], [@lem-total and @lem-grant as property tests over arbitrary bit patterns. @lem-arena against adversarial pilots.], [No],
+    [M3], [`nabla-net` and a seeded simulated network with delay, jitter, loss, reordering, duplication, and hostile clients.], [@thm-once, @thm-contain and @thm-exact as assertions in the simulator, over $10^6$ ticks of seeds. @thm-margin: margins settle as predicted. Speeds in worlds with bodies measured, where @lem-arena gives no bound.], [No],
+    [M4], [`nabla-server`, and a headless native bot client.], [16 bots for 10 minutes over loopback with impaired links: no assertion fires, $p_99$ tick time under $h$, bandwidth as in @bandwidth. A 17th `Join` gets `Full`.], [No],
+    [M5], [Native client: lobby screen, prediction, reconciliation, smoothing, interpolation, remote plumes, autopilots.], [Two pilots with different ships fly in one world at 100 ms RTT. In vacuum with no lost changes, corrections are exactly zero (@thm-exact). Elsewhere they match @tab-replay. An autopilot arrives while another pilot flies by hand.], [No],
+    [M6], [Web client, certificates, `RUSTFLAGS`.], [A browser and a native pilot share a world, in Chrome, Firefox and Safari, against a server that has only `serverCertificateHashes` to offer. Repeat @tab-replay native against WASM, and @tab-autopilot in WASM. A hidden tab behaves as specified.], [No],
+    [M7], [Tuning: $q$, $K$, $mu^*$, the ranges and caps, per-connection rate limits, metrics.], [@bandwidth met at $N = 16$. Burst-loss behavior measured against @loss. Idle frames measured against @prop-idle on a real 60 Hz display.], [No],
+    [M8], [*Phase B.* A shared Rapier world, extrapolation into the own frame, the coupling graph, and contact smoothing. Rework @thm-contain and the module of @tla.], [Corrections in contact are measured and judged acceptable by playing. Worst-case bound of @prop-zoh holds in the simulator.], [No],
   ),
   caption: [The milestones, in order. M3 can be done without any socket, and most of the risk is settled by then.],
 )

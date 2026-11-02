@@ -1,8 +1,8 @@
 // The thruster sounds' AudioWorkletProcessor: plays nabla_synth.wasm (the `nabla-synth`
 // crate, built alone) on the browser's audio rendering thread, so that slow frames on the
 // page's main thread cannot starve the audio. The app posts the controls once per frame, as
-// [thrust, torque, ion, ion_gain, rcs_gain, master_gain]; between messages the synthesizer
-// keeps the last ones. See src/sound/web.rs and docs/audio_worklet.typ.
+// [thrust, torque, ion_gain, rcs_gain, master_gain]; between messages the synthesizer keeps
+// the last ones. See src/sound/web.rs and docs/audio_worklet.typ.
 
 const QUANTUM = 128; // the most frames nabla_synth renders at once
 

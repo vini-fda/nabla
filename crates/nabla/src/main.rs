@@ -25,12 +25,15 @@ fn app_icon() -> egui::IconData {
 // When compiling natively:
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result {
-    env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
+    // Log to stderr. Say what with `RUST_LOG`, as in `RUST_LOG=nabla=trace`: see `span.rs`.
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn,nabla=info"))
+        .init();
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1400.0, 850.0])
-            .with_min_inner_size([700.0, 450.0])
+            .with_min_inner_size([700.0, 600.0])
+            .with_maximized(true)
             .with_title("Nabla")
             .with_icon(app_icon()),
         renderer: eframe::Renderer::Wgpu,
@@ -48,13 +51,27 @@ fn main() -> eframe::Result {
     )
 }
 
+/// What to log, as the page's address says, as in `?log=trace`: see `span.rs`.
+#[cfg(target_arch = "wasm32")]
+fn web_log_level() -> log::LevelFilter {
+    web_sys::window()
+        .and_then(|window| window.location().search().ok())
+        .and_then(|query| {
+            query
+                .trim_start_matches('?')
+                .split('&')
+                .find_map(|pair| pair.strip_prefix("log=")?.parse().ok())
+        })
+        .unwrap_or(log::LevelFilter::Info)
+}
+
 // When compiling to web using trunk:
 #[cfg(target_arch = "wasm32")]
 fn main() {
     use eframe::wasm_bindgen::JsCast as _;
 
     // Redirect `log` message to `console.log` and friends:
-    eframe::WebLogger::init(log::LevelFilter::Debug).ok();
+    eframe::WebLogger::init(web_log_level()).ok();
 
     let web_options = eframe::WebOptions {
         // WebGPU where the browser has it, else WebGL 2 (egui-wgpu's default setup).

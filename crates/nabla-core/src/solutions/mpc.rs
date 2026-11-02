@@ -998,6 +998,20 @@ impl Solution {
 }
 
 impl Controller for Solution {
+    fn prediction(&self, state: &State, steps: usize) -> Vec<State> {
+        if !self.valid || self.head >= self.len {
+            return Vec::new();
+        }
+        let mut states = vec![*state];
+        let mut state = *state;
+        // Display the current plan, without running the optimizer or consuming any controls.
+        for u in self.plan[self.head..self.len].iter().take(steps.min(500)) {
+            state = step(&self.task.params, &state, u);
+            states.push(state);
+        }
+        states
+    }
+
     fn new(task: &Task) -> Self {
         Solution::with_gains(task, Gains::DEFAULT)
     }

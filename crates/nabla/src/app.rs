@@ -3,25 +3,36 @@
 //! the control policies.
 
 use egui_plot::{AxisHints, GridInput, GridMark, Legend, Line, Plot, PlotPoint, VLine};
+use log::Level;
 use nabla_core::State;
 use nabla_core::problem::{Case, Outcome};
 use nabla_core::solutions::{SOLUTIONS, StoredSolution};
 use nabla_core::suite;
 
+use web_time::Instant;
+
 use crate::camera::{Camera, Vec3};
 use crate::canvas_buttons::{self, Button};
-use crate::controller_view;
+use crate::controller_guide;
 use crate::formula::{self, Formula};
-use crate::game::{self, Aim, Game, Input, Steering};
+use crate::game::{self, Aim, Game, Input, Objective, Steering};
 use crate::gamepad::{self, Gamepads};
 use crate::gizmo::ViewGizmo;
 use crate::grid::{GridStyle, draw_grid};
 use crate::keys;
+use crate::notifications::Notifications;
 use crate::plume::Plume;
 use crate::replay::{Replay, Series};
 use crate::ship3d::{self, DepthMap, SHIP_GLB, ShipModel, ShipRenderer};
 use crate::sound::Sound;
+use crate::span::span;
 use crate::theme::{self, icons, palette};
+use crate::version::build_version;
+
+mod orbits;
+mod title;
+mod worlds;
+use title::{Screen, TitlePage};
 
 const TRIANGLE_STROKE_WIDTH: f32 = 2.0;
 
@@ -35,25 +46,31 @@ const Y_LABEL_SPACING: (f32, f32) = (12.0, 45.0);
 const CONTROLS_PANEL: SidePanel = SidePanel {
     dock: Dock::Left,
     id: "config_panel",
-    title: "Settings",
+    titles: &["Settings"],
     // Narrowest the contents can be dragged to; below this their rows would be cut off.
     min_width: 320.0,
     default_width: 320.0,
 };
-const PLOTS_PANEL: SidePanel = SidePanel {
+const RIGHT_PANEL: SidePanel = SidePanel {
     dock: Dock::Right,
     id: "plots_panel",
-    title: "State plots",
+    // In the order of `RightView::ALL`.
+    titles: &["State plots", "Objective"],
     min_width: 220.0,
     default_width: 300.0,
 };
 /// Width of the vertical title bar along a side panel's window edge: all that is left of the
 /// panel when it is collapsed.
 const TITLE_BAR_WIDTH: f32 = 30.0;
+/// Width of the strip along the window edge that a collapsed panel keeps once its title bar
+/// has slid out: its triangle, and where the pointer brings the bar back.
+const TITLE_BAR_TUCKED_WIDTH: f32 = 16.0;
+/// A side panel's unselected tabs in its title bar, against the selected one's white.
+const TITLE_BAR_TAB_COLOR: egui::Color32 = palette::OVERLAY0;
 /// Seconds the pointer must stay away from a collapsed panel's title bar before the bar
 /// slides out of the window, leaving only its triangle.
 const TITLE_BAR_HIDE_DELAY: f64 = 0.5;
-/// How close (in points) the pointer must come to a hidden title bar to bring it back.
+/// How close (in points) the pointer must stay to a collapsed panel's title bar to keep it in.
 const TITLE_BAR_REVEAL_MARGIN: f32 = 16.0;
 /// Seconds the title bar takes to slide out of or back into the window.
 const TITLE_BAR_SLIDE_TIME: f32 = 0.3;
@@ -68,7 +85,6 @@ const THRUST_COLOR: egui::Color32 = palette::RED;
 const TORQUE_COLOR: egui::Color32 = palette::SAPPHIRE;
 const CURSOR_COLOR: egui::Color32 = palette::OVERLAY1;
 
-const DEFAULT_CIRCUMRADIUS: f32 = 1.0;
 const DEFAULT_ALPHA: f32 = 0.3;
 
 // HUD-style vector arrows: fixed pixel-per-magnitude scales so arrow length
@@ -109,6 +125,14 @@ const GOAL_RADIUS_PX: f32 = 10.0;
 const GOAL_LABEL_OFFSET_PX: f32 = 12.0;
 const START_RADIUS_PX: f32 = 5.0;
 
+/// Size of the icon that shows whether a controller is connected, in points.
+const CONTROLLER_STATUS_SIZE: f32 = 20.0;
+
+/// A frame longer than this, in seconds, is logged as slow: the flight falls behind real time, as
+/// the game simulates no more than this at once.
+const SLOW_FRAME: f64 = 0.1;
+/// Slow frames are logged at most once this often, in seconds, not to add to the slowness.
+const SLOW_FRAME_LOG_PERIOD: f64 = 1.0;
 /// Below this width (in points), e.g. on phones, the panels are shown one at a time.
 const COMPACT_WIDTH: f32 = 800.0;
 
@@ -122,6 +146,14 @@ enum CanvasView {
     Debug,
 }
 
+/// What the User inputs panel shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HelpTab {
+    /// The keyboard and mouse, or the touch screen.
+    Device,
+    Controller,
+}
+
 /// What the compact (narrow-screen) layout shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum CompactView {
@@ -129,6 +161,19 @@ enum CompactView {
     Canvas,
     Controls,
     Plots,
+    Objective,
+}
+
+/// What the right panel of the wide layout shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum RightView {
+    #[default]
+    Plots,
+    Objective,
+}
+
+impl RightView {
+    const ALL: [Self; 2] = [Self::Plots, Self::Objective];
 }
 
 /// Fraction of the canvas left empty around the ship and the goal by "Fit view".
@@ -138,7 +183,7 @@ const FIT_MARGIN: f32 = 0.15;
 const H_MIN: f64 = 0.01;
 const H_MAX: f64 = 0.1;
 
-/// Case selected at startup.
+/// Case listed first in the presets.
 const DEFAULT_CASE: &str = "agile";
 
 /// A test case and the suite it comes from.
@@ -196,6 +241,11 @@ impl Plots {
 }
 
 pub struct ViewerApp {
+    world_setup: crate::world::World,
+    /// `world_setup` came from a file, rather than from a [`Preset`](crate::world::Preset).
+    custom_world: bool,
+    world_file: Option<std::sync::mpsc::Receiver<crate::world_io::FileResult>>,
+    world_error: Option<String>,
     circumradius: f32,
     alpha: f32,
     camera: Camera,
@@ -207,6 +257,10 @@ pub struct ViewerApp {
     show_velocity: bool,
     show_acceleration: bool,
     show_path: bool,
+    show_prediction: bool,
+    prediction: orbits::Forecast,
+    /// Overlay the circular collision shapes in either render mode.
+    show_collision_meshes: bool,
     /// Draw the background grid.
     show_grid: bool,
     /// Show the thrusters' plumes in the 3D view.
@@ -214,18 +268,23 @@ pub struct ViewerApp {
     follow_ship: bool,
     /// Show the keyboard and mouse help over the canvas.
     show_help: bool,
+    /// When the last slow frame was logged, in the UI's time.
+    slow_frame_logged_at: f64,
     /// The flight on the selected case.
     game: Game,
     /// What letting go of the turn does: kept from flight to flight.
     steering: Steering,
-    /// The autopilot flies the ship, with [`Self::policy`]: kept from flight to flight.
-    autopilot: bool,
+    /// Title-screen preference, not the active flight's controller state.
+    autopilot_on_start: bool,
+    orbit_controls: orbits::Controls,
     /// The control policy the autopilot flies with.
     policy: &'static StoredSolution,
     /// How the policy does on the selected case, flown from its start, for comparison.
     policy_outcome: Outcome,
     /// Why the autopilot last switched itself off, if it failed.
     autopilot_fault: Option<String>,
+    /// What just happened, over the canvas.
+    notifications: Notifications,
     /// Pointing mode: while the camera follows the ship, the mouse or a finger held on the
     /// canvas turns the ship toward it, and thrusts once it faces it.
     pointing: bool,
@@ -237,8 +296,20 @@ pub struct ViewerApp {
     /// The canvas's areas that other widgets take (the buttons, the gizmo), as last drawn: a
     /// touch there never points.
     reserved: Vec<egui::Rect>,
-    /// Name of the selected test case.
-    case: Option<String>,
+    /// Which screen shows: the title screen, or the flight.
+    screen: Screen,
+    /// What the title screen shows below its buttons.
+    title_page: TitlePage,
+    /// The tab of the User inputs panel the player picked, if any.
+    help_tab: Option<HelpTab>,
+    /// The scale the title screen is drawn at to fit the window, part of egui's zoom factor. 1
+    /// during the flight.
+    title_fit: f32,
+    /// The height of what's below the title on the title screen, in points, last time it showed.
+    title_rest: f32,
+    /// The starting conditions picked on the title screen: a preset's, named after it, or the
+    /// player's own.
+    setup: Case,
     /// Sampling period the selected case runs with, in place of its own.
     h: f64,
     /// Show the policy's source code window.
@@ -247,13 +318,14 @@ pub struct ViewerApp {
     sound: Sound,
     /// Game controllers, read every frame.
     gamepads: Gamepads,
-    /// Show the controller's wireframe, lit by its state, under the flight.
-    show_controller: bool,
+    /// Show what each control does in the controller's tab of the User inputs panel.
+    show_guides: bool,
     cases: Vec<CaseEntry>,
     fit_pending: bool,
-    /// Wide layout: show the left (controls) and right (plots) side panels.
+    /// Wide layout: show the left (controls) and right (plots or objective) side panels.
     show_controls: bool,
     show_plots: bool,
+    right_view: RightView,
     compact_view: CompactView,
     view: CanvasView,
     /// Draws the 3D ship and its plumes; `None` where OpenGL can't (then the canvas shows the
@@ -263,10 +335,16 @@ pub struct ViewerApp {
 
 impl Default for ViewerApp {
     fn default() -> Self {
-        let case = suite::find(DEFAULT_CASE).expect("the default case exists");
+        let world = crate::world::Preset::default().world();
+        let case = world.case();
         let policy = &SOLUTIONS[0];
         Self {
-            circumradius: DEFAULT_CIRCUMRADIUS,
+            circumradius: world.players[0].radius,
+            h: case.task.params.h,
+            world_setup: world,
+            custom_world: false,
+            world_file: None,
+            world_error: None,
             alpha: DEFAULT_ALPHA,
             camera: Camera::default(),
             gizmo: ViewGizmo::default(),
@@ -274,31 +352,42 @@ impl Default for ViewerApp {
             drag_orbits: false,
             show_velocity: true,
             show_acceleration: true,
-            show_path: true,
+            show_path: false,
+            show_prediction: true,
+            prediction: orbits::Forecast::default(),
+            show_collision_meshes: false,
             show_grid: true,
             show_plume: true,
             follow_ship: true,
             show_help: false,
+            slow_frame_logged_at: f64::NEG_INFINITY,
             policy_outcome: (policy.simulate)(&case).outcome,
-            game: Game::new(case),
+            game: Game::new(case.clone()),
             steering: Steering::default(),
-            autopilot: false,
+            autopilot_on_start: false,
+            orbit_controls: orbits::Controls::default(),
             policy,
             autopilot_fault: None,
+            notifications: Notifications::default(),
             pointing: false,
             aim_cone: DEFAULT_AIM_CONE,
             aiming: None,
             reserved: Vec::new(),
-            case: Some(DEFAULT_CASE.to_owned()),
-            h: suite::H,
+            screen: Screen::default(),
+            title_page: TitlePage::default(),
+            help_tab: None,
+            title_fit: 1.0,
+            title_rest: 0.0,
+            setup: case,
             show_code: false,
             sound: Sound::default(),
             gamepads: Gamepads::default(),
-            show_controller: false,
+            show_guides: true,
             cases: all_cases(),
             fit_pending: true,
             show_controls: true,
             show_plots: true,
+            right_view: RightView::default(),
             compact_view: CompactView::default(),
             view: CanvasView::default(),
             ship3d: None,
@@ -309,6 +398,8 @@ impl Default for ViewerApp {
 impl ViewerApp {
     /// Called once before the first frame: a flight on the default case.
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        log::info!("Nabla {}", build_version!());
+        let _span = span!(Level::Debug, "app setup");
         theme::apply(&cc.egui_ctx);
         egui_extras::install_image_loaders(&cc.egui_ctx);
 
@@ -317,6 +408,7 @@ impl ViewerApp {
             .as_ref()
             .ok_or_else(|| "not running on wgpu".to_owned())
             .and_then(|render_state| {
+                let _span = span!(Level::Debug, "3D view setup");
                 let model = ShipModel::load(SHIP_GLB)?;
                 // egui's render pass, into which the ship is drawn: see `MULTISAMPLING`.
                 let samples = if cfg!(target_arch = "wasm32") {
@@ -325,6 +417,7 @@ impl ViewerApp {
                     u32::from(crate::MULTISAMPLING)
                 };
                 let depth = eframe::egui_wgpu::depth_format_from_bits(crate::DEPTH_BUFFER, 0);
+                crate::planets::init(render_state, samples, depth);
                 Ok((
                     ShipRenderer::new(render_state, &model, samples, depth),
                     Plume::new(render_state, samples, depth),
@@ -338,24 +431,18 @@ impl ViewerApp {
         }
     }
 
-    /// The selected case, with the sampling period set by the slider.
-    fn selected_case(&self) -> Option<Case> {
-        let name = self.case.as_deref()?;
-        let mut case = self
-            .cases
-            .iter()
-            .map(|e| &e.case)
-            .find(|c| c.name == name)?
-            .clone();
+    /// The starting conditions, with the sampling period set by the slider.
+    fn selected_case(&self) -> Case {
+        let mut case = self.setup.clone();
         case.task.params.h = self.h;
-        Some(case)
+        case
     }
 
-    /// Score the policy on the selected case, for comparison with the flight.
+    /// Score the policy on the starting conditions, for comparison with the flight.
     fn score_policy(&mut self) {
-        if let Some(case) = self.selected_case() {
-            self.policy_outcome = (self.policy.simulate)(&case).outcome;
-        }
+        let _span = span!(Level::Debug, "scoring {}", self.policy.name);
+        self.policy_outcome = (self.policy.simulate)(&self.selected_case()).outcome;
+        log::debug!("{}: {:?}", self.policy.name, self.policy_outcome);
     }
 
     /// The flight, and its present as `(k, tau)`.
@@ -370,26 +457,70 @@ impl ViewerApp {
         (k, offset, replay.state_at(k, offset))
     }
 
-    /// Start a flight on the selected case, from its start, following the ship.
+    /// Start a flight on the starting conditions, from their start, following the ship.
     fn start_game(&mut self) {
-        let Some(case) = self.selected_case() else {
-            return;
+        let _span = span!(Level::Debug, "starting a flight");
+        let restarting = self.screen == Screen::Flight;
+        let previous = self.game.objective();
+        let engage = if restarting {
+            previous == Objective::ReachB && self.assisted()
+        } else {
+            self.autopilot_on_start
         };
-        self.game = Game::new(case);
+        self.game = Game::in_world(self.selected_case(), self.selected_world());
+        log::info!("Flight started in {}", self.game.world.name);
+        self.reset_orbit_controls();
+        if restarting && previous == Objective::ReachB {
+            self.choose_objective(Objective::ReachB);
+        }
+        if engage {
+            self.engage_objective();
+        }
+        self.screen = Screen::Flight;
         self.follow_ship = true;
         self.fit_pending = true;
         self.compact_view = CompactView::Canvas;
     }
 
-    /// The control policy the autopilot flies with while engaged.
-    fn autopilot(&self) -> Option<&'static StoredSolution> {
-        self.autopilot.then_some(self.policy)
+    /// The same switch serves every objective; switching off preserves the objective.
+    fn toggle_autopilot(&mut self) {
+        if self.assisted() {
+            self.manual_flight();
+        } else {
+            self.engage_objective();
+        }
     }
 
-    /// Engage the autopilot, or take the ship back from it.
-    fn toggle_autopilot(&mut self) {
-        self.autopilot = !self.autopilot;
-        self.autopilot_fault = None;
+    /// Tell of the landing, at sample `n`: by the autopilot if it flew all the way.
+    fn notify_landing(&mut self, n: usize) {
+        let time = self.game.replay.time(n);
+        let text = if self.game.autopiloted() {
+            format!("The autopilot landed at B in {n} steps ({time:.2} s)")
+        } else {
+            format!("Landed at B in {n} steps ({time:.2} s)")
+        };
+        self.notifications.post(text, palette::GREEN);
+    }
+
+    /// Pause the flight, or resume it.
+    fn toggle_pause(&mut self) {
+        self.game.paused = !self.game.paused;
+        let text = if self.game.paused {
+            "Paused"
+        } else {
+            "Resumed"
+        };
+        self.notifications.post(text, palette::WHITE);
+    }
+
+    /// Turn the stability assist on or off.
+    fn toggle_steering(&mut self) {
+        self.steering = toggled(self.steering);
+        let text = match self.steering {
+            Steering::Sas => "Stability assist on",
+            Steering::Raw => "Stability assist off",
+        };
+        self.notifications.post(text, palette::WHITE);
     }
 
     /// The flight's controls held on the keyboard: Space (or Up) thrusts, Left and Right turn,
@@ -404,7 +535,7 @@ impl ViewerApp {
             let left = f64::from(u8::from(held(egui::Key::ArrowLeft)));
             let right = f64::from(u8::from(held(egui::Key::ArrowRight)));
             Input {
-                thrust: held(egui::Key::Space) || held(egui::Key::ArrowUp),
+                thrust: f64::from(u8::from(held(egui::Key::Space) || held(egui::Key::ArrowUp))),
                 turn: left - right,
                 fine: i.modifiers.shift,
                 aim: None,
@@ -412,11 +543,10 @@ impl ViewerApp {
         })
     }
 
-    /// The controller's switches, on a press: Triangle turns the stability assist on or off
-    /// (as T), Square the autopilot (as A), Options pauses or resumes (as P), and Create shows
-    /// or hides the controller view.
+    /// The controller's objective/preview/engage/manual commands. Options pauses and Create
+    /// shows or hides its guide.
     fn handle_controller_buttons(&mut self) {
-        let Some(pad) = self.gamepads.state() else {
+        let Some(pad) = self.gamepads.state().cloned() else {
             return;
         };
         let pressed = |button| pad.just_pressed(button);
@@ -427,16 +557,34 @@ impl ViewerApp {
             pressed(gamepad::Button::Select),
         );
         if sas {
-            self.steering = toggled(self.steering);
+            self.toggle_steering();
         }
-        if autopilot {
-            self.toggle_autopilot();
+        let orbit_handled = self.orbit_buttons(&pad);
+        if autopilot && !orbit_handled {
+            self.engage_objective();
         }
         if pause {
-            self.game.paused = !self.game.paused;
+            self.toggle_pause();
         }
         if view {
-            self.show_controller = !self.show_controller;
+            self.toggle_controller_guide();
+        }
+    }
+
+    /// Whether a frame that `took` seconds, at the UI's time `now`, is one to log as slow.
+    fn slow_frame_to_log(&mut self, took: f64, now: f64) -> bool {
+        let log = took > SLOW_FRAME && now - self.slow_frame_logged_at >= SLOW_FRAME_LOG_PERIOD;
+        if log {
+            self.slow_frame_logged_at = now;
+        }
+        log
+    }
+
+    /// Shows or hides the User inputs window, opening on the controller's tab.
+    fn toggle_controller_guide(&mut self) {
+        self.show_help = !self.show_help;
+        if self.show_help {
+            self.help_tab = Some(HelpTab::Controller);
         }
     }
 
@@ -453,22 +601,66 @@ impl ViewerApp {
             self.follow_ship = !self.follow_ship;
         }
         if plain(egui::Key::P) {
-            self.game.paused = !self.game.paused;
+            self.toggle_pause();
         }
         if plain(egui::Key::R) {
             self.start_game();
         }
         if plain(egui::Key::T) {
-            self.steering = toggled(self.steering);
+            self.toggle_steering();
         }
         if plain(egui::Key::A) {
             self.toggle_autopilot();
         }
     }
 
-    /// The autopilot: the policy it flies with, its switch, and its source.
+    /// The autopilot: the policy it flies with, its switch, its source, and its sampling period.
     fn autopilot_ui(&mut self, ui: &mut egui::Ui) {
         ui.heading("Autopilot");
+        if self.game.objective() == Objective::ReachB {
+            self.policy_ui(ui);
+        } else {
+            ui.label("Circular-orbit capture and hold");
+        }
+        ui.horizontal(|ui| {
+            let mut engaged = self.assisted();
+            let label = if engaged { "Engaged" } else { "Engage" };
+            let toggle = ui.toggle_value(&mut engaged, label).on_hover_ui(|ui| {
+                keys::tooltip(
+                    ui,
+                    "Let the policy fly the ship, from wherever it is. Switch it off to take over",
+                    &[keys::A],
+                );
+            });
+            if toggle.changed() {
+                self.toggle_autopilot();
+            }
+            if self.game.objective() == Objective::ReachB {
+                ui.checkbox(&mut self.show_code, "Show code");
+            }
+        });
+        if let Some(fault) = &self.autopilot_fault {
+            ui.colored_label(palette::RED, format!("Switched off: {fault}"));
+        }
+        let h = ui
+            .horizontal(|ui| {
+                let font = egui::TextStyle::Body.resolve(ui.style());
+                formula::H.ui(ui, &font).on_hover_text("sampling period");
+                ui.add(egui::Slider::new(&mut self.h, H_MIN..=H_MAX).suffix(" s"))
+            })
+            .inner;
+        if h.double_clicked() {
+            self.h = suite::H;
+        }
+        h.on_hover_text("Sampling period. Double-click to reset. Changing it restarts the flight.");
+        if self.game.replay.h() != self.h {
+            self.score_policy();
+            self.start_game();
+        }
+    }
+
+    /// The policy the autopilot flies with, to pick.
+    fn policy_ui(&mut self, ui: &mut egui::Ui) {
         let mut picked = None;
         ui.horizontal(|ui| {
             ui.label("Policy:");
@@ -494,67 +686,9 @@ impl ViewerApp {
         if let Some(solution) = picked {
             self.policy = solution;
             self.score_policy();
-        }
-        ui.horizontal(|ui| {
-            let mut engaged = self.autopilot;
-            let label = if engaged { "Engaged" } else { "Engage" };
-            let toggle = ui.toggle_value(&mut engaged, label).on_hover_ui(|ui| {
-                keys::tooltip(
-                    ui,
-                    "Let the policy fly the ship, from wherever it is. Switch it off to take over",
-                    &[keys::A],
-                );
-            });
-            if toggle.changed() {
-                self.toggle_autopilot();
+            if self.assisted() && self.game.objective() == Objective::ReachB {
+                self.engage_objective();
             }
-            ui.checkbox(&mut self.show_code, "Show code");
-        });
-        if let Some(fault) = &self.autopilot_fault {
-            ui.colored_label(palette::RED, format!("Switched off: {fault}"));
-        }
-    }
-
-    fn case_ui(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Problem input");
-        let old_case = self.case.clone();
-        ui.horizontal(|ui| {
-            ui.label("Case:");
-            egui::ComboBox::from_id_salt("case")
-                .selected_text(egui::RichText::new(self.case.as_deref().unwrap_or("-")).monospace())
-                .height(400.0)
-                .show_ui(ui, |ui| {
-                    for suite_name in ["standard", "holdout"] {
-                        ui.label(egui::RichText::new(suite_name).monospace().strong());
-                        for entry in self.cases.iter().filter(|e| e.suite == suite_name) {
-                            let name = &entry.case.name;
-                            ui.selectable_value(
-                                &mut self.case,
-                                Some(name.clone()),
-                                egui::RichText::new(name).monospace(),
-                            );
-                        }
-                    }
-                });
-        });
-        if self.case != old_case {
-            self.score_policy();
-            self.start_game();
-        }
-        let h = ui
-            .horizontal(|ui| {
-                let font = egui::TextStyle::Body.resolve(ui.style());
-                formula::H.ui(ui, &font).on_hover_text("sampling period");
-                ui.add(egui::Slider::new(&mut self.h, H_MIN..=H_MAX).suffix(" s"))
-            })
-            .inner;
-        if h.double_clicked() {
-            self.h = suite::H;
-        }
-        h.on_hover_text("Sampling period. Double-click to reset. Changing it restarts the flight.");
-        if self.game.replay.h() != self.h {
-            self.score_policy();
-            self.start_game();
         }
     }
 
@@ -582,10 +716,9 @@ impl ViewerApp {
         self.show_code = open;
     }
 
+    /// The flight's case: the ship, its start and its goal, and how the policy does on it.
     fn case_info_ui(&self, ui: &mut egui::Ui) {
-        let Some(case) = self.selected_case() else {
-            return;
-        };
+        let case = &self.game.replay.case;
         let task = &case.task;
         let p = &task.params;
         let s = &case.start;
@@ -632,12 +765,17 @@ impl ViewerApp {
                 "initial angular velocity",
                 format!("{:.2} rad/s", s.omega),
             );
-            row(
-                &formula::GOAL,
-                "goal",
-                format!("({:.2}, {:.2}) m", task.goal.x, task.goal.y),
-            );
+            if self.game.objective() == Objective::ReachB {
+                row(
+                    &formula::GOAL,
+                    "goal",
+                    format!("({:.2}, {:.2}) m", task.goal.x, task.goal.y),
+                );
+            }
         });
+        if self.game.objective() != Objective::ReachB {
+            return;
+        }
         let name = self.policy.name;
         let outcome = match self.policy_outcome {
             Outcome::Reached(n) => {
@@ -697,11 +835,13 @@ impl ViewerApp {
                 "angular velocity",
                 format!("{:.3} rad/s", s.omega),
             );
-            row(
-                &formula::DISTANCE,
-                "distance to the goal B",
-                format!("{:.4} m", (s.x - goal.x).hypot(s.y - goal.y)),
-            );
+            if self.game.objective() == Objective::ReachB {
+                row(
+                    &formula::DISTANCE,
+                    "distance to the goal B",
+                    format!("{:.4} m", (s.x - goal.x).hypot(s.y - goal.y)),
+                );
+            }
             row(
                 &formula::SPEED,
                 "speed",
@@ -715,7 +855,8 @@ impl ViewerApp {
         });
     }
 
-    fn display_ui(&mut self, ui: &mut egui::Ui) {
+    /// The display options, and `in_flight`, the buttons that fit or reset the camera.
+    fn display_ui(&mut self, ui: &mut egui::Ui, in_flight: bool) {
         ui.heading("Display options");
         ui.add_enabled_ui(self.ship3d.is_some(), |ui| {
             ui.horizontal(|ui| {
@@ -724,18 +865,24 @@ impl ViewerApp {
                     .on_hover_text("Flat ship with velocity and acceleration arrows");
             });
         });
-        ui.add(
+        ui.add_enabled(
+            !in_flight,
             egui::Slider::new(&mut self.circumradius, 0.05..=10.0)
                 .logarithmic(true)
                 .text("ship size (world units)"),
-        );
+        )
+        .on_hover_text("Ship size and collision radius; set before starting a flight");
         ui.checkbox(&mut self.show_grid, "Grid");
         ui.checkbox(&mut self.show_path, "Path");
-        ui.checkbox(&mut self.show_controller, "Controller view")
-            .on_hover_text(
-                "A wireframe of the game controller under the flight, lit as you use it. \
-                 The controller's Create button shows or hides it too",
-            );
+        if ui
+            .checkbox(&mut self.show_prediction, "Controller prediction (red)")
+            .on_hover_text("Upcoming motion predicted by the controller, up to 5 seconds ahead")
+            .changed()
+        {
+            self.prediction = orbits::Forecast::default();
+        }
+        ui.checkbox(&mut self.show_collision_meshes, "Collision meshes")
+            .on_hover_text("Orange outlines of the ship, planet and moon collision shapes");
         ui.add_enabled_ui(!self.debug_view(), |ui| {
             ui.checkbox(&mut self.show_plume, "Thruster plumes");
         });
@@ -743,6 +890,9 @@ impl ViewerApp {
             ui.checkbox(&mut self.show_velocity, "Velocity (green)");
             ui.checkbox(&mut self.show_acceleration, "Acceleration (red)");
         });
+        if !in_flight {
+            return;
+        }
         ui.horizontal(|ui| {
             if ui.button("Fit view").clicked() {
                 self.fit_pending = true;
@@ -756,81 +906,41 @@ impl ViewerApp {
 
     /// The user inputs help: touch gestures on a phone or tablet, keyboard and mouse elsewhere.
     /// With a `controller` connected, its controls too.
-    fn user_inputs_ui(ui: &mut egui::Ui, controller: bool) {
+    fn user_inputs_ui(&mut self, ui: &mut egui::Ui, width: f32) {
         let k = keys::Keys::new(ui.ctx());
-        ui.heading("User inputs");
-        if k.touch() {
-            Self::touch_inputs_ui(ui);
-        } else {
-            Self::keyboard_mouse_inputs_ui(ui, k);
+        let shown = self.help_tab();
+        let mut tab = shown;
+        ui.horizontal(|ui| {
+            let device = if k.touch() {
+                "Touch"
+            } else {
+                "Keyboard and mouse"
+            };
+            ui.selectable_value(&mut tab, HelpTab::Device, device);
+            ui.selectable_value(&mut tab, HelpTab::Controller, "Controller");
+        });
+        if tab != shown {
+            self.help_tab = Some(tab);
         }
-        if controller {
-            Self::controller_flight_ui(ui);
+        match tab {
+            HelpTab::Device if k.touch() => Self::touch_inputs_ui(ui),
+            HelpTab::Device => Self::keyboard_mouse_inputs_ui(ui, k),
+            HelpTab::Controller => {
+                controller_guide::ui(ui, width, self.gamepads.state(), &mut self.show_guides);
+            }
         }
     }
 
-    /// The flight's controls on a game controller, named as on a Sony one.
-    fn controller_flight_ui(ui: &mut egui::Ui) {
-        use keys::{Key, caps, joiner};
-
-        input_group(ui, "Controller", |ui| {
-            input_row(
-                ui,
-                |ui| caps(ui, &[Key::Word("left stick")]),
-                |ui| ui.label("Turn, harder the further"),
-            );
-            input_row(
-                ui,
-                |ui| {
-                    caps(ui, &[Key::Word("Cross")]);
-                    joiner(ui, "/");
-                    caps(ui, &[Key::Word("R2")]);
-                },
-                |ui| ui.label("Thrust"),
-            );
-            input_row(
-                ui,
-                |ui| {
-                    caps(ui, &[Key::Word("L2")]);
-                    joiner(ui, "held");
-                },
-                |ui| ui.label(format!("Fine control ({}x power)", game::FINE)),
-            );
-            input_row(
-                ui,
-                |ui| {
-                    caps(ui, &[Key::Word("R1")]);
-                    joiner(ui, "/");
-                    caps(ui, &[Key::Word("L1")]);
-                },
-                |ui| ui.label("Zoom in / out"),
-            );
-            input_row(
-                ui,
-                |ui| caps(ui, &[Key::Word("right stick")]),
-                |ui| ui.label("Aim: turn that way; thrust when facing it"),
-            );
-            input_row(
-                ui,
-                |ui| caps(ui, &[Key::Word("Triangle")]),
-                |ui| ui.label("SAS: hold the heading when not turning"),
-            );
-            input_row(
-                ui,
-                |ui| caps(ui, &[Key::Word("Square")]),
-                |ui| ui.label("Autopilot on / off"),
-            );
-            input_row(
-                ui,
-                |ui| caps(ui, &[Key::Word("Options")]),
-                |ui| ui.label("Pause / resume"),
-            );
-            input_row(
-                ui,
-                |ui| caps(ui, &[Key::Word("Create")]),
-                |ui| ui.label("Show / hide the controller view"),
-            );
-        });
+    /// The tab of the User inputs panel showing: the one last picked, or the controller's while
+    /// one is connected.
+    fn help_tab(&self) -> HelpTab {
+        self.help_tab.unwrap_or_else(|| {
+            if self.gamepads.state().is_some() {
+                HelpTab::Controller
+            } else {
+                HelpTab::Device
+            }
+        })
     }
 
     /// The flight's keys.
@@ -929,7 +1039,7 @@ impl ViewerApp {
             input_row(
                 ui,
                 |ui| gesture(ui, HAND_SWIPE_RIGHT, "drag stick"),
-                |ui| ui.label("Turn, harder the further"),
+                |ui| ui.label("Turn, -100% to +100%"),
             );
             input_row(
                 ui,
@@ -994,54 +1104,52 @@ impl ViewerApp {
     /// autopilot and pointing (with its cone), and the time. `compact`, for narrow screens,
     /// shortens the autopilot's, the cone's and the time's labels so the row fits a phone.
     fn game_bar_ui(&mut self, ui: &mut egui::Ui, compact: bool) {
-        let game = &mut self.game;
-        let (mut restart, mut autopilot) = (false, false);
+        let assisted = self.assisted();
+        let game = &self.game;
+        let (mut pause, mut restart, mut sas, mut autopilot) = (false, false, false, false);
+        let mut home = false;
         ui.horizontal(|ui| {
-            let pause = if game.paused {
+            home = outline_button(ui, icons::outline::HOUSE)
+                .on_hover_text("Back to the title screen")
+                .clicked();
+            let pause_icon = if game.paused {
                 icons::PLAY
             } else {
                 icons::PAUSE
             };
-            if ui
-                .button(pause)
+            pause = ui
+                .button(pause_icon)
                 .on_hover_ui(|ui| keys::tooltip(ui, "Pause / resume", &[keys::P]))
-                .clicked()
-            {
-                game.paused = !game.paused;
-            }
-            let size = egui::TextStyle::Button.resolve(ui.style()).size;
-            let restart_icon = egui::RichText::new(icons::outline::ARROW_CLOCKWISE)
-                .font(icons::outline::font(size));
-            restart = ui
-                .button(restart_icon)
+                .clicked();
+            restart = outline_button(ui, icons::outline::ARROW_CLOCKWISE)
                 .on_hover_ui(|ui| keys::tooltip(ui, "Restart", &[keys::R]))
                 .clicked();
             ui.separator();
-            let mut sas = self.steering == Steering::Sas;
-            let sas_toggle = ui.toggle_value(&mut sas, "SAS").on_hover_ui(|ui| {
-                keys::tooltip(
-                    ui,
-                    "Stability assist: when you stop turning, stop the spin and hold the heading",
-                    &[keys::T],
-                );
-            });
-            if sas_toggle.changed() {
-                self.steering = toggled(self.steering);
-            }
-            let mut engaged = self.autopilot;
+            let mut on = self.steering == Steering::Sas;
+            sas = ui
+                .toggle_value(&mut on, "SAS")
+                .on_hover_ui(|ui| {
+                    keys::tooltip(
+                        ui,
+                        "Stability assist: when you stop turning, stop the spin and hold the \
+                         heading",
+                        &[keys::T],
+                    );
+                })
+                .changed();
+            let mut engaged = assisted;
             let label = if compact { "Auto" } else { "Autopilot" };
             autopilot = ui
                 .toggle_value(&mut engaged, label)
                 .on_hover_ui(|ui| {
                     let action = format!(
-                        "Autopilot: {} flies the ship, from wherever it is. Switch it off to \
-                         take over",
-                        self.policy.name
+                        "Autopilot: {}. Switch it off to take over",
+                        self.game.objective().label()
                     );
                     keys::tooltip(ui, &action, &[keys::A]);
                 })
                 .changed();
-            ui.add_enabled_ui(self.follow_ship && !self.autopilot, |ui| {
+            ui.add_enabled_ui(self.follow_ship && !assisted, |ui| {
                 ui.toggle_value(&mut self.pointing, "Point")
                     .on_hover_text(
                         "Hold the mouse or a finger on the canvas: the ship turns toward it, \
@@ -1073,9 +1181,25 @@ impl ViewerApp {
                 format!("t = {:.2} s, k = {k}", game.time())
             };
             ui.monospace(time);
+            // A narrow bar has no room left for it; the banners still tell.
+            if !compact {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    controller_status_ui(ui, &self.gamepads);
+                });
+            }
         });
+        if home {
+            self.screen = Screen::Title;
+            self.notifications.clear();
+        }
+        if pause {
+            self.toggle_pause();
+        }
         if restart {
             self.start_game();
+        }
+        if sas {
+            self.toggle_steering();
         }
         if autopilot {
             self.toggle_autopilot();
@@ -1084,6 +1208,7 @@ impl ViewerApp {
 
     /// The plots of the flight so far, which grows every frame.
     fn plots_ui(&self, ui: &mut egui::Ui) {
+        let _span = span!(Level::Trace, "plots");
         let plots = Plots::new(&self.game.replay);
         let t = self.game.time();
         ui.heading("State plots");
@@ -1146,6 +1271,7 @@ impl ViewerApp {
     /// side panel's floating triangle: the gizmo and the buttons in the top right corner
     /// move left of it.
     fn canvas_ui(&mut self, ui: &mut egui::Ui, inset: f32) {
+        let _span = span!(Level::Trace, "canvas");
         let (rect, response) =
             ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
         // Where the gizmo and the buttons go, in its top right corner.
@@ -1218,7 +1344,7 @@ impl ViewerApp {
                 Button::toggle(
                     icons::outline::SEAL_QUESTION,
                     &mut self.show_help,
-                    "Keyboard and mouse help",
+                    "User inputs: how to fly. The controller's Create button shows it too",
                 )
                 .color(palette::YELLOW),
             ],
@@ -1227,7 +1353,7 @@ impl ViewerApp {
             .chain(ViewGizmo::area(corner).filter(|_| self.show_gizmo))
             .collect();
         if self.show_help {
-            self.help_ui(ui, rect, buttons);
+            self.help_window(ui.ctx(), rect);
         }
     }
 
@@ -1283,13 +1409,13 @@ impl ViewerApp {
     /// ship, without which a still pointer would not hold a direction, and while the player
     /// flies rather than the autopilot.
     fn pointing_now(&self) -> bool {
-        self.pointing && self.follow_ship && !self.autopilot
+        self.pointing && self.follow_ship && !self.assisted()
     }
 
     /// Whether the on-screen controls show: on a touch screen, unless the player points, when
     /// the whole canvas points, or the autopilot flies.
     fn pads_visible(&self, touch_device: bool) -> bool {
-        self.game.pads.visible(touch_device) && !self.pointing_now() && !self.autopilot
+        self.game.pads.visible(touch_device) && !self.pointing_now() && !self.assisted()
     }
 
     /// Where the player points, in pointing mode: the mouse pressed on the canvas, or on a
@@ -1300,7 +1426,7 @@ impl ViewerApp {
     /// where it points on screen: a direction, which needs neither Point nor the camera
     /// following the ship. Its aim is drawn at a fixed distance from the ship.
     fn read_aim(&self, response: &egui::Response, rect: egui::Rect) -> Option<(egui::Pos2, f64)> {
-        if self.autopilot {
+        if self.assisted() {
             return None;
         }
         let game = &self.game;
@@ -1331,41 +1457,29 @@ impl ViewerApp {
         Some((target, f64::from(offset.y).atan2(f64::from(offset.x))))
     }
 
-    /// The keyboard and mouse help, over the `canvas`, left of its `buttons` and level with
-    /// their top. Where the canvas is too small for it, it shrinks, keeping its proportions, so
-    /// it always shows whole. Escape closes it, as does its button.
-    fn help_ui(&mut self, ui: &egui::Ui, canvas: egui::Rect, buttons: egui::Rect) {
-        const GAP: f32 = 8.0;
-        let controller = self.gamepads.state().is_some();
-        // Laid out at its full size at the layer's origin, unclipped, then scaled and moved into
-        // place by the layer's transform, which applies to its input too.
-        let area = egui::Area::new(ui.scope_id().with("help"))
-            .order(egui::Order::Foreground)
-            .fixed_pos(egui::Pos2::ZERO)
-            .constrain_to(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::Vec2::splat(1.0e4),
+    /// The user inputs help, in a window that starts in the bottom right corner of the `canvas`,
+    /// no larger than it. Escape closes it, as do its close button and the canvas's button.
+    fn help_window(&mut self, ctx: &egui::Context, canvas: egui::Rect) {
+        const MARGIN: f32 = 8.0;
+        /// With the title bar and the frame's margins: the controller's map at its full size.
+        const DEFAULT_SIZE: egui::Vec2 = egui::vec2(controller_guide::WIDTH + 24.0, 470.0);
+        let room = canvas.shrink(MARGIN);
+        let size = DEFAULT_SIZE.min(room.size());
+        let mut open = self.show_help;
+        egui::Window::new("User inputs")
+            .id(egui::Id::unique("user_inputs_window"))
+            .open(&mut open)
+            .collapsible(false)
+            .vscroll(true)
+            .default_rect(egui::Rect::from_min_max(
+                room.right_bottom() - size,
+                room.right_bottom(),
             ))
-            .show(ui.ctx(), |ui| {
-                egui::Frame::popup(ui.style()).show(ui, |ui| Self::user_inputs_ui(ui, controller));
+            .show(ctx, |ui| {
+                let width = ui.available_width();
+                self.user_inputs_ui(ui, width);
             });
-        let size = area.response.rect.size();
-        let top_right = egui::pos2(buttons.left() - GAP, buttons.top());
-        let room = egui::vec2(
-            top_right.x - canvas.left() - GAP,
-            canvas.bottom() - top_right.y - GAP,
-        );
-        let scale = (room / size).min_elem().clamp(0.1, 1.0);
-        ui.ctx().set_transform_layer(
-            area.response.layer_id,
-            egui::emath::TSTransform::new(
-                egui::vec2(top_right.x - scale * size.x, top_right.y),
-                scale,
-            ),
-        );
-        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-            self.show_help = false;
-        }
+        self.show_help = open && !ctx.input(|i| i.key_pressed(egui::Key::Escape));
     }
 
     /// Everything on the canvas but the gizmo.
@@ -1391,10 +1505,30 @@ impl ViewerApp {
         if self.show_path {
             self.draw_path(painter, rect, replay, k, &state);
         }
-        self.draw_goal(painter, rect, replay, &state);
+        if self.game.objective() == Objective::ReachB {
+            self.draw_goal(painter, rect, replay, &state);
+        }
+        if debug {
+            crate::planets::draw_debug(painter, &self.camera, rect, &self.game.world.bodies);
+        }
         match &self.ship3d {
             Some((renderer, plume)) if !debug => {
                 let position = world(state.x, state.y);
+                let depth = DepthMap::for_world(
+                    renderer,
+                    &self.camera,
+                    rect,
+                    position,
+                    self.circumradius,
+                    &self.game.world.bodies,
+                );
+                painter.add(crate::planets::paint(
+                    &self.camera,
+                    rect,
+                    &depth,
+                    &self.game.world.bodies,
+                    renderer.gamma_output,
+                ));
                 if let Some(callback) = ship3d::paint_callback(
                     renderer,
                     &self.camera,
@@ -1402,14 +1536,13 @@ impl ViewerApp {
                     position,
                     state.theta as f32,
                     self.circumradius,
+                    &depth,
                 ) {
                     painter.add(callback);
                 }
                 // After the ship, whose depth they are tested against.
                 if self.show_plume {
                     let t = replay.time(k) + offset;
-                    let depth =
-                        DepthMap::new(renderer, &self.camera, rect, position, self.circumradius);
                     if let Some(callback) =
                         plume.paint(&self.camera, rect, replay, t, self.circumradius, &depth)
                     {
@@ -1421,6 +1554,26 @@ impl ViewerApp {
                 self.draw_ship(painter, rect, &state);
                 self.draw_arrows(painter, rect, replay, k, &state);
             }
+        }
+        self.draw_orbits(painter, rect);
+        self.draw_prediction(painter, rect);
+        if self.show_collision_meshes {
+            // Use the same radii as the colliders, at the displayed (between-sample)
+            // position, and draw last so meshes remain visible through the 3D models.
+            let bodies = self
+                .game
+                .world
+                .bodies
+                .iter()
+                .map(|body| (egui::vec2(body.position[0], body.position[1]), body.radius));
+            let player = (world(state.x, state.y), self.game.world.players[0].radius);
+            crate::planets::draw_circles(
+                painter,
+                &self.camera,
+                rect,
+                bodies.chain([player]),
+                egui::Stroke::new(2.0, palette::PEACH),
+            );
         }
     }
 
@@ -1508,7 +1661,7 @@ impl ViewerApp {
     }
 
     /// Over the flight: where the goal is while it is off the canvas, the pads (where they
-    /// show), and the banner.
+    /// show), and the notifications.
     fn draw_game_overlay(&self, painter: &egui::Painter, rect: egui::Rect, touch_device: bool) {
         let game = &self.game;
         let pads = self.pads_visible(touch_device);
@@ -1521,23 +1674,18 @@ impl ViewerApp {
         let state = game.state();
         if let Some((pointer, heading)) = self.aiming {
             self.draw_aim(painter, rect, &state, pointer, heading);
-        } else if !self.autopilot
+        } else if !self.assisted()
             && let Some(heading) = game.sas_heading(self.steering)
         {
             self.draw_sas_heading(painter, rect, &state, heading);
         }
-        self.draw_goal_marker(painter, rect, marker_area, &game.replay, &state);
+        if game.objective() == Objective::ReachB {
+            self.draw_goal_marker(painter, rect, marker_area, &game.replay, &state);
+        }
         if pads {
             game.pads.paint(painter, rect);
         }
-        // The policy's run on the same case, for comparison.
-        let policy = self.policy_outcome.steps().map(|n| (self.policy.name, n));
-        let autopilot = self.autopilot().map(|p| p.name);
-        game_banner(painter, rect, game, policy, autopilot);
-        if self.show_controller {
-            let panel = controller_view::panel_rect(rect);
-            controller_view::paint(painter, panel, self.gamepads.state());
-        }
+        self.notifications.paint(painter, rect);
     }
 
     /// Where the player points, from the ship in state `s`: a line to the `pointer`, which
@@ -1717,8 +1865,14 @@ impl ViewerApp {
             );
         }
         if self.show_acceleration {
+            let thrust = replay.acceleration(k, state);
+            let gravity = crate::physics::gravity_acceleration(
+                &self.game.world.bodies,
+                self.game.world.gravity_constant,
+                [state.x, state.y],
+            );
             arrow(
-                replay.acceleration(k, state),
+                [thrust[0] + gravity[0], thrust[1] + gravity[1]],
                 ACCELERATION_ARROW_PX_PER_UPS2,
                 ACCELERATION_COLOR,
             );
@@ -1731,33 +1885,60 @@ impl ViewerApp {
     fn controls_ui(&mut self, ui: &mut egui::Ui) {
         // Scrolls sideways too, so rows are never cut off if the space is narrower than they are.
         egui::ScrollArea::both().show(ui, |ui| {
-            self.case_ui(ui);
+            self.world_selector_ui(ui);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                let font = egui::TextStyle::Body.resolve(ui.style());
+                formula::G
+                    .ui(ui, &font)
+                    .on_hover_text("gravitational constant");
+                ui.label(format!(" = {}", self.game.world.gravity_constant));
+            });
+            self.world_files_ui(ui);
+            if !self.game.world.bodies.is_empty() {
+                ui.label(
+                    "Orbit assist accounts for gravity. For Reach B, mpc_bounded learns it in flight; \
+                     the other policies use the vacuum model.",
+                );
+            }
+            ui.separator();
+            ui.heading("Initial conditions");
             self.case_info_ui(ui);
             ui.separator();
             self.autopilot_ui(ui);
             ui.separator();
             self.frame_info_ui(ui);
             ui.separator();
-            self.display_ui(ui);
+            self.display_ui(ui, true);
             ui.separator();
             self.sound.ui(ui);
         });
     }
 
-    /// Desktop layout: the game's bar along the bottom, controls left and plots right above it.
+    /// Desktop layout: the game's bar along the bottom, controls left and the plots or the
+    /// objective right above it.
     fn wide_layout(&mut self, ui: &mut egui::Ui) {
         // The bar first, across the whole window, so neither side panel (nor its collapsed
         // title bar, which slides back in when the pointer comes near) reaches it.
         egui::Panel::bottom("game_bar").show(ui, |ui| self.game_bar_ui(ui, false));
         let mut show_controls = self.show_controls;
-        CONTROLS_PANEL.show(ui, &mut show_controls, |ui| self.controls_ui(ui));
+        CONTROLS_PANEL.show(ui, &mut show_controls, &mut 0, |ui, _| self.controls_ui(ui));
         self.show_controls = show_controls;
         let mut show_plots = self.show_plots;
-        PLOTS_PANEL.show(ui, &mut show_plots, |ui| self.plots_ui(ui));
+        let mut view = self.right_view as usize;
+        let reveal =
+            RIGHT_PANEL.show(
+                ui,
+                &mut show_plots,
+                &mut view,
+                |ui, view| match RightView::ALL[view] {
+                    RightView::Plots => self.plots_ui(ui),
+                    RightView::Objective => self.objective_ui(ui),
+                },
+            );
+        self.right_view = RightView::ALL[view];
         self.show_plots = show_plots;
-        // The plots panel's triangle floats over the canvas's corner while it's collapsed.
-        let inset = if show_plots { 0.0 } else { TITLE_BAR_WIDTH };
-        egui::CentralPanel::default().show(ui, |ui| self.canvas_ui(ui, inset));
+        egui::CentralPanel::default().show(ui, |ui| self.canvas_ui(ui, canvas_inset(reveal)));
     }
 
     /// Narrow-screen layout: one full-size view at a time, chosen in the top bar; the game's
@@ -1766,11 +1947,12 @@ impl ViewerApp {
         if self.compact_view != CompactView::Controls {
             egui::Panel::bottom("game_bar").show(ui, |ui| self.game_bar_ui(ui, true));
         }
-        // No heading above the controls or plots: the selected tab already names the view.
+        // No heading above the controls: the selected tab already names the view.
         egui::CentralPanel::default().show(ui, |ui| match self.compact_view {
             CompactView::Canvas => self.canvas_ui(ui, 0.0),
             CompactView::Controls => self.controls_ui(ui),
             CompactView::Plots => self.plots_ui(ui),
+            CompactView::Objective => self.objective_ui(ui),
         });
     }
 }
@@ -1778,8 +1960,53 @@ impl ViewerApp {
 impl eframe::App for ViewerApp {
     /// Called each time the UI needs repainting, which may be many times per second.
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.gamepads.poll(ui.ctx());
+        let started = Instant::now();
+        let _span = span!(Level::Trace, "frame");
+        self.poll_world_file();
+        self.notifications.tick(ui.input(|i| i.time));
+        match self.gamepads.poll(ui.ctx()) {
+            Some(gamepad::Connection::Connected(name)) => {
+                log::info!("{name} connected");
+                self.notifications
+                    .post(format!("{name} connected"), palette::GREEN);
+            }
+            Some(gamepad::Connection::Disconnected(name)) => {
+                log::info!("{name} disconnected");
+                self.notifications
+                    .post(format!("{name} disconnected"), palette::YELLOW);
+            }
+            None => {}
+        }
+        match self.screen {
+            Screen::Title => self.title_ui(ui),
+            Screen::Flight => self.flight_ui(ui),
+        }
 
+        let ctx = ui.ctx().clone();
+        self.code_window(&ctx);
+
+        // The thrusters heard at present while the flight runs.
+        let game = &self.game;
+        let heard =
+            (self.screen == Screen::Flight && !game.paused).then(|| (&game.replay, game.time()));
+        let levels = heard.map(|(r, t)| (r.thrust_fraction(t) as f32, r.torque_fraction(t) as f32));
+        self.sound.update(&ctx, levels);
+
+        let took = started.elapsed().as_secs_f64();
+        if self.slow_frame_to_log(took, ctx.input(|i| i.time)) {
+            log::warn!(
+                "Slow frame: {:.0} ms, {:?}, policy {}",
+                took * 1e3,
+                self.screen,
+                self.policy.name
+            );
+        }
+    }
+}
+
+impl ViewerApp {
+    /// The flight's screen: the canvas, with the controls and the plots beside it.
+    fn flight_ui(&mut self, ui: &mut egui::Ui) {
         // Advance the flight first, so every panel shows the same instant.
         self.handle_keys(ui);
         self.handle_controller_buttons();
@@ -1795,15 +2022,23 @@ impl eframe::App for ViewerApp {
             cone: self.aim_cone.to_radians(),
         });
         let dt = f64::from(ui.input(|i| i.stable_dt));
-        let autopilot = self.autopilot();
-        self.game.advance(dt, input, self.steering, autopilot);
+        let was_landed = self.game.landed().is_some();
+        self.game.advance(dt, input, self.steering);
         if let Some(fault) = self.game.take_fault() {
-            self.autopilot = false;
+            self.notifications
+                .post(format!("Flight assist switched off: {fault}"), palette::RED);
             self.autopilot_fault = Some(fault);
         }
-        if !self.game.paused {
+        if let Some(n) = self.game.landed()
+            && !was_landed
+        {
+            self.notify_landing(n);
+        }
+        if !self.game.paused || self.notifications.any() {
             ui.ctx().request_repaint();
         }
+        self.refresh_orbit_prediction();
+        self.refresh_prediction();
 
         let compact = ui.available_width() < COMPACT_WIDTH;
         // The tab bar only exists in the compact layout; the wide layout shows everything.
@@ -1812,8 +2047,9 @@ impl eframe::App for ViewerApp {
                 ui.horizontal(|ui| {
                     for (view, label) in [
                         (CompactView::Canvas, "View"),
-                        (CompactView::Controls, CONTROLS_PANEL.title),
+                        (CompactView::Controls, CONTROLS_PANEL.titles[0]),
                         (CompactView::Plots, "Plots"),
+                        (CompactView::Objective, RIGHT_PANEL.titles[1]),
                     ] {
                         ui.selectable_value(&mut self.compact_view, view, label);
                     }
@@ -1826,15 +2062,6 @@ impl eframe::App for ViewerApp {
         } else {
             self.wide_layout(ui);
         }
-
-        let ctx = ui.ctx().clone();
-        self.code_window(&ctx);
-
-        // The thrusters heard at present while the flight runs.
-        let game = &self.game;
-        let heard = (!game.paused).then(|| (&game.replay, game.time()));
-        let levels = heard.map(|(r, t)| (r.thrust_fraction(t) as f32, r.torque_fraction(t) as f32));
-        self.sound.update(&ctx, levels);
     }
 }
 
@@ -1852,23 +2079,26 @@ enum Dock {
 struct SidePanel {
     dock: Dock,
     id: &'static str,
-    title: &'static str,
+    /// What the title bar names: with several, the tabs to choose what the panel shows.
+    titles: &'static [&'static str],
     /// The contents' widths, not counting the title bar.
     min_width: f32,
     default_width: f32,
 }
 
 impl SidePanel {
+    /// Returns how far the panel's title bar is in the window, from 0 (slid out) to 1.
     fn show(
         &self,
         ui: &mut egui::Ui,
         expanded: &mut bool,
-        add_contents: impl FnOnce(&mut egui::Ui),
-    ) {
+        selected: &mut usize,
+        add_contents: impl FnOnce(&mut egui::Ui, usize),
+    ) -> f32 {
         let Self {
             dock,
             id,
-            title,
+            titles,
             min_width,
             default_width,
         } = *self;
@@ -1877,24 +2107,26 @@ impl SidePanel {
         let openness = ctx.animate_bool(id.with("openness"), *expanded);
 
         // Where the title bar is when it is in the window, and where its triangle is: there
-        // also while the collapsed bar has slid out, so it stays visible and clickable.
+        // also while the collapsed bar has slid out, so it stays visible and clickable, in
+        // a narrower strip along the window edge.
         let area = ui.available_rect_before_wrap();
-        let bar = match dock {
-            Dock::Left => area.with_max_x(area.left() + TITLE_BAR_WIDTH),
-            Dock::Right => area.with_min_x(area.right() - TITLE_BAR_WIDTH),
-        };
-        let icon_center = egui::pos2(bar.center().x, title_bar_icon_y(ui, bar));
-
-        let reveal = title_bar_reveal(ui, id, bar, *expanded);
+        let bar = edge_strip(area, dock, TITLE_BAR_WIDTH);
+        let reveal = title_bar_reveal(ui, id, bar, dock, *expanded);
+        let icon_strip = edge_strip(
+            area,
+            dock,
+            egui::lerp(TITLE_BAR_TUCKED_WIDTH..=TITLE_BAR_WIDTH, reveal),
+        );
+        let icon_top = title_bar_icon_y(ui, bar) - TITLE_BAR_WIDTH / 2.0;
 
         let mut toggled = false;
         if !*expanded {
             toggled |= egui::Area::new(id.with("collapsed_icon"))
                 .order(egui::Order::Foreground)
-                .fixed_pos(icon_center - egui::vec2(TITLE_BAR_WIDTH, TITLE_BAR_WIDTH) / 2.0)
+                .fixed_pos(egui::pos2(icon_strip.left(), icon_top))
                 .show(&ctx, |ui| {
                     let (rect, response) = ui.allocate_exact_size(
-                        egui::Vec2::splat(TITLE_BAR_WIDTH),
+                        egui::vec2(icon_strip.width(), TITLE_BAR_WIDTH),
                         egui::Sense::click(),
                     );
                     paint_collapse_icon(ui, &response, rect.center(), dock, openness);
@@ -1936,7 +2168,8 @@ impl SidePanel {
                         rect.with_min_x(rect.right() - TITLE_BAR_WIDTH)
                     };
                     let icon = icon_in_bar.then_some(openness);
-                    let toggled = title_bar(ui, bar_rect, dock, title, icon, show_contents);
+                    let toggled =
+                        title_bar(ui, bar_rect, dock, titles, selected, icon, show_contents);
                     if show_contents {
                         let (x, content_rect) = match dock {
                             Dock::Left => (bar_rect.right(), rect.with_min_x(bar_rect.right())),
@@ -1948,7 +2181,7 @@ impl SidePanel {
                             ui.new_child(egui::UiBuilder::new().max_rect(content_rect));
                         egui::Frame::new()
                             .inner_margin(egui::Margin::symmetric(8, 2))
-                            .show(&mut content, add_contents);
+                            .show(&mut content, |ui| add_contents(ui, *selected));
                     }
                     ui.advance_cursor_after_rect(rect);
                     toggled
@@ -1959,20 +2192,49 @@ impl SidePanel {
         if toggled {
             *expanded = !*expanded;
         }
+        reveal
     }
+}
+
+/// The strip of `rect` along the edge of `dock`, `width` wide.
+fn edge_strip(rect: egui::Rect, dock: Dock, width: f32) -> egui::Rect {
+    match dock {
+        Dock::Left => rect.with_max_x(rect.left() + width),
+        Dock::Right => rect.with_min_x(rect.right() - width),
+    }
+}
+
+/// How much of the canvas's right edge is taken by the right panel's floating triangle, with
+/// its title bar `reveal` in the window: none with the bar in, which holds the triangle, and
+/// with the bar out, what the canvas's buttons would otherwise overlap of the tucked strip.
+fn canvas_inset(reveal: f32) -> f32 {
+    (TITLE_BAR_TUCKED_WIDTH - canvas_buttons::MARGIN_RIGHT) * (1.0 - reveal)
 }
 
 /// How far a side panel's title bar is in the window, from 0 (slid out) to 1. Once the
 /// panel is collapsed, the bar slides out after the pointer has kept away from `bar` (where
-/// the bar is when in the window) for a while, and slides back in as soon as the pointer
-/// comes near.
-fn title_bar_reveal(ui: &egui::Ui, id: egui::Id, bar: egui::Rect, expanded: bool) -> f32 {
+/// the bar is when in the window) for a while. Once out, it slides back in as soon as the
+/// pointer reaches the window edge: only there, for the bar would push away the canvas's
+/// buttons, just beside the edge, as the pointer comes to them.
+fn title_bar_reveal(
+    ui: &egui::Ui,
+    id: egui::Id,
+    bar: egui::Rect,
+    dock: Dock,
+    expanded: bool,
+) -> f32 {
     let ctx = ui.ctx();
     let now = ui.input(|i| i.time);
+    let last_near_id = id.with("last_near");
+    let last_near = ctx.data_mut(|d| *d.get_temp_mut_or(last_near_id, now));
+    let near_zone = if now - last_near > TITLE_BAR_HIDE_DELAY {
+        edge_strip(bar, dock, TITLE_BAR_TUCKED_WIDTH)
+    } else {
+        bar.expand(TITLE_BAR_REVEAL_MARGIN)
+    };
     let near = ui
         .input(|i| i.pointer.hover_pos())
-        .is_some_and(|p| bar.expand(TITLE_BAR_REVEAL_MARGIN).contains(p));
-    let last_near_id = id.with("last_near");
+        .is_some_and(|p| near_zone.contains(p));
     if expanded || near {
         ctx.data_mut(|d| d.insert_temp(last_near_id, now));
     }
@@ -1995,14 +2257,17 @@ fn title_bar_icon_y(ui: &egui::Ui, bar: egui::Rect) -> f32 {
 }
 
 /// Paints a side panel's vertical title bar in `rect`: the collapse triangle at the top
-/// (when `icon` gives its openness), then the title, reading away from the triangle toward
+/// (when `icon` gives its openness), then the titles, reading away from the triangle toward
 /// the bottom on the right and toward the top on the left, so the letters always stand on
-/// the panel's contents. Returns whether the bar was clicked.
+/// the panel's contents. The `selected` title is white and the others are gray tabs, which
+/// select themselves when clicked. Returns whether the panel is to be shown or hidden: the
+/// rest of the bar was clicked, or a tab while the panel is collapsed.
 fn title_bar(
     ui: &egui::Ui,
     rect: egui::Rect,
     dock: Dock,
-    title: &str,
+    titles: &[&str],
+    selected: &mut usize,
     icon: Option<f32>,
     expanded: bool,
 ) -> bool {
@@ -2020,22 +2285,65 @@ fn title_bar(
         paint_collapse_icon(ui, &response, icon_center, dock, openness);
     }
 
-    let color = ui.style().interact(&response).fg_stroke.color;
+    let bar_color = ui.style().interact(&response).fg_stroke.color;
     let font = egui::TextStyle::Heading.resolve(ui.style());
-    let galley = ui.painter().layout_no_wrap(title.to_owned(), font, color);
-    let size = galley.size();
-    let top = icon_center.y + ui.spacing().icon_width / 2.0 + ui.spacing().item_spacing.y;
-    let (pos, angle) = match dock {
-        Dock::Left => (
-            egui::pos2(rect.center().x - size.y / 2.0, top + size.x),
-            -TAU / 4.0,
-        ),
-        Dock::Right => (egui::pos2(rect.center().x + size.y / 2.0, top), TAU / 4.0),
-    };
-    ui.painter()
-        .add(egui::epaint::TextShape::new(pos, galley, color).with_angle(angle));
+    let gap = 2.0 * ui.spacing().item_spacing.y;
+    let mut top = icon_center.y + ui.spacing().icon_width / 2.0 + ui.spacing().item_spacing.y;
+    let mut clicked_tab = None;
+    for (i, title) in titles.iter().enumerate() {
+        if i > 0 {
+            let y = top + gap / 2.0;
+            let x = rect.center().x;
+            let half = ui.spacing().icon_width / 2.0;
+            let stroke = egui::Stroke::new(1.0, TITLE_BAR_TAB_COLOR);
+            ui.painter().hline((x - half)..=(x + half), y, stroke);
+            top += gap;
+        }
+        let galley = ui.painter().layout_no_wrap(
+            (*title).to_owned(),
+            font.clone(),
+            egui::Color32::PLACEHOLDER,
+        );
+        let size = galley.size();
+        let color = if i == *selected {
+            bar_color
+        } else {
+            let tab = egui::Rect::from_min_size(
+                egui::pos2(rect.left(), top),
+                egui::vec2(rect.width(), size.x),
+            );
+            let tab = ui
+                .interact(
+                    tab,
+                    ui.scope_id().with(("title_bar", i)),
+                    egui::Sense::click(),
+                )
+                .on_hover_text(format!("Show {title}"));
+            if tab.clicked() {
+                clicked_tab = Some(i);
+            }
+            if tab.hovered() {
+                palette::SUBTEXT
+            } else {
+                TITLE_BAR_TAB_COLOR
+            }
+        };
+        let (pos, angle) = match dock {
+            Dock::Left => (
+                egui::pos2(rect.center().x - size.y / 2.0, top + size.x),
+                -TAU / 4.0,
+            ),
+            Dock::Right => (egui::pos2(rect.center().x + size.y / 2.0, top), TAU / 4.0),
+        };
+        ui.painter()
+            .add(egui::epaint::TextShape::new(pos, galley, color).with_angle(angle));
+        top += size.x;
+    }
 
-    response.clicked()
+    if let Some(tab) = clicked_tab {
+        *selected = tab;
+    }
+    response.clicked() || (clicked_tab.is_some() && !expanded)
 }
 
 /// The collapse triangle of a side panel's title bar, centered on `center`, in the colors
@@ -2069,59 +2377,37 @@ fn paint_collapse_icon(
     ));
 }
 
+/// A button with an outline `icon`, at the size of a button's text.
+fn outline_button(ui: &mut egui::Ui, icon: &str) -> egui::Response {
+    let size = egui::TextStyle::Button.resolve(ui.style()).size;
+    ui.button(egui::RichText::new(icon).font(icons::outline::font(size)))
+}
+
+/// A controller icon: green with one connected, gray without, saying which on hover.
+fn controller_status_ui(ui: &mut egui::Ui, gamepads: &Gamepads) {
+    let color = if gamepads.state().is_some() {
+        palette::GREEN
+    } else {
+        palette::OVERLAY0
+    };
+    let hint = if cfg!(target_arch = "wasm32") {
+        "No controller: connect one and press a button on it"
+    } else {
+        "No controller connected"
+    };
+    let icon = egui::RichText::new(icons::outline::GAME_CONTROLLER)
+        .font(icons::outline::font(CONTROLLER_STATUS_SIZE))
+        .color(color);
+    ui.add(egui::Label::new(icon).selectable(false))
+        .on_hover_text(gamepads.state().map_or(hint, |pad| pad.name.as_str()));
+}
+
 /// The other way of steering: the stability assist on or off.
 fn toggled(steering: Steering) -> Steering {
     match steering {
         Steering::Raw => Steering::Sas,
         Steering::Sas => Steering::Raw,
     }
-}
-
-/// A banner along the top of the canvas once the flight has landed, with the steps the `policy`
-/// (its name and step count) takes on the same case, if known, unless the autopilot flew it all
-/// the way; else while it is paused, or while the `autopilot` (its policy's name) flies.
-fn game_banner(
-    painter: &egui::Painter,
-    canvas: egui::Rect,
-    game: &Game,
-    policy: Option<(&str, usize)>,
-    autopilot: Option<&str>,
-) {
-    const TOP: f32 = 16.0;
-    let (text, color) = match game.landed() {
-        Some(n) => {
-            let time = game.replay.time(n);
-            let text = match policy {
-                _ if game.autopiloted() => {
-                    format!("The autopilot landed at B in {n} steps ({time:.2} s)")
-                }
-                Some((name, m)) => {
-                    format!("Landed at B in {n} steps ({time:.2} s)\n{name} takes {m}")
-                }
-                None => format!("Landed at B in {n} steps ({time:.2} s)"),
-            };
-            (text, palette::GREEN)
-        }
-        None if game.paused => ("Paused".to_owned(), palette::WHITE),
-        None => match autopilot {
-            Some(name) => (format!("Autopilot: {name}"), palette::SAPPHIRE),
-            None => return,
-        },
-    };
-    let galley = painter.layout_no_wrap(text, egui::FontId::proportional(18.0), color);
-    let rect = egui::Rect::from_center_size(
-        egui::pos2(
-            canvas.center().x,
-            canvas.top() + TOP + galley.size().y / 2.0 + 6.0,
-        ),
-        galley.size() + egui::vec2(24.0, 12.0),
-    );
-    painter.rect_filled(
-        rect,
-        rect.height() / 2.0,
-        egui::Color32::from_rgba_unmultiplied(30, 30, 30, 220),
-    );
-    painter.galley(rect.center() - galley.size() / 2.0, galley, color);
 }
 
 fn world(x: f64, y: f64) -> egui::Vec2 {
@@ -2314,4 +2600,148 @@ fn time_plot(
         }
         plot_ui.vline(VLine::new("", t).color(CURSOR_COLOR));
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slow_frames_are_logged_at_most_once_a_period() {
+        let mut app = ViewerApp::default();
+        assert!(!app.slow_frame_to_log(SLOW_FRAME, 0.0), "not slow");
+        assert!(app.slow_frame_to_log(2.0 * SLOW_FRAME, 0.0));
+        assert!(!app.slow_frame_to_log(2.0 * SLOW_FRAME, 0.5), "too soon");
+        assert!(app.slow_frame_to_log(2.0 * SLOW_FRAME, SLOW_FRAME_LOG_PERIOD));
+    }
+
+    #[test]
+    fn create_shows_the_controller_guide_whatever_tab_was_picked() {
+        let mut app = ViewerApp {
+            help_tab: Some(HelpTab::Device),
+            ..ViewerApp::default()
+        };
+        assert!(app.show_guides, "the guides are on by default");
+        app.toggle_controller_guide();
+        assert!(app.show_help);
+        assert_eq!(app.help_tab(), HelpTab::Controller);
+        app.toggle_controller_guide();
+        assert!(!app.show_help);
+    }
+
+    const BAR: egui::Rect =
+        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(TITLE_BAR_WIDTH, 400.0));
+
+    /// Clicks the title bar at height `y`, with the first of its two tabs selected. Returns the
+    /// selected tab and whether the panel is to be shown or hidden.
+    fn click_title_bar(y: f32, expanded: bool) -> (usize, bool) {
+        let ctx = egui::Context::default();
+        let pos = egui::pos2(BAR.center().x, y);
+        let button = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let mut selected = 0;
+        let mut toggled = false;
+        for events in [
+            vec![egui::Event::PointerMoved(pos)],
+            vec![button(true)],
+            vec![button(false)],
+        ] {
+            let input = egui::RawInput {
+                events,
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                toggled |= title_bar(
+                    ui,
+                    BAR,
+                    Dock::Right,
+                    RIGHT_PANEL.titles,
+                    &mut selected,
+                    None,
+                    expanded,
+                );
+            });
+            output.textures_delta.clear();
+        }
+        (selected, toggled)
+    }
+
+    /// A collapsed panel's title bar's reveal, once settled, with the pointer at `x` from the
+    /// window's right edge, after `away` seconds without one.
+    fn settled_reveal(away: f64, x: f32) -> f32 {
+        let ctx = egui::Context::default();
+        let area = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let bar = edge_strip(area, Dock::Right, TITLE_BAR_WIDTH);
+        let mut reveal = 0.0;
+        let mut frame = |time: f64, pointer: Option<f32>| {
+            let input = egui::RawInput {
+                screen_rect: Some(area),
+                time: Some(time),
+                events: pointer
+                    .map(|x| egui::Event::PointerMoved(egui::pos2(area.right() - x, 300.0)))
+                    .into_iter()
+                    .collect(),
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                reveal = title_bar_reveal(ui, ui.scope_id(), bar, Dock::Right, false);
+            });
+            output.textures_delta.clear();
+        };
+        frame(0.0, None);
+        // Long enough to slide out, unless `away` is short.
+        for i in 1..50 {
+            frame(away * f64::from(i) / 49.0, None);
+        }
+        for i in 1..100 {
+            frame(away + f64::from(i) * 0.02, Some(x));
+        }
+        reveal
+    }
+
+    #[test]
+    fn a_slid_out_title_bar_comes_back_only_from_the_window_edge() {
+        let at_the_edge = TITLE_BAR_TUCKED_WIDTH - 2.0;
+        let on_the_buttons = TITLE_BAR_TUCKED_WIDTH + 2.0;
+        let slid_out = TITLE_BAR_HIDE_DELAY + 1.0;
+        assert!(settled_reveal(slid_out, at_the_edge) > 0.99);
+        assert!(settled_reveal(slid_out, on_the_buttons) < 0.01);
+        // While it is still in, the pointer keeps it there from close by.
+        assert!(settled_reveal(0.0, on_the_buttons) > 0.99);
+    }
+
+    #[test]
+    fn the_canvas_buttons_reach_the_tucked_strip_and_no_further() {
+        let gap = |reveal| canvas_inset(reveal) + canvas_buttons::MARGIN_RIGHT;
+        assert!((gap(0.0) - TITLE_BAR_TUCKED_WIDTH).abs() < 1e-3);
+        assert!((gap(1.0) - canvas_buttons::MARGIN_RIGHT).abs() < 1e-3);
+    }
+
+    /// The height of a point on the second title, found by clicking down the bar.
+    fn second_tab_y() -> f32 {
+        (0..40)
+            .map(|i| i as f32 * 10.0)
+            .find(|&y| click_title_bar(y, true).0 == 1)
+            .expect("the second title is a tab")
+    }
+
+    #[test]
+    fn a_tab_selects_itself_and_only_shows_a_collapsed_panel() {
+        let y = second_tab_y();
+        assert_eq!(click_title_bar(y, true), (1, false));
+        assert_eq!(click_title_bar(y, false), (1, true));
+    }
+
+    #[test]
+    fn the_rest_of_the_title_bar_still_shows_and_hides_the_panel() {
+        // The selected title, and the empty end of the bar.
+        for y in [40.0, 390.0] {
+            assert_eq!(click_title_bar(y, true), (0, true));
+            assert_eq!(click_title_bar(y, false), (0, true));
+        }
+    }
 }

@@ -28,6 +28,7 @@ pub enum Key {
 }
 
 pub const SPACE: Key = Key::Word("space");
+pub const ENTER: Key = Key::Word("enter");
 pub const LEFT: Key = Key::Glyph(outline::ARROW_LEFT);
 pub const RIGHT: Key = Key::Glyph(outline::ARROW_RIGHT);
 pub const A: Key = Key::Word("A");

@@ -17,7 +17,7 @@ use crate::theme::palette;
 
 /// The part of the drawing shown: the controller, and the callouts above it. Symmetric about
 /// the controller's axis.
-const VIEW: Rect = Rect::from_min_max(pos2(90.0, 10.0), pos2(662.0, 422.0));
+pub(crate) const VIEW: Rect = Rect::from_min_max(pos2(90.0, 10.0), pos2(662.0, 422.0));
 
 /// A callout, on the left (the right's is mirrored): its labels, its box, and its elbow line,
 /// which leaves the box's bottom at `from`, goes straight down to the height of `to`, the point
@@ -58,12 +58,11 @@ const DOT_TRAVEL: f32 = shape::WELL_RADIUS - 4.0;
 const PS_Y: f32 = 247.0;
 const PS_RADIUS: f32 = 8.0;
 
-/// The panel's width at most, in points, its margin round the drawing, the height of the heading
-/// above it (down to the rule under it), and the panel's distance from the canvas's bottom.
-const MAX_WIDTH: f32 = 340.0;
+/// The drawing's width at most, in points, its margin in the panel, and the height of the heading
+/// above it (down to the rule under it).
+const MAX_WIDTH: f32 = 420.0;
 const PADDING: f32 = 10.0;
 const HEADING: f32 = 26.0;
-const BOTTOM_MARGIN: f32 = 12.0;
 
 /// The wireframe's color: white. The light bars', which the touchpad lights in too when clicked.
 const LINE: Color32 = Color32::from_gray(235);
@@ -76,17 +75,12 @@ const GLOW_WIDTH: f32 = 5.0;
 /// The labels' text size, in points.
 const LABEL_SIZE: f32 = 10.0;
 
-/// The panel's rectangle at the bottom middle of `canvas`.
-pub fn panel_rect(canvas: Rect) -> Rect {
-    let width = MAX_WIDTH.min(canvas.width() - 2.0 * PADDING);
-    let height = width * VIEW.height() / VIEW.width() + HEADING + 2.0 * PADDING;
-    let width = width + 2.0 * PADDING;
-    Rect::from_min_size(
-        pos2(
-            canvas.center().x - width / 2.0,
-            canvas.bottom() - BOTTOM_MARGIN - height,
-        ),
-        vec2(width, height),
+/// The panel's size where `width` is available.
+pub fn panel_size(width: f32) -> Vec2 {
+    let drawing = MAX_WIDTH.min(width - 2.0 * PADDING);
+    vec2(
+        drawing + 2.0 * PADDING,
+        drawing * VIEW.height() / VIEW.width() + HEADING + 2.0 * PADDING,
     )
 }
 
@@ -132,18 +126,11 @@ pub fn paint(painter: &Painter, panel: Rect, state: Option<&State>) {
         scale: drawing.width() / VIEW.width(),
         dim: state.is_none(),
     };
+    paint_wireframe(&view, state);
+
+    // The callouts for the bumpers and the triggers.
     let idle = State::default();
     let s = state.unwrap_or(&idle);
-    let held = |button| s.is_held(button);
-
-    view.line(points(shape::BODY, false), true, LINE);
-    view.line(points(shape::BAND, false), true, LINE.gamma_multiply(0.6));
-    view.shape(points(shape::TOUCHPAD, false), s.touchpad.then_some(LIGHT));
-    for right in [false, true] {
-        view.line(points(shape::LIGHT_BAR, right), false, LIGHT);
-    }
-
-    // The bumpers, and the callouts for them and for the triggers.
     for (right, bumper, trigger, depth) in [
         (
             false,
@@ -158,15 +145,35 @@ pub fn paint(painter: &Painter, panel: Rect, state: Option<&State>) {
             s.triggers[1],
         ),
     ] {
-        // Mauve rather than a blue, which would barely stand out from the wireframe's.
-        let lit = held(bumper).then_some(palette::MAUVE);
-        view.shape(points(shape::BUMPER, right), lit);
-        view.callout(&L1, right, lit, None);
-        let pulled = (depth > 0.0 || held(trigger)).then_some(palette::PEACH);
+        view.callout(&L1, right, bumper_lit(s, bumper), None);
+        let pulled = (depth > 0.0 || s.is_held(trigger)).then_some(palette::PEACH);
         view.callout(&L2, right, pulled, Some(depth));
     }
+}
 
-    buttons(&view, s);
+/// The light of a bumper held in `s`.
+fn bumper_lit(s: &State, bumper: Button) -> Option<Color32> {
+    // Mauve rather than a blue, which would barely stand out from the wireframe's.
+    s.is_held(bumper).then_some(palette::MAUVE)
+}
+
+/// The controller itself, lit by `state`, or as if idle without a controller.
+pub(crate) fn paint_wireframe(view: &View<'_>, state: Option<&State>) {
+    let idle = State::default();
+    let s = state.unwrap_or(&idle);
+    let held = |button| s.is_held(button);
+
+    view.line(points(shape::BODY, false), true, LINE);
+    view.line(points(shape::BAND, false), true, LINE.gamma_multiply(0.6));
+    view.shape(points(shape::TOUCHPAD, false), s.touchpad.then_some(LIGHT));
+    for right in [false, true] {
+        view.line(points(shape::LIGHT_BAR, right), false, LIGHT);
+    }
+    for (right, bumper) in [(false, Button::LeftTrigger), (true, Button::RightTrigger)] {
+        view.shape(points(shape::BUMPER, right), bumper_lit(s, bumper));
+    }
+
+    buttons(view, s);
 
     // The sticks: the cap shifts with the stick, and a dot shows where it points.
     for (right, stick, thumb) in [
@@ -238,13 +245,13 @@ fn buttons(view: &View<'_>, s: &State) {
 }
 
 /// Where to draw: the drawing's coordinates mapped to the screen, and whether to draw dimly.
-struct View<'a> {
-    painter: &'a Painter,
+pub(crate) struct View<'a> {
+    pub painter: &'a Painter,
     /// Where `VIEW.min` lands, and the points per drawing unit.
-    origin: Pos2,
-    scale: f32,
+    pub origin: Pos2,
+    pub scale: f32,
     /// No controller: everything at half strength.
-    dim: bool,
+    pub dim: bool,
 }
 
 impl View<'_> {
@@ -261,7 +268,7 @@ impl View<'_> {
     }
 
     /// A line through `points` (closed or not), with its glow.
-    fn line(&self, points: Vec<Pos2>, closed: bool, color: Color32) {
+    pub fn line(&self, points: Vec<Pos2>, closed: bool, color: Color32) {
         let color = self.color(color);
         let points: Vec<Pos2> = points.into_iter().map(|q| self.at(q)).collect();
         let path = |width: f32, color: Color32| {
@@ -310,7 +317,7 @@ impl View<'_> {
     }
 
     /// A small bright dot.
-    fn dot(&self, center: Pos2, color: Color32) {
+    pub fn dot(&self, center: Pos2, color: Color32) {
         let center = self.at(center);
         let color = self.color(color);
         self.painter
@@ -520,17 +527,14 @@ mod tests {
 
     #[test]
     fn the_panel_keeps_the_drawing_in_proportion() {
-        let canvas = Rect::from_min_size(Pos2::ZERO, vec2(1000.0, 800.0));
-        let panel = panel_rect(canvas);
+        let panel = Rect::from_min_size(Pos2::ZERO, panel_size(1000.0));
         let inner = drawing_rect(panel);
         let ratio = inner.width() / inner.height();
         assert!(
             (ratio - VIEW.width() / VIEW.height()).abs() < 1e-3,
             "in proportion"
         );
-        assert!(canvas.contains_rect(panel), "inside the canvas");
-        let narrow = Rect::from_min_size(Pos2::ZERO, vec2(200.0, 800.0));
-        assert!(narrow.contains_rect(panel_rect(narrow)), "shrinks to fit");
+        assert!(panel_size(200.0).x <= 200.0, "shrinks to fit");
         let mirrored = side(pos2(VIEW.left(), 0.0), true).x;
         assert!(
             (mirrored - VIEW.right()).abs() < 1e-3,

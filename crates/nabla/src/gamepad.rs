@@ -6,14 +6,15 @@
 //! controls; `controller_view` draws them. Buttons are named as on a Sony controller; on an
 //! Xbox one, Cross is A, Circle B, Square X, Triangle Y, L1 and R1 LB and RB, L2 and R2 LT and
 //! RT, Create View and Options Menu. A browser only lists a controller once one of its buttons
-//! has been pressed with the page open.
+//! has been pressed with the page open, and it counts that press as the controller's first.
 
 use std::time::Duration;
 
 pub use gilrs::Button;
-use gilrs::{Axis, Event, EventType, Gilrs};
+use gilrs::{Axis, Event, EventType, GamepadId, Gilrs};
 
 use crate::game::Input;
+use crate::span::span;
 
 /// How often to look for a controller while none is connected. While one is, every frame: its
 /// events don't wake egui up the way the mouse's and the keyboard's do.
@@ -27,6 +28,28 @@ const MACOS_TOUCHPAD: u32 = (0x09 << 16) | 14;
 /// ones, which gilrs doesn't read.
 #[cfg(target_arch = "wasm32")]
 const WEB_TOUCHPAD: u32 = 17;
+
+/// The buttons in the order of the browser's standard mapping.
+#[cfg(target_arch = "wasm32")]
+const WEB_BUTTONS: [Button; 17] = [
+    Button::South,
+    Button::East,
+    Button::West,
+    Button::North,
+    Button::LeftTrigger,
+    Button::RightTrigger,
+    Button::LeftTrigger2,
+    Button::RightTrigger2,
+    Button::Select,
+    Button::Start,
+    Button::LeftThumb,
+    Button::RightThumb,
+    Button::DPadUp,
+    Button::DPadDown,
+    Button::DPadLeft,
+    Button::DPadRight,
+    Button::Mode,
+];
 
 /// The buttons read as held: every one the controller view shows.
 const BUTTONS: [Button; 17] = [
@@ -48,6 +71,9 @@ const BUTTONS: [Button; 17] = [
     Button::DPadLeft,
     Button::DPadRight,
 ];
+
+/// How far a trigger may rest from 0 (they drift) and still thrust not at all, from 0 to 1.
+const TRIGGER_DEAD_ZONE: f32 = 0.02;
 
 /// A controller's state, as read this frame.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -71,14 +97,28 @@ pub struct State {
 
 impl State {
     /// The flight's controls held on the controller: the left stick turns, as hard as it is
-    /// pushed sideways (left, counterclockwise), Cross or R2 thrusts, and L2 is fine control.
+    /// pushed sideways (left, counterclockwise), Cross thrusts in full and R2 as hard as it is
+    /// pulled, and L2 is fine control.
     pub fn input(&self) -> Input {
         Input {
-            thrust: self.is_held(Button::South) || self.is_held(Button::RightTrigger2),
+            thrust: if self.is_held(Button::South) {
+                1.0
+            } else {
+                self.r2_thrust()
+            },
             turn: f64::from(-self.stick[0]),
             fine: self.is_held(Button::LeftTrigger2),
             aim: None,
         }
+    }
+
+    /// How hard R2 thrusts: in full for a trigger that's held without a depth to tell.
+    fn r2_thrust(&self) -> f64 {
+        let depth = self.triggers[1];
+        if depth <= 0.0 && self.is_held(Button::RightTrigger2) {
+            return 1.0;
+        }
+        f64::from(((depth - TRIGGER_DEAD_ZONE) / (1.0 - TRIGGER_DEAD_ZONE)).clamp(0.0, 1.0))
     }
 
     /// Which way the shoulder buttons zoom while held: 1 in (R1), -1 out (L1), 0 for neither
@@ -96,6 +136,25 @@ impl State {
     /// Whether `button` was pressed since the last frame.
     pub fn just_pressed(&self, button: Button) -> bool {
         self.pressed.contains(&button)
+    }
+}
+
+/// The controller being read changed, with its name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Connection {
+    Connected(String),
+    Disconnected(String),
+}
+
+/// What changed from the controller named `before` to the one named `after`. Another controller
+/// taking over counts as it connecting.
+fn connection_change(before: Option<&str>, after: Option<&str>) -> Option<Connection> {
+    match (before, after) {
+        (before, Some(after)) if before != Some(after) => {
+            Some(Connection::Connected(after.to_owned()))
+        }
+        (Some(before), None) => Some(Connection::Disconnected(before.to_owned())),
+        _ => None,
     }
 }
 
@@ -118,64 +177,123 @@ fn touchpad(pad: &gilrs::Gamepad<'_>) -> bool {
         .any(|(code, data)| data.is_pressed() && code.into_u32() == MACOS_TOUCHPAD)
 }
 
-/// Whether the touchpad of the first connected controller is pressed down, read straight from
-/// the browser's Gamepad API: gilrs only reads the standard mapping's first 17 buttons. The
-/// controller is the one gilrs reads, `pad`: the first connected.
+/// The first connected controller as the browser's Gamepad API has it, if in its standard
+/// mapping. This is the one gilrs reads, the first connected.
 #[cfg(target_arch = "wasm32")]
-fn touchpad(_pad: &gilrs::Gamepad<'_>) -> bool {
+fn first_web_pad() -> Option<web_sys::Gamepad> {
     use wasm_bindgen::JsCast;
-    let Some(pads) = web_sys::window().and_then(|w| w.navigator().get_gamepads().ok()) else {
-        return false;
-    };
-    pads.iter()
+    web_sys::window()?
+        .navigator()
+        .get_gamepads()
+        .ok()?
+        .iter()
         .filter(|p| !p.is_null())
         .map(JsCast::unchecked_into::<web_sys::Gamepad>)
         .find(web_sys::Gamepad::connected)
         .filter(|p| p.mapping() == web_sys::GamepadMappingType::Standard)
-        .is_some_and(|p| {
-            let button = p.buttons().get(WEB_TOUCHPAD);
-            !button.is_undefined() && button.unchecked_into::<web_sys::GamepadButton>().pressed()
+}
+
+/// Whether the touchpad of the first connected controller is pressed down, read straight from
+/// the browser's Gamepad API: gilrs only reads the standard mapping's first 17 buttons.
+#[cfg(target_arch = "wasm32")]
+fn touchpad(_pad: &gilrs::Gamepad<'_>) -> bool {
+    use wasm_bindgen::JsCast as _;
+    first_web_pad().is_some_and(|p| {
+        let button = p.buttons().get(WEB_TOUCHPAD);
+        !button.is_undefined() && button.unchecked_into::<web_sys::GamepadButton>().pressed()
+    })
+}
+
+/// Queues the press of the buttons held on `id`, which just connected. A browser only lists a
+/// controller once a button is pressed, and gilrs takes the state it first sees as the starting
+/// point, so without this that press would go unread until it was let go and pressed again.
+#[cfg(target_arch = "wasm32")]
+fn queue_held_buttons(gilrs: &mut Gilrs, id: GamepadId, gone: &[GamepadId]) {
+    use wasm_bindgen::JsCast as _;
+    let first = gilrs
+        .gamepads()
+        .map(|(id, _)| id)
+        .find(|id| !gone.contains(id));
+    let Some(web_pad) = first_web_pad().filter(|_| first == Some(id)) else {
+        return;
+    };
+    let buttons = web_pad.buttons();
+    let events: Vec<_> = WEB_BUTTONS
+        .into_iter()
+        .zip(0..)
+        .filter_map(|(button, index)| {
+            let data = buttons.get(index);
+            if data.is_undefined() {
+                return None;
+            }
+            let data = data.unchecked_into::<web_sys::GamepadButton>();
+            let code = gilrs.gamepad(id).button_code(button)?;
+            let value = data.value() as f32;
+            data.pressed().then_some([
+                Event::new(id, EventType::ButtonPressed(button, code)),
+                Event::new(id, EventType::ButtonChanged(button, value, code)),
+            ])
         })
+        .flatten()
+        .collect();
+    for event in events {
+        gilrs.insert_event(event);
+    }
 }
 
 /// The controllers, and the first connected one's state at the last [`Self::poll`].
 pub struct Gamepads {
     /// `None` where gilrs could not start (it logged why).
     gilrs: Option<Gilrs>,
+    /// The controllers disconnected since they last connected. gilrs can't tell in the browser:
+    /// it asks the last object the browser gave it for the controller, not the browser.
+    gone: Vec<GamepadId>,
     state: Option<State>,
 }
 
 impl Default for Gamepads {
     fn default() -> Self {
+        let _span = span!(log::Level::Debug, "game controllers setup");
         let gilrs = Gilrs::new()
             .inspect_err(|e| log::warn!("No game controllers: {e}"))
             .ok();
-        Self { gilrs, state: None }
+        Self {
+            gilrs,
+            gone: Vec::new(),
+            state: None,
+        }
     }
 }
 
 impl Gamepads {
     /// Takes the controllers' events since the last call and reads the first connected one.
     /// Call it once a frame: it also asks for the next frame, soon enough to follow the
-    /// controller.
-    pub fn poll(&mut self, ctx: &egui::Context) {
-        let Some(gilrs) = &mut self.gilrs else {
-            return;
-        };
+    /// controller. Returns whether the controller being read changed.
+    pub fn poll(&mut self, ctx: &egui::Context) -> Option<Connection> {
+        let gilrs = self.gilrs.as_mut()?;
         // The events update gilrs's own copy of each controller's state; the presses among them
         // are kept, with the controller they came from.
         let mut pressed = Vec::new();
         while let Some(Event { id, event, .. }) = gilrs.next_event() {
-            if let EventType::ButtonPressed(button, code) = event {
-                pressed.push((id, button));
-                if button == Button::Unknown {
-                    log::debug!("Unmapped controller button, code {}", code.into_u32());
+            match event {
+                EventType::ButtonPressed(button, code) => {
+                    pressed.push((id, button));
+                    if button == Button::Unknown {
+                        log::debug!("Unmapped controller button, code {}", code.into_u32());
+                    }
                 }
+                EventType::Connected => {
+                    self.gone.retain(|&gone| gone != id);
+                    #[cfg(target_arch = "wasm32")]
+                    queue_held_buttons(gilrs, id, &self.gone);
+                }
+                EventType::Disconnected => self.gone.push(id),
+                _ => {}
             }
         }
-        self.state = gilrs
+        let state = gilrs
             .gamepads()
-            .find(|(_, pad)| pad.is_connected())
+            .find(|(id, _)| !self.gone.contains(id))
             .map(|(id, pad)| {
                 let depth = |button| pad.button_data(button).map_or(0.0, |d| d.value());
                 State {
@@ -195,11 +313,15 @@ impl Gamepads {
                         .collect(),
                 }
             });
-        if self.state.is_some() {
+        if state.is_some() {
             ctx.request_repaint();
         } else {
             ctx.request_repaint_after(SEARCH_INTERVAL);
         }
+        let name = |state: &Option<State>| state.as_ref().map(|pad| pad.name.clone());
+        let change = connection_change(name(&self.state).as_deref(), name(&state).as_deref());
+        self.state = state;
+        change
     }
 
     /// The first connected controller's state at the last [`Self::poll`].
@@ -225,14 +347,66 @@ mod tests {
     fn the_controller_flies_as_the_keyboard_and_the_joystick_do() {
         assert_eq!(State::default().input(), Input::default(), "nothing held");
         let input = holding(&[Button::RightTrigger2, Button::LeftTrigger2], [-0.5, 0.9]).input();
-        assert!(input.thrust && input.fine, "R2 thrusts, L2 is fine control");
+        assert_eq!(
+            input.thrust, 1.0,
+            "a trigger without a depth thrusts in full"
+        );
+        assert!(input.fine, "L2 is fine control");
         assert_eq!(
             input.turn, 0.5,
             "left turns left, as hard as pushed; up does not count"
         );
         let cross = holding(&[Button::South], [1.0, 0.0]).input();
-        assert!(cross.thrust, "Cross thrusts");
+        assert_eq!(cross.thrust, 1.0, "Cross thrusts");
         assert_eq!(cross.turn, -1.0, "full right");
+    }
+
+    #[test]
+    fn r2_thrusts_as_hard_as_it_is_pulled() {
+        let pulled = |depth| {
+            State {
+                triggers: [0.0, depth],
+                ..State::default()
+            }
+            .input()
+            .thrust
+        };
+        assert_eq!(pulled(0.0), 0.0, "let go");
+        assert_eq!(pulled(TRIGGER_DEAD_ZONE), 0.0, "resting, a bit off 0");
+        assert_eq!(pulled(1.0), 1.0, "all the way");
+        for depth in [0.1, 0.25, 0.5, 0.75, 0.9] {
+            let thrust = pulled(depth);
+            assert!(
+                (thrust - f64::from(depth)).abs() < 0.02,
+                "at {depth}: {thrust}"
+            );
+        }
+        let both = State {
+            triggers: [0.0, 0.5],
+            held: vec![Button::South],
+            ..State::default()
+        };
+        assert_eq!(both.input().thrust, 1.0, "Cross is always full thrust");
+    }
+
+    #[test]
+    fn a_change_of_controller_is_told_once() {
+        let change = connection_change;
+        assert_eq!(
+            change(None, Some("DualSense")),
+            Some(Connection::Connected("DualSense".to_owned()))
+        );
+        assert_eq!(
+            change(Some("DualSense"), None),
+            Some(Connection::Disconnected("DualSense".to_owned()))
+        );
+        assert_eq!(
+            change(Some("DualSense"), Some("Xbox")),
+            Some(Connection::Connected("Xbox".to_owned())),
+            "another took over"
+        );
+        assert_eq!(change(Some("DualSense"), Some("DualSense")), None);
+        assert_eq!(change(None, None), None);
     }
 
     #[test]

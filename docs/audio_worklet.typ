@@ -1,4 +1,4 @@
-#import "@local/pele_typst:0.3.0": mermaid
+#import "@local/pele-rs:0.3.0": mermaid
 #import "@preview/codly:2.0.0" as codly
 
 // Code blocks, with line numbers that references can point to (@label:line).
@@ -86,15 +86,15 @@
   "If", "Then", "Else", "Except", "Unchanged", "Enabled", "WF", "True",
 ).map(kw)
 #let (
-  Ion, Level, QuietQuanta, Ctl, Zero, Silence, ctl, idle, out, sent, recv, vars, TypeOK,
+  Level, QuietQuanta, Ctl, Zero, Silence, ctl, idle, out, sent, recv, vars, TypeOK,
   Init, Publish, Receive, Effective, Render, Next, Spec, Seq, Append, Head, Tail, Len, SubSeq,
-  Range, FIFO, NoTornControls, AlwaysRenders, GoesQuiet, Last, thrust, torque, ion, ionGain,
+  Range, FIFO, NoTornControls, AlwaysRenders, GoesQuiet, Last, thrust, torque, ionGain,
   rcsGain, masterGain, Fill, Play, now,
 ) = (
-  "Ion", "Level", "QuietQuanta", "Ctl", "Zero", "Silence", "ctl", "idle", "out", "sent", "recv",
+  "Level", "QuietQuanta", "Ctl", "Zero", "Silence", "ctl", "idle", "out", "sent", "recv",
   "vars", "TypeOK", "Init", "Publish", "Receive", "Effective", "Render", "Next", "Spec", "Seq",
   "Append", "Head", "Tail", "Len", "SubSeq", "Range", "FIFO", "NoTornControls",
-  "AlwaysRenders", "GoesQuiet", "Last", "thrust", "torque", "ion", "ionGain", "rcsGain",
+  "AlwaysRenders", "GoesQuiet", "Last", "thrust", "torque", "ionGain", "rcsGain",
   "masterGain", "Fill", "Play", "now",
 ).map(s => math.italic(s))
 #let dotdot = math.class("binary", $. thin .$)
@@ -394,9 +394,9 @@ itself advanced by $N_"buf"$ samples, $H(z) = 1 + z^(N_"buf")$, with magnitude r
 $ abs(H(e^(j omega))) = 2 abs(cos (omega N_"buf") / 2) , $
 
 a *comb filter* @oppenheim with notches every $f_s \/ N_"buf" approx 23.4 "Hz"$, starting at
-$f_s \/ 2N_"buf" approx 11.7 "Hz"$. On the tonal ion sounds (hum, whine, thrum), partials that fall
+$f_s \/ 2N_"buf" approx 11.7 "Hz"$. On the tonal ion sound, partials that fall
 near a notch cancel and those between notches double, so the timbre changes abruptly. On the
-noise-like sounds (hiss, RCS), the two copies are uncorrelated, so power rises by $3 "dB"$.
+noise-like RCS hiss, the two copies are uncorrelated, so power rises by $3 "dB"$.
 Each slot was limited with $tanh$ on its own, but the browser sums the two sources _after_ that
 limiter, so peaks reach $2$ and are hard-clipped at the destination. The whole sequence (a gap,
 then a phasey, louder, clipped stretch) is the "choppy" sound.
@@ -430,7 +430,7 @@ apply. Two smaller effects remain, and the design below addresses both:
 - *Heartbeat cutouts.* `HEARTBEAT_TIMEOUT = 0.25 s` fades the thrusters to zero when no frame
   has run for 250 ms. A frame longer than that therefore fades the sound out and back in. This
   is the right behavior for a minimized window, but the wrong one for a slow frame.
-- *Torn control vectors.* `Shared::publish` (in `sound.rs`) stores the six fields as six
+- *Torn control vectors.* `Shared::publish` (in `sound.rs`) stores the five fields as five
   independent `Relaxed` atomics. Relaxed stores to different locations are not ordered with
   respect to each other, so the reader can see `thrust` from frame $k + 1$ next to `torque`
   from frame $k$. This is harmless today, because the smoothers hide it, but @spec removes it
@@ -557,8 +557,8 @@ module* with a plain C ABI and no imports, and the worklet instantiates it on it
 ) <fig-states>
 
 While *Loading*, `process()` returns silence and stays alive. In *Quiet*, the targets for
-thrust and torque are 0, and the synthesizer's smoothers fade to silence. The volume gains and
-the choice of ion sound are still followed.
+thrust and torque are 0, and the synthesizer's smoothers fade to silence. The volume gains are
+still followed.
 
 == The new real-time constraint <load-measured>
 
@@ -573,24 +573,12 @@ thread no longer appears in it.* The frame times $Delta_k$ affect only how fresh
 are (@control), never whether samples arrive in time.
 
 Measured on an Apple M4 (native `--release`, stereo at 48 kHz, thrust 0.7 and torque 0.6, so
-the ion voice and the RCS both run, 128-frame calls as in a worklet):
-
-#figure(
-  rules(
-    columns: 4,
-    ([Ion sound], [$c$ (ns per frame)], [One quantum ($c N_"q"$)], [$rho = c f_s$]),
-    [Hall hum], [26.3], [3.4 µs], [0.13 %],
-    [Ion whine], [37.8], [4.8 µs], [0.18 %],
-    [Plasma hiss], [22.4], [2.9 µs], [0.11 %],
-    [Deep thrum], [23.6], [3.0 µs], [0.11 %],
-    [Pulsed plasma], [23.4], [3.0 µs], [0.11 %],
-  ),
-  caption: [Cost of the synthesizer.],
-)
+the ion voice and the RCS both run, 128-frame calls as in a worklet), the synthesizer costs
+$c approx 22.4 "ns"$ per frame: $2.9 thin mu"s"$ per quantum, and $rho = c f_s approx 0.11 %$.
 
 The budget per quantum is $Q = 2667 thin mu"s"$. Allow a factor of 2 for wasm against native
 code, and another factor of 20 for a machine much older than an M4: the worst case is then
-$rho approx 0.18 % times 40 approx 7 %$, still far below 1. Underruns that do happen now come
+$rho approx 0.11 % times 40 approx 4 %$, still far below 1. Underruns that do happen now come
 from the operating system starving the audio thread, the same situation every native audio app
 is in.
 
@@ -648,11 +636,11 @@ $sent$ and $recv$ are history variables, used only to state properties.
 #module("WorkletAudio")[
   #EXTENDS _Naturals_, _Sequences_
 
-  #CONSTANTS $Ion, Level$ #h(1fr) #comment[the ion sounds; the possible levels and gains] \
+  #CONSTANTS $Level$ #h(1fr) #comment[the possible levels and gains] \
   #CONSTANTS $QuietQuanta$ #h(1fr) #comment[$H \/ Q$: quanta without a message before going quiet]
 
   $
-    Ctl ≜ [ & thrust: Level, torque: Level, ion: Ion, \
+    Ctl ≜ [ & thrust: Level, torque: Level, \
     & ionGain: Level, rcsGain: Level, masterGain: Level]
   $
 
@@ -817,7 +805,6 @@ $f_c approx 1 / (2 pi tau)$ when $tau f_s >> 1$:
     ([Smoother], [$tau$ rise / fall], [$kappa$ at 48 kHz (rise)], [$f_c$ rise / fall]),
     [thrust], [40 ms / 120 ms], $5.21 times 10^(-4)$, [3.98 Hz / 1.33 Hz],
     [volume gains], [20 ms / 20 ms], $1.04 times 10^(-3)$, [7.96 Hz],
-    [switching ion sound], [15 ms / 15 ms], $1.39 times 10^(-3)$, [10.6 Hz],
   ),
   caption: [The synthesizer's smoothers.],
 )
@@ -842,7 +829,7 @@ $tau_"fall" ln 1000 approx 0.83 "s"$. This is a fade, not a cut.
   the only address passed out is the output's:
   - `synth_init(sample_rate: f32) -> u32`: creates the synthesizer, returns the address of two
     planar `f32` buffers of 128 frames;
-  - `synth_set(thrust, torque, ion: u32, ion_gain, rcs_gain, master_gain)`: holds the controls
+  - `synth_set(thrust, torque, ion_gain, rcs_gain, master_gain)`: holds the controls
     and resets $idle$;
   - `synth_render(frames: u32)`: applies the heartbeat ($Effective$ in the specification),
     renders, and deinterleaves into the two buffers.
@@ -851,7 +838,7 @@ $tau_"fall" ln 1000 approx 0.83 "s"$. This is a fade, not a cut.
   `#[expect(unsafe_code, reason = ...)]` on this one module. Nothing allocates after
   `synth_init`, so `process()` never allocates and wasm memory never grows (growth would
   invalidate the worklet's `Float32Array` views). `synth_set` is the specification's
-  $Receive$ (@abi:50) and `synth_render` its $Render$ (@abi:77).
+  $Receive$ (@abi:50) and `synth_render` its $Render$ (@abi:71).
 
   #figure(
     codly.new(
@@ -862,7 +849,7 @@ $tau_"fall" ln 1000 approx 0.83 "s"$. This is a fade, not a cut.
 
       use std::cell::RefCell;
 
-      use crate::{Controls, IonSound, Synth};
+      use crate::{Controls, Synth};
 
       /// Frames per render quantum.
       const QUANTUM: usize = 128;
@@ -908,20 +895,14 @@ $tau_"fall" ln 1000 approx 0.83 "s"$. This is a fade, not a cut.
       pub extern "C" fn synth_set(
           thrust: f32,
           torque: f32,
-          ion: u32,
           ion_gain: f32,
           rcs_gain: f32,
           master_gain: f32,
       ) {
           with(|w| {
-              let ion = IonSound::ALL
-                  .get(ion as usize)
-                  .copied()
-                  .unwrap_or_default();
               w.controls = Controls {
                   thrust,
                   torque,
-                  ion,
                   ion_gain,
                   rcs_gain,
                   master_gain,
@@ -978,7 +959,7 @@ $tau_"fall" ln 1000 approx 0.83 "s"$. This is a fade, not a cut.
         constructor({ processorOptions }) {
           super();
           this.port.onmessage = ({ data }) => {
-            this.controls = data; // the six numbers of synth_set
+            this.controls = data; // the five numbers of synth_set
             this.synth?.synth_set(...data);
           };
           WebAssembly.instantiate(processorOptions.bytes).then(({ instance }) => {
@@ -1010,7 +991,7 @@ $tau_"fall" ln 1000 approx 0.83 "s"$. This is a fade, not a cut.
 + *`sound.rs`*: native keeps cpal, now with $H = 1 "s"$. On `wasm32`, a small `web` module
   replaces cpal: it creates the `AudioContext` on first use, adds the worklet, creates the node
   once the bytes have been fetched, resumes on a gesture (as now), and posts
-  `[thrust, torque, ion, ion_gain, rcs_gain, master_gain]` once per frame. cpal becomes a
+  `[thrust, torque, ion_gain, rcs_gain, master_gain]` once per frame. cpal becomes a
   native-only dependency. `web-sys` gains the `AudioWorklet*` and `MessagePort` features.
 + *Build.* A Trunk `pre_build` hook runs
   `cargo rustc -p nabla-synth --release --target wasm32-unknown-unknown --crate-type cdylib`

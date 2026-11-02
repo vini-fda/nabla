@@ -142,7 +142,7 @@ pub struct ShipRenderer {
     /// The model's [`ShipModel::radius`] over its half length.
     radius: f32,
     /// Gamma-encode the shader's output, for a target that is not sRGB.
-    gamma_output: bool,
+    pub(crate) gamma_output: bool,
 }
 
 impl ShipRenderer {
@@ -394,18 +394,25 @@ pub struct DepthMap {
 }
 
 impl DepthMap {
-    /// For the ship of `renderer` at `position` with half length `half_length`, seen
-    /// through `camera` in `canvas`.
-    pub fn new(
+    /// Shared clipping planes for the ship, spheres and plumes.
+    pub fn for_world(
         renderer: &ShipRenderer,
         camera: &Camera,
         canvas: egui::Rect,
         position: egui::Vec2,
         half_length: f32,
+        bodies: &[crate::world::CelestialBody],
     ) -> Self {
-        Self::with_reach(camera, canvas, position, half_length * renderer.radius)
+        let reach = bodies
+            .iter()
+            .fold(half_length * renderer.radius, |reach, body| {
+                reach.max(
+                    (egui::vec2(body.position[0], body.position[1]) - position).length()
+                        + body.radius,
+                )
+            });
+        Self::with_reach(camera, canvas, position, reach)
     }
-
     /// For a ship at `position` that reaches `reach` from its center.
     fn with_reach(camera: &Camera, canvas: egui::Rect, position: egui::Vec2, reach: f32) -> Self {
         let toward_viewer = camera.orbit.toward_viewer();
@@ -482,9 +489,9 @@ pub fn paint_callback(
     position: egui::Vec2,
     theta: f32,
     half_length: f32,
+    depth: &DepthMap,
 ) -> Option<egui::PaintCallback> {
-    let depth = DepthMap::new(renderer, camera, canvas, position, half_length);
-    let reach = depth.reach;
+    let reach = half_length * renderer.radius;
     let k = camera.scale;
     let eye_distance = camera.eye_distance(canvas);
 
@@ -526,7 +533,7 @@ pub fn paint_callback(
     let r = rotation(theta);
     let [right, up, toward_viewer] = camera.orbit.basis();
 
-    let clip_from_world = clip_from_world(camera, canvas, rect, &depth);
+    let clip_from_world = clip_from_world(camera, canvas, rect, depth);
     // Column `i` of the world-to-view rotation.
     let column = |i: usize| {
         let [r, u, v] = [right, up, toward_viewer].map(|axis| axis.to_array()[i]);
@@ -559,7 +566,7 @@ pub fn paint_callback(
 
 /// The matrix (column-major) from world points to clip coordinates for drawing into `rect`
 /// of the canvas `canvas` seen through `camera`, with depth by `depth`.
-fn clip_from_world(
+pub(crate) fn clip_from_world(
     camera: &Camera,
     canvas: egui::Rect,
     rect: egui::Rect,

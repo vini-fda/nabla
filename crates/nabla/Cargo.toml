@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version = "1.99"
 description = "Nabla: fly the 2D ship to its goal, by hand or with a control policy as autopilot, natively and on the web."
 license = "MIT OR Apache-2.0"
-include = ["LICENSE-APACHE", "LICENSE-MIT", "**/*.rs", "Cargo.toml", "assets/fonts/*", "assets/formulas/*"]
+include = ["LICENSE-APACHE", "LICENSE-MIT", "**/*.rs", "Cargo.toml", "assets/controller_icons/**/*", "assets/fonts/*", "assets/formulas/*", "assets/worlds/*", "src/*.wgsl"]
 
 [package.metadata.docs.rs]
 all-features = true
@@ -34,6 +34,12 @@ image = { version = "0.25.10", default-features = false, features = ["jpeg", "pn
 log = "0.4.34"
 nabla-core.workspace = true
 nabla-synth.workspace = true
+rapier2d = { version = "0.36.1", features = ["enhanced-determinism"] }
+rfd = "0.17.2"
+serde = { version = "1.0", features = ["derive"] }
+toml = "1.1.8"
+# `std::time::Instant` on the web too, where the standard one panics (src/span.rs).
+web-time = "1.1.0"
 
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -63,6 +69,7 @@ features = [
   "BaseAudioContext",
   "Gamepad",
   "GamepadButton",
+  "Location",
   "MessagePort",
   "Navigator",
   "Response",

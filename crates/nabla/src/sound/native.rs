@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use cpal::traits::{DeviceTrait as _, HostTrait as _, StreamTrait as _};
 use cpal::{FromSample, SampleFormat, SizedSample, StreamConfig};
 use nabla_synth::worklet::QUIET_SECONDS;
-use nabla_synth::{Controls, IonSound, Synth};
+use nabla_synth::{Controls, Synth};
 
 /// The default output, playing the synthesizer.
 pub struct Output {
@@ -37,10 +37,9 @@ impl Output {
 /// The audio callback's inputs, written by the app every frame.
 #[derive(Default)]
 struct Shared {
-    /// `f32` bits of [`Controls`]' fields, and the ion sound's index in [`IonSound::ALL`].
+    /// `f32` bits of [`Controls`]' fields.
     thrust: AtomicU32,
     torque: AtomicU32,
-    ion: AtomicU32,
     gains: [AtomicU32; 3],
     /// Bumped every frame.
     heartbeat: AtomicU32,
@@ -48,10 +47,8 @@ struct Shared {
 
 impl Shared {
     fn publish(&self, c: &Controls) {
-        let ion = IonSound::ALL.iter().position(|&s| s == c.ion).unwrap_or(0);
         self.thrust.store(c.thrust.to_bits(), Relaxed);
         self.torque.store(c.torque.to_bits(), Relaxed);
-        self.ion.store(ion as u32, Relaxed);
         for (gain, value) in self
             .gains
             .iter()
@@ -64,14 +61,9 @@ impl Shared {
 
     fn controls(&self) -> Controls {
         let f = |a: &AtomicU32| f32::from_bits(a.load(Relaxed));
-        let ion = IonSound::ALL
-            .get(self.ion.load(Relaxed) as usize)
-            .copied()
-            .unwrap_or_default();
         Controls {
             thrust: f(&self.thrust),
             torque: f(&self.torque),
-            ion,
             ion_gain: f(&self.gains[0]),
             rcs_gain: f(&self.gains[1]),
             master_gain: f(&self.gains[2]),
@@ -145,17 +137,14 @@ mod tests {
     #[test]
     fn controls_round_trip_through_the_shared_atomics() {
         let shared = Shared::default();
-        for ion in IonSound::ALL {
-            let controls = Controls {
-                thrust: 0.25,
-                torque: -0.5,
-                ion,
-                ion_gain: 0.1,
-                rcs_gain: 0.2,
-                master_gain: 0.3,
-            };
-            shared.publish(&controls);
-            assert_eq!(shared.controls(), controls, "{ion:?}");
-        }
+        let controls = Controls {
+            thrust: 0.25,
+            torque: -0.5,
+            ion_gain: 0.1,
+            rcs_gain: 0.2,
+            master_gain: 0.3,
+        };
+        shared.publish(&controls);
+        assert_eq!(shared.controls(), controls);
     }
 }

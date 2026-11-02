@@ -43,6 +43,11 @@ const FORMULAS: &[(&str, &str)] = &[
     ("CONTROL", "mathbf(u)_k = (F, tau)"),
     ("THRUST", "F"),
     ("TORQUE", "tau"),
+    // World
+    ("G", "G"),
+    // Orbits
+    ("ALTITUDE", "h_\"alt\""),
+    ("CAPTURE_TIME", "t_\"cap\""),
 ];
 
 /// Font size the formulas are typeset at. Sizes are written out in em, so it only matters to

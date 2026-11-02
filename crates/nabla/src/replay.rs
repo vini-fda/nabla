@@ -1,9 +1,10 @@
 //! A recorded run of the ship on one test case.
 //!
-//! The run follows the exact sampled-data model of `nabla-core`: `s_k` is the state at
+//! Vacuum runs follow the exact sampled-data model of `nabla-core`: `s_k` is the state at
 //! `t_k = k h`, and `u_k` is the control held during `[t_k, t_{k+1})`. Because the control is constant between samples, the state at any
 //! `t = t_k + tau`, `0 <= tau < h`, is exactly one `step` of length `tau` from `s_k` under `u_k`,
 //! so the canvas shows the true continuous motion every frame, not only at the samples.
+//! Collision worlds instead interpolate the recorded Rapier substeps.
 
 use nabla_core::problem::{Case, Trajectory};
 use nabla_core::{Control, Params, State, step};
@@ -15,11 +16,17 @@ pub type Series = Vec<[f64; 2]>;
 pub struct Replay {
     pub case: Case,
     pub trajectory: Trajectory,
+    /// Rapier substeps for worlds with collisions; empty for exact vacuum flights.
+    pub collision_steps: Vec<Vec<State>>,
 }
 
 impl Replay {
     pub fn new(case: Case, trajectory: Trajectory) -> Self {
-        Self { case, trajectory }
+        Self {
+            case,
+            trajectory,
+            collision_steps: Vec::new(),
+        }
     }
 
     /// Controller sampling period `h`.
@@ -50,6 +57,20 @@ impl Replay {
     /// Exact state at `t_k + offset`, for `0 <= offset < h`: one partial step from `s_k` under
     /// `u_k`. At or after the last sample this is `s_N`.
     pub fn state_at(&self, frame: usize, offset: f64) -> State {
+        if let Some(samples) = self.collision_steps.get(frame) {
+            let t = (offset / self.h()).clamp(0.0, 1.0) * (samples.len() - 1) as f64;
+            let i = (t.floor() as usize).min(samples.len() - 2);
+            let (a, b) = (samples[i], samples[i + 1]);
+            let mix = |a: f64, b: f64| a + (b - a) * (t - i as f64);
+            return State {
+                x: mix(a.x, b.x),
+                y: mix(a.y, b.y),
+                vx: mix(a.vx, b.vx),
+                vy: mix(a.vy, b.vy),
+                theta: mix(a.theta, b.theta),
+                omega: mix(a.omega, b.omega),
+            };
+        }
         match self.trajectory.controls.get(frame) {
             Some(u) if offset > 0.0 => {
                 let params = Params {

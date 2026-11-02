@@ -20,7 +20,8 @@
 //! and unlike explicit time-stepping schemes it has no step-size stability limit.
 
 /// Physical parameters and sampling period. All must be positive.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Params {
     /// Mass `m`.
     pub mass: f64,
@@ -35,7 +36,8 @@ pub struct Params {
 }
 
 /// Ship state `s = (x, y, vx, vy, θ, ω)`. The heading `theta` is not wrapped.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct State {
     pub x: f64,
     pub y: f64,

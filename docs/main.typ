@@ -411,3 +411,312 @@ psi = theta + omega abs(omega) / (2 alpha),
 $
 
 the heading at which the braking curve brings the spin to rest, and holds it, with $e_k = psi - theta_k$ not wrapped: after a long spin it brakes to a stop rather than turning back the shorter way.
+
+#pagebreak()
+== Problem: orbital stabilization and tracking in an external force field
+
+With gravity, the desired terminal behavior need not be rest at a point. It can be sustained motion on a chosen orbit, or motion along a feasible reference trajectory. The controller must first bring the ship into that motion and then keep it there. Reaching a position once, being on a dynamically feasible orbit, and stabilizing that orbit are different requirements.
+
+This section generalizes the vacuum model. It specifies the dynamics, admissible goals, and conditions under which a controller could be certified; it does not assume that every force field or initial state permits the requested motion.
+
+=== Force, thrust, and the domain of motion
+
+Write $f$ for the scalar thrust called $F$ in the preceding sections, reserving the bold symbol for the external vector force:
+
+$
+mathbf(F): D -> RR^2, quad
+mathbf(F)(mathbf(p)) = vec(F_x (x,y), F_y (x,y)), quad
+mathbf(g)(mathbf(p)) = 1/m mathbf(F)(mathbf(p)).
+$
+
+Here $D subset.eq RR^2$ is an open position domain, and $mathbf(g)$ is acceleration, not force. Assume the field is known, time independent, and locally Lipschitz on $D$. It acts through the ship's center of mass and supplies no torque. Mass and inertia are constant; there is no drag or fuel depletion. The dynamics are
+
+$
+dot(mathbf(p)) &= mathbf(v), \
+dot(mathbf(v)) &= f/m mathbf(e)(theta) + mathbf(g)(mathbf(p)), \
+dot(theta) &= omega, quad dot(omega) = tau/I, \
+u &= vec(f,tau) in U = [0,F_max] times [-tau_max,tau_max].
+$
+
+The numerical state can retain an unwrapped heading, but physical headings and target comparisons are modulo $2 pi$. For each prescribed piecewise-constant admissible input, local Lipschitz continuity gives a unique maximal, absolutely continuous solution. Continuation requires that the solution not leave the domain or escape to infinity in finite time; local existence alone is not a global feasibility result. These are the usual controlled-ODE hypotheses; see #link("https://liberzon.csl.illinois.edu/teaching/cvoc.pdf")[Liberzon, _Calculus of Variations and Optimal Control Theory_, preliminary text, §3.3.1].
+
+For static circular bodies with centers $mathbf(c)_i$, radii $R_i$, and ship radius $rho$, choose a clearance $d > 0$ and impose
+
+$
+norm(mathbf(p)(t)-mathbf(c)_i) >= R_i + rho + d
+quad "for every body and every time" t.
+$
+
+The free-flight ODE applies between contacts. Collision impulses, contact forces, and friction require a hybrid/contact model and are outside this formulation. In particular, a reference orbit must avoid the bodies, and a trajectory that is safe only at the sampling instants is not necessarily safe between them.
+
+=== Newtonian gravity as a particular field
+
+Let $G >= 0$ be the world's gravitational constant, $M_i >= 0$ the bodies' masses, and $mu_i = G M_i$. Outside the bodies,
+
+$
+mathbf(g)(mathbf(p)) = -sum_i mu_i (mathbf(p)-mathbf(c)_i)/norm(mathbf(p)-mathbf(c)_i)^3,
+quad mathbf(F)(mathbf(p)) = m mathbf(g)(mathbf(p)).
+$
+
+The player mass cancels from gravitational acceleration. The source positions are parameters, not states: no reaction force updates them and no body-body evolution is modeled. This is a particle moving in a fixed gravitational potential, not a moving two-body or restricted three-body system.
+
+The app extends each source through its interior as a uniform solid sphere:
+
+$
+mathbf(g)_i (mathbf(p)) = -mu_i
+  (mathbf(p)-mathbf(c)_i)/(max(norm(mathbf(p)-mathbf(c)_i),R_i))^3.
+$
+
+This field is finite at the center, continuous and locally Lipschitz across the surface, but its spatial derivative changes there. The collision-free planning domain stays outside the spheres, where the field is smooth. Writing $mathbf(r)_i = mathbf(p)-mathbf(c)_i$ and $r_i = norm(mathbf(r)_i)$, its Jacobian is
+
+$
+J_g (mathbf(p)) = sum_i mu_i
+  (3 mathbf(r)_i mathbf(r)_i^T / r_i^5 - I_2/r_i^3),
+$
+
+where $I_2$ denotes the identity matrix, not the ship's moment of inertia. This derivative is part of the prediction model: a position error changes the subsequent acceleration.
+
+In this exterior domain, the specific potential and translational mechanical energy are
+
+$
+V(mathbf(p)) = -sum_i mu_i/r_i, quad
+E = 1/2 norm(mathbf(v))^2 + V(mathbf(p)), quad
+dot(E) = f/m mathbf(v)^T mathbf(e)(theta).
+$
+
+Indeed, $mathbf(g) = -nabla V$, so the gravitational terms cancel when differentiating $E$. With zero thrust, energy is conserved. Consequently, a chosen passive orbit is not an attractor for an open neighborhood containing states of different energy: those states cannot converge to that orbit while preserving their own energy. Bounded passive orbital motion and asymptotic convergence to a selected orbit must be distinguished.
+
+=== What constitutes a goal?
+
+*Timed tracking.* A reference is a state-input pair $(mathbf(s)_r (t),u_r (t))$ satisfying the dynamics and all constraints. The objective is to make the state error relative to $mathbf(s)_r (t)$ tend to zero, including timing. This is appropriate for rendezvous with a moving target.
+
+*Orbital stabilization.* A periodic reference of period $P > 0$ satisfies the dynamics, with $mathbf(s)_r (t+P)=mathbf(s)_r (t)$ modulo heading and $u_r (t+P)=u_r (t)$. Its image
+
+$
+Gamma = {mathbf(s)_r (sigma): 0 <= sigma < P}
+$
+
+is the desired orbit in *state space*, not merely a curve of positions. Its velocities specify the speed and direction of travel. If attitude is irrelevant during passive flight, enlarge the target to include all constant headings with $omega=0$, rather than asking the ship to point along its velocity.
+
+Choose fixed positive scales for position, velocity, angle, and spin, and let $d_W$ be the resulting dimensionless state distance, using the shortest angular difference. For a target set $cal(A)$, define
+
+$
+d_cal(A)(mathbf(s)) = inf_(mathbf(z) in cal(A)) d_W (mathbf(s),mathbf(z)).
+$
+
+For $cal(A)=Gamma$, this minimizes over phase. It does not require catching an imaginary spacecraft at a prescribed point on the orbit. This distinction motivates transverse rather than timed error coordinates; see #link("https://underactuated.csail.mit.edu/limit_cycles.html")[Tedrake, _Underactuated Robotics_, “Algorithms for Limit Cycles”].
+
+#block(width: 100%, breakable: false)[
+For a specified feedback law, *stability of the target set* means that for every $epsilon>0$ there is $delta>0$ such that
+
+$
+d_cal(A)(mathbf(s)(0)) < delta
+quad => quad d_cal(A)(mathbf(s)(t)) < epsilon quad (t >= 0).
+$
+]
+
+The target must also be invariant, and solutions must remain admissible and exist for all future time. *Local asymptotic stabilization* adds $d_cal(A)(mathbf(s)(t)) -> 0$ from a neighborhood of $cal(A)$. In orbital stabilization, phase remains free. For a practical controller, require entry into a specified tolerance tube and continued containment there; a single crossing of the tube is insufficient.
+
+A nonperiodic reference can instead define a timed tracking problem or a path-following problem. Path following also needs a progress condition; proximity to a geometric curve alone allows stopping on it. Its timing law, speed profile, or admissible progress rates are part of the task. The same safety and actuator feasibility checks apply.
+
+=== Feasibility before stabilization
+
+For a sufficiently smooth proposed position trajectory $mathbf(p)_r (t)$, define its required thrust vector
+
+$
+mathbf(w)(t) = m dot.double(mathbf(p))_r (t) - mathbf(F)(mathbf(p)_r (t)).
+$
+
+On any interval where $mathbf(w)$ is twice continuously differentiable and nonzero, exact realization forces
+
+$
+f_r = norm(mathbf(w)), quad
+theta_r = op("atan2")(w_y,w_x), quad
+omega_r = dot(theta)_r, quad tau_r = I dot.double(theta)_r.
+$
+
+The angle is continuously unwrapped on that interval. These expressions supply a feasible reference precisely when $f_r <= F_max$, $|I dot.double(theta)_r| <= tau_max$, and the state and clearance conditions hold. The required initial attitude and spin must also match, or a separate feasible capture maneuver is needed. In particular, a bound on the magnitude of $mathbf(w)$ alone does not ensure feasibility: its direction may turn too quickly.
+
+For checking the torque without differentiating a wrapped angle, write $det(mathbf(a),mathbf(b)) = a_x b_y-a_y b_x$. Then
+
+$
+dot(theta)_r &= det(mathbf(w),dot(mathbf(w)))/norm(mathbf(w))^2, \
+dot.double(theta)_r &= det(mathbf(w),dot.double(mathbf(w)))/norm(mathbf(w))^2
+  - 2 (mathbf(w)^T dot(mathbf(w))) det(mathbf(w),dot(mathbf(w)))/norm(mathbf(w))^4.
+$
+
+At zeros of $mathbf(w)$ these formulas are undefined. On a passive arc, $mathbf(w)=0$ and $f_r=0$; the attitude can evolve independently under bounded torque. Joining passive and powered arcs still requires continuous attitude and spin with feasible torque. A sudden change of required thrust direction cannot be implemented as an instantaneous turn.
+
+These are continuous-time conditions. With the fixed sampling period, an exactly executable reference must additionally admit inputs constant on each interval of length $h$. A smooth feasible continuous input is not generally executable exactly by zero-order hold. It must be replanned with that restriction or treated as an approximate reference with quantified tracking tolerance.
+
+*No general existence guarantee.* For example, if $mathbf(F)(mathbf(p))=(F_max+c,0)^T$ with $c>0$, then
+
+$
+dot(v)_x >= c/m > 0
+$
+
+for every admissible control. Neither a bounded periodic trajectory nor indefinite hovering is possible. Even when an orbit exists, an initial state may be unable to reach it without a collision. The global vacuum feasibility proposition therefore does not extend to arbitrary fields and obstacles.
+
+#block(width: 100%, breakable: false)[
+*Rest is a special case.* At a fixed point $B$, equilibrium requires
+
+$
+mathbf(v)=0, quad omega=0, quad tau=0, quad
+f mathbf(e)(theta)=-mathbf(F)(B).
+$
+]
+
+Such an equilibrium exists exactly when $B$ is admissible and $norm(mathbf(F)(B)) <= F_max$. For nonzero external force, the thrust magnitude and heading are fixed by this balance. This establishes existence, not stabilizability; equality at the thrust limit leaves no margin to increase thrust in that direction.
+
+=== Example: capturing a circular orbit around one body
+
+For one body at $mathbf(c)$, take $mu=G M>0$ and a radius $r_0>R+rho+d$. A passive circular orbit has
+
+$
+Omega = sqrt(mu/r_0^3), quad v_c = sqrt(mu/r_0), \
+mathbf(p)_r (t) = mathbf(c)+r_0 vec(cos phi(t),sin phi(t)), \
+mathbf(v)_r (t) = eta v_c vec(-sin phi(t),cos phi(t)), quad
+phi(t)=phi_0+eta Omega t,
+$
+
+where $eta in {-1,1}$ fixes the direction. Twice differentiating the position gives $dot.double(mathbf(p))_r=-mu (mathbf(p)_r-mathbf(c))/r_0^3$, so $f_r=0$ suffices. A constant hull heading and zero spin require no torque; the hull need not rotate at the orbital angular rate $Omega$.
+
+With $r=norm(mathbf(p)-mathbf(c))$, $mathbf(e)_r=(mathbf(p)-mathbf(c))/r$, and $mathbf(e)_t=(-e_(r,y),e_(r,x))^T$, define errors
+
+$
+z_r=r-r_0, quad z_v=mathbf(v)^T mathbf(e)_r, quad
+z_t=mathbf(v)^T mathbf(e)_t-eta v_c, quad z_omega=omega.
+$
+
+Their common zero set specifies this orbit's radius, radial speed, tangential speed and direction, and zero spin, while leaving phase and heading free. A scaled sum of their squares is a useful capture objective; it is not by itself a Lyapunov proof.
+
+For passive motion, the specific angular momentum $j=(p_x-c_x)v_y-(p_y-c_y)v_x$ is conserved, and
+
+$
+dot.double(r)=j^2/r^3-mu/r^2.
+$
+
+At the circular value $j^2=mu r_0$, the radial linearization is $dot.double(z)_r=-mu z_r/r_0^3$. It is oscillatory, not attracting; the effective radial potential has a strict local minimum. Perturbed energy or angular momentum generally selects a nearby orbit, not convergence back to the chosen circle. This is the central-force stability distinction described by #link("https://farside.ph.utexas.edu/teaching/celestial/Celestial/node43.html")[Fitzpatrick, “Motion in nearly circular orbit”]. Feedback is needed for capture and correction to a prescribed orbit.
+
+For multiple static sources, the summed field generally destroys this exact circular solution and angular-momentum conservation about any single body. A circular guess must be checked using $mathbf(w)$ above; it may require sustained thrust. Alternatively, solve for a feasible passive or powered periodic trajectory. Periodicity alone does not prove stability. If solving for the orbit itself, constrain its intended region, direction, clearance and nonzero motion so that the optimizer cannot satisfy periodicity with an unwanted equilibrium.
+
+=== Exact sampled dynamics with an external field
+
+Keep $u_k=(f_k,tau_k)$ constant on $[t_k,t_k+h)$. Rotation is still exact:
+
+$
+phi_k (sigma)=theta_k+omega_k sigma+tau_k/(2I) sigma^2, quad
+omega(t_k+sigma)=omega_k+tau_k/I sigma.
+$
+
+#block(width: 100%, breakable: false)[
+Set $mathbf(a)_k (sigma)=f_k/m mathbf(e)(phi_k (sigma))+mathbf(g)(mathbf(p)(t_k+sigma))$. Then
+
+$
+mathbf(v)(t_k+sigma) &= mathbf(v)_k+integral_0^sigma mathbf(a)_k (r) dif r, \
+mathbf(p)(t_k+sigma) &= mathbf(p)_k+sigma mathbf(v)_k
+  +integral_0^sigma (sigma-r) mathbf(a)_k (r) dif r.
+$
+]
+
+At $sigma=h$ these equations define $Phi_h^mathbf(F)(mathbf(s)_k,u_k)$, whenever the solution exists through the interval. They are an exact *implicit integral characterization*: the unknown position also appears inside the force integral. The vacuum heading integrals alone no longer determine the next state. Setting $mathbf(F)=0$ recovers the preceding vacuum model.
+
+For comparison, freezing only the external acceleration at $mathbf(p)_k$ gives the approximation
+
+$
+hat(mathbf(v))_(k+1)=mathbf(v)_k+f_k/m mathbf(c)_k+h mathbf(g)(mathbf(p)_k), \
+hat(mathbf(p))_(k+1)=mathbf(p)_k+h mathbf(v)_k+f_k/m mathbf(d)_k
+  +h^2/2 mathbf(g)(mathbf(p)_k).
+$
+
+Suppose $mathbf(g)$ has Lipschitz constant $L_g$ on a region containing the step and $norm(mathbf(v)(t)) <= v_*$ throughout it. With exact heading integrals and identical initial state and control, the one-step errors satisfy
+
+$
+norm(mathbf(v)_(k+1)-hat(mathbf(v))_(k+1)) <= 1/2 L_g v_* h^2, \
+norm(mathbf(p)_(k+1)-hat(mathbf(p))_(k+1)) <= 1/6 L_g v_* h^3.
+$
+
+To obtain these bounds, use $norm(mathbf(p)(t_k+r)-mathbf(p)_k)<=v_* r$ in each force integral. Thus small heading change alone is no longer an adequate accuracy criterion. Large field gradients or high speed also demand smaller integration steps. These are local bounds, not accumulated trajectory-error guarantees.
+
+A predictor can integrate the coupled translational equations numerically while evaluating rotation analytically. It must check convergence as integration steps are refined and enforce clearance between samples. The app's Rapier integration at substeps of at most $1/120$ second is a numerical plant model, not the exact flow map above; agreement with a controller's predictor must be measured, especially over long orbits.
+
+=== A constrained capture-and-maintain control problem
+
+Choose an admissible target set $cal(A)$: for example the circular-orbit set above or the image of another feasible periodic motion. A task also specifies the field, obstacle geometry, sampling period, error scales, tolerance, and an allowed region of initial states $cal(R)$. Seek a sampled feedback policy such that, for each $mathbf(s)_0 in cal(R)$,
+
+$
+mathbf(s)_(k+1)=Phi_h^mathbf(F)(mathbf(s)_k,pi(k,mathbf(s)_k)), quad
+pi(k,mathbf(s)_k) in U,
+$
+
+the entire continuous trajectory remains safe, and the target is stable and attractive, or its specified tolerance tube is reached and maintained. The region $cal(R)$ must be established; it cannot be assumed to include every state. Membership in a safe position region alone says nothing about whether the current velocity allows braking before impact.
+
+#block(width: 100%, breakable: false)[
+One concrete design is nonlinear model predictive control. At each sample solve, for a fixed horizon $H$,
+
+$
+min_(u_0,dots,u_(H-1)) quad
+  sum_(j=0)^(H-1) ell(mathbf(s)_j,u_j)+V_f (mathbf(s)_H)
+$
+]
+
+subject to $mathbf(s)_0$ equaling the measured state, the force-aware sampled dynamics, $u_j in U$, clearance throughout every predicted interval, and $mathbf(s)_H in cal(X)_f$. Apply the first input and solve again at the next sample. The terminal set $cal(X)_f$ represents a region from which the desired motion can be maintained safely, rather than a demand for zero terminal velocity.
+
+For a passive target, a possible nonnegative stage cost is
+
+$
+ell(mathbf(s),u)=q d_cal(A)(mathbf(s))^2
+  +r_f (f/F_max)^2+r_tau (tau/tau_max)^2,
+quad q,r_f,r_tau>0.
+$
+
+For a powered target, penalize deviations from a feasible sustaining input instead of penalizing the required input toward zero. Timed tracking uses errors against $mathbf(s)_r (t_k+j h)$ and time-indexed terminal ingredients. An orbital objective must leave phase free while retaining dynamically consistent speed and direction. A continuously powered orbit that cannot be sustained under zero-order hold requires a compatible sampled reference, possibly with an added phase/clock state, or a practical tolerance target.
+
+The following terminal conditions give a precise *conditional* design criterion. For every $mathbf(s) in cal(X)_f$, require an admissible local policy $kappa_f$ whose entire next interval is safe and
+
+$
+Phi_h^mathbf(F)(mathbf(s),kappa_f (mathbf(s))) in cal(X)_f, \
+V_f (Phi_h^mathbf(F)(mathbf(s),kappa_f (mathbf(s))))-V_f (mathbf(s))
+  <= -ell(mathbf(s),kappa_f (mathbf(s))).
+$
+
+Shifting a feasible optimal sequence and appending $kappa_f$ proves recursive feasibility and
+
+$
+V_H^*(mathbf(s)_(k+1))-V_H^*(mathbf(s)_k)
+  <= -ell(mathbf(s)_k,u_k).
+$
+
+For a compact target with a feasible neighborhood, require bounds
+
+$
+alpha_1(d_cal(A)(mathbf(s))) <= V_H^*(mathbf(s)) <= alpha_2(d_cal(A)(mathbf(s))), \
+ell(mathbf(s),u) >= alpha_3(d_cal(A)(mathbf(s))),
+$
+
+with class-$cal(K)$ functions $alpha_1,alpha_2,alpha_3$ (continuous, strictly increasing and zero at zero). The decrease inequality then yields local asymptotic set stability at the samples. This assumes an exact model, attained optima, and initial feasibility. Constructing the terminal ingredients and bounds is essential; running an optimizer alone supplies no such guarantee. The terminal construction and shifted-sequence argument follow #link("https://sites.engineering.ucsb.edu/~jbraw/mpc/MPC-book-2nd-edition-3rd-printing.pdf")[Rawlings, Mayne and Diehl, _Model Predictive Control: Theory, Computation, and Design_, 2nd ed., Chapter 2].
+
+On compact admissible regions, continuity of the intersample flow extends sample convergence to continuous-time convergence when the limiting state-input pairs leave $cal(A)$ invariant throughout each interval. Checking only the endpoint map is insufficient for that conclusion. With model error or approximate optimization, the exact decrease argument needs replacement by error bounds, tightened constraints and a robust invariant tube. Replanning alone is not a robustness proof.
+
+=== Local models and what a controller must establish
+
+Assuming the field is continuously differentiable near a feasible reference, the first-order variations on each smooth input segment are
+
+$
+delta dot(mathbf(p)) &= delta mathbf(v), \
+delta dot(mathbf(v)) &= J_g (mathbf(p)_r) delta mathbf(p)
+  +f_r/m mathbf(e)_perp (theta_r) delta theta
+  +1/m mathbf(e)(theta_r) delta f, \
+delta dot(theta) &= delta omega, quad
+delta dot(omega)=delta tau/I,
+$
+
+where $mathbf(e)_perp (theta)=(-sin theta,cos theta)^T$. Integrating these variational equations along each prediction interval gives sampled sensitivities; freezing the Jacobian for an entire maneuver is a further approximation. A local orbital controller should stabilize errors transverse to the motion, while a timed controller must also correct phase error.
+
+At passive flight $f_r=0$, attitude changes do not alter translation to first order, and nominal thrust lies on the boundary $f=0$ of its one-sided admissible interval. An unconstrained linear regulator that assumes signed thrust perturbations therefore does not establish local stabilizability. A controller must account for bounded reorientation and nonnegative thrust, or use a reference with verified control authority. Saturating a controller after its stability analysis does not preserve that analysis automatically.
+
+For a proposed implementation, the mathematical obligations are: exhibit a feasible reference and a collision-free capture region; verify its sampled and intersample dynamics; establish admissible invariant terminal behavior or a transverse stability certificate; and quantify numerical/model error relative to the chosen tolerance. For a single periodic orbit of a smooth autonomous closed loop, a differentiable return map on a transversal section with all multipliers strictly inside the unit circle certifies local exponential orbital stability. The phase direction is excluded. A family with deliberately free headings needs set stability, not convergence of that free coordinate. Neutral multipliers in directions that should converge need further analysis. For a sampled controller, the return-map analysis must also include its clock and control-update dynamics.
+
+The app now includes a first practical circular-orbit assist. The player selects a body and altitude, with direction taken from the ship's motion when selecting the body. Radial position, radial speed and signed tangential speed feedback request an acceleration; the summed gravitational field is subtracted to obtain a thrust request. Bounded attitude feedback reorients the ship, and thrust is applied only when sufficiently aligned. A hysteretic coast mode reduces unnecessary burns near the target. The target's phase and hull heading are free; powered maintenance can require continued rotation.
+
+Before engagement, the assist simulates capture using the same Rapier plant as the flight, checking control limits and clearance at each numerical substep. Prediction is limited to 120 seconds and 6000 control steps, whichever is shorter. It requires the final predicted state to have remained within orbital tolerances for two seconds. The displayed “Holding orbit” status uses this sustained tolerance criterion and resets when the ship leaves the tolerance tube. This is a finite numerical screening procedure, not an invariant-set or asymptotic-stability certificate: it neither proves intersample clearance nor guarantees indefinite containment, especially with multiple sources. The mathematical obligations above remain open for this implementation. The original point-goal policies and their comparison scores still use the vacuum model.

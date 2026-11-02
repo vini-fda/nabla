@@ -22,7 +22,7 @@ Security: loaded TOML is schema-validated and limited to 1 MiB, one player and 1
 
 ## What's on screen
 
-- **Left panel**: the case picker, its sampling period `h`, parameters and initial state, and how the autopilot's policy does on it; the **Autopilot** (its policy, its switch, and **Show code**, a window with the policy's source, syntax highlighted and with line numbers); the state and control at present; display options; and sound: the ion thruster's sound (five synthesized styles to choose from), master/ion/RCS volume knobs, and buttons to hear each thruster on its own.
+- **Left panel**: the case picker, its sampling period `h`, parameters and initial state, and how the autopilot's policy does on it; the **Autopilot** (its policy, its switch, and **Show code**, a window with the policy's source, syntax highlighted and with line numbers); the state and control at present; display options; and sound: master/ion/RCS volume knobs, and buttons to hear each thruster on its own.
 - **Main canvas**: the ship, in 3D or as a flat triangle with velocity (green) and acceleration (red) arrows (**Debug** in Settings), in a Desmos-style coordinate grid you can pan (drag) and zoom (scroll, anchored at the cursor). The camera follows the ship from the start. It starts as a top-down orthographic view; the axes gizmo in its top right corner turns it to look from any side. Right of it, floating buttons show or hide the gizmo (sphere), follow the ship (rocket) and show or hide the path flown (a curve between two dots), turning light blue while on, switch dragging the canvas between panning and rotating the camera (arrows), and switch between orthographic and perspective projection (grid). Perspective uses the field of view of Blender's default 50 mm camera, and keeps the plane through the view's center at the same zoom as orthographic. It shows the path, the start, the goal `B` with its position tolerance, and a marker at the canvas's edge pointing to `B` while it is off screen.
 - **Bottom bar**: pause and restart, the **SAS**, **Autopilot** and **Point** switches, and the time.
 - **Right panel**: choose **State plots** or **Objective** in its vertical title bar, where the one showing is white and the other gray. **State plots**: x, y, vx, vy, θ, ω and the controls F, τ over the flight so far, with a cursor at the present. **Objective**: a mutually exclusive selector (**Reach B** or **Orbit**), with orbit target, altitude, preview and engagement controls when Orbit is selected.
@@ -108,7 +108,7 @@ src/
 ├── gizmo.rs     ← Blender-style axes gizmo: orbit by dragging, snap to an axis by clicking
 ├── canvas_buttons.rs ← floating icon toggles over the canvas (gizmo, follow ship)
 ├── grid.rs      ← Desmos-style grid with 1/2/5×10ⁿ adaptive spacing
-├── synth.rs     ← thruster sound synthesizer: ion thruster styles, RCS hiss
+├── synth.rs     ← thruster sound synthesizer: ion thruster thrum, RCS hiss
 └── sound.rs     ← audio output (cpal: native or Web Audio), sound settings and volume knobs
 ```
 

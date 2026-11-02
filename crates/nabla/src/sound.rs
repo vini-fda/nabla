@@ -1,7 +1,6 @@
 //! Thruster sounds: plays the [`nabla_synth`] synthesizer on the default audio output,
 //! following the replay's thrust and torque while it plays, and the "Sound" section of the
-//! controls panel: the ion thruster's sound, volume knobs, and buttons to hear each thruster
-//! on its own.
+//! controls panel: volume knobs, and buttons to hear each thruster on its own.
 //!
 //! Natively, cpal calls the synthesizer on the operating system's audio thread
 //! (`sound/native.rs`). In the browser, an `AudioWorklet` runs it on the browser's audio
@@ -21,7 +20,7 @@ mod native;
 mod web;
 
 use egui::{Pos2, Response, Sense, Stroke, Ui, Vec2, vec2};
-use nabla_synth::{Controls, IonSound};
+use nabla_synth::Controls;
 
 #[cfg(not(target_arch = "wasm32"))]
 use self::native::Output;
@@ -35,7 +34,6 @@ const DEFAULT_VOLUMES: [f32; 3] = [0.7, 0.8, 0.25];
 /// Sound settings, and the audio output once opened.
 pub struct Sound {
     enabled: bool,
-    ion: IonSound,
     /// Knob positions (0 to 1) for the master, ion thruster and RCS volumes.
     volumes: [f32; 3],
     /// Whether a "test" button is held this frame.
@@ -50,7 +48,6 @@ impl Default for Sound {
     fn default() -> Self {
         Self {
             enabled: true,
-            ion: IonSound::default(),
             volumes: DEFAULT_VOLUMES,
             test_ion: false,
             test_rcs: false,
@@ -98,7 +95,6 @@ impl Sound {
         output.publish(&Controls {
             thrust,
             torque,
-            ion: self.ion,
             ion_gain: ion,
             rcs_gain: rcs,
             master_gain: master,
@@ -146,16 +142,6 @@ impl Sound {
             self.error = None;
         }
         ui.add_enabled_ui(self.enabled, |ui| {
-            egui::ComboBox::from_label("ion thruster")
-                .selected_text(self.ion.name())
-                .show_ui(ui, |ui| {
-                    for sound in IonSound::ALL {
-                        ui.selectable_value(&mut self.ion, sound, sound.name())
-                            .on_hover_text(sound.description());
-                    }
-                })
-                .response
-                .on_hover_text(self.ion.description());
             ui.horizontal(|ui| {
                 let [master, ion, rcs] = &mut self.volumes;
                 knob(ui, master, DEFAULT_VOLUMES[0], "Master");

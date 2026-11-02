@@ -21,7 +21,7 @@
 
 use std::cell::RefCell;
 
-use crate::{Controls, IonSound, Synth};
+use crate::{Controls, Synth};
 
 /// Frames per render quantum of an `AudioWorklet`: the most [`synth_render`] renders at once.
 pub const QUANTUM: usize = 128;
@@ -63,22 +63,19 @@ pub extern "C" fn synth_init(sample_rate: f32) -> usize {
     address
 }
 
-/// Holds the controls of a frame of the app; `ion` is an index into [`IonSound::ALL`].
+/// Holds the controls of a frame of the app.
 #[unsafe(no_mangle)]
 pub extern "C" fn synth_set(
     thrust: f32,
     torque: f32,
-    ion: u32,
     ion_gain: f32,
     rcs_gain: f32,
     master_gain: f32,
 ) {
     with(|w| {
-        let ion = IonSound::ALL.get(ion as usize).copied().unwrap_or_default();
         w.controls = Controls {
             thrust,
             torque,
-            ion,
             ion_gain,
             rcs_gain,
             master_gain,
@@ -136,7 +133,7 @@ mod tests {
     }
 
     fn full_thrust() {
-        synth_set(1.0, 0.0, 0, 1.0, 1.0, 1.0);
+        synth_set(1.0, 0.0, 1.0, 1.0, 1.0);
     }
 
     /// Renders `seconds` of quanta, and returns the last one.
@@ -163,7 +160,6 @@ mod tests {
         reference.set(Controls {
             thrust: 1.0,
             torque: 0.0,
-            ion: IonSound::ALL[0],
             ion_gain: 1.0,
             rcs_gain: 1.0,
             master_gain: 1.0,
@@ -197,19 +193,12 @@ mod tests {
         synth_init(RATE);
         full_thrust();
         assert!(rms(&render(0.9 * QUIET_SECONDS)) > 0.01, "playing");
-        // Going quiet is a fade: the ion sounds take about a second and a half to die out.
+        // Going quiet is a fade: the ion sound takes about a second and a half to die out.
         assert!(
             rms(&render(0.1 * QUIET_SECONDS + 2.0)) < 1e-3,
             "quiet after the fade"
         );
         full_thrust();
         assert!(rms(&render(0.3)) > 0.01, "playing again");
-    }
-
-    #[test]
-    fn unknown_ion_sounds_fall_back_to_the_default() {
-        synth_init(RATE);
-        synth_set(0.5, 0.0, u32::MAX, 1.0, 1.0, 1.0);
-        with(|w| assert_eq!(w.controls.ion, IonSound::default(), "default sound"));
     }
 }

@@ -13,7 +13,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use js_sys::{Array, Object, Reflect};
-use nabla_synth::{Controls, IonSound};
+use nabla_synth::Controls;
 use wasm_bindgen::{JsCast as _, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{AudioContext, AudioWorkletNode, AudioWorkletNodeOptions, Response};
@@ -60,18 +60,10 @@ impl Output {
         let Some(node) = &*self.node.borrow() else {
             return;
         };
-        let ion = IonSound::ALL.iter().position(|&s| s == c.ion).unwrap_or(0);
-        let message: Array = [
-            c.thrust,
-            c.torque,
-            ion as f32,
-            c.ion_gain,
-            c.rcs_gain,
-            c.master_gain,
-        ]
-        .into_iter()
-        .map(JsValue::from)
-        .collect();
+        let message: Array = [c.thrust, c.torque, c.ion_gain, c.rcs_gain, c.master_gain]
+            .into_iter()
+            .map(JsValue::from)
+            .collect();
         if let Err(e) = node.port().and_then(|port| port.post_message(&message)) {
             log::warn!("Audio output: {}", describe(e));
         }

@@ -74,14 +74,6 @@ impl ViewerApp {
     pub(super) fn title_ui(&mut self, ui: &mut egui::Ui) {
         let mut play = self.title_keys(ui);
         egui::CentralPanel::default().show(ui, |ui| {
-            let corner = ui.max_rect().right_top();
-            let status = egui::Rect::from_min_size(
-                corner - egui::vec2(CONTROLLER_STATUS_SIZE, 0.0),
-                egui::Vec2::splat(CONTROLLER_STATUS_SIZE),
-            );
-            ui.scope_builder(egui::UiBuilder::new().max_rect(status), |ui| {
-                controller_status_ui(ui, &self.gamepads);
-            });
             let window = ui.ctx().content_rect().size();
             let available = ui.available_size();
             let margins = window - available;
@@ -141,6 +133,18 @@ impl ViewerApp {
                 let rest = ui.cursor().top() - below_title;
                 let needed = margins.y + MIN_TOP_SPACE + MIN_TITLE_SIZE * line + spacing + rest;
                 self.fit_title(ui.ctx(), rest, window.y * self.title_fit / needed);
+            }
+            // In the corner it has during a flight, unless a narrow window's page reaches it; the
+            // banners still tell.
+            let corner = ui.max_rect().right_bottom();
+            let status = egui::Rect::from_min_max(
+                corner - egui::Vec2::splat(CONTROLLER_STATUS_SIZE),
+                corner,
+            );
+            if margin >= CONTROLLER_STATUS_SIZE || ui.min_rect().bottom() <= status.top() {
+                let layout = egui::Layout::right_to_left(egui::Align::Center);
+                let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(status).layout(layout));
+                controller_status_ui(&mut ui, &self.gamepads);
             }
         });
         self.notifications

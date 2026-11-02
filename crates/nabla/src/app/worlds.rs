@@ -1,6 +1,7 @@
 //! World selection and save/load controls shared by the title and flight settings.
 
 use super::{Screen, TitlePage, ViewerApp};
+use crate::formula;
 use crate::world::{MAX_GRAVITY_CONSTANT, Preset, World};
 use crate::world_io;
 
@@ -24,7 +25,10 @@ impl ViewerApp {
             self.select_world(world);
         }
         ui.horizontal(|ui| {
-            ui.label("Gravitational constant G:");
+            let font = egui::TextStyle::Body.resolve(ui.style());
+            formula::G
+                .ui(ui, &font)
+                .on_hover_text("gravitational constant");
             ui.add(
                 egui::DragValue::new(&mut self.world_setup.gravity_constant)
                     .range(0.0..=MAX_GRAVITY_CONSTANT)

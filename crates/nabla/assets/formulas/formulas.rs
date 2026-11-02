@@ -148,3 +148,10 @@ pub const TORQUE: Formula = Formula {
     width: 0.5390,
 };
 
+/// `$G$`
+pub const G: Formula = Formula {
+    uri: "bytes://formula/g.svg",
+    svg: include_bytes!("g.svg"),
+    width: 0.7860,
+};
+

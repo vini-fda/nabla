@@ -1888,10 +1888,14 @@ impl ViewerApp {
         // Scrolls sideways too, so rows are never cut off if the space is narrower than they are.
         egui::ScrollArea::both().show(ui, |ui| {
             ui.heading(&self.game.world.name);
-            ui.label(format!(
-                "Gravitational constant G: {}",
-                self.game.world.gravity_constant
-            ));
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                let font = egui::TextStyle::Body.resolve(ui.style());
+                formula::G
+                    .ui(ui, &font)
+                    .on_hover_text("gravitational constant");
+                ui.label(format!(" = {}", self.game.world.gravity_constant));
+            });
             self.world_files_ui(ui);
             if !self.game.world.bodies.is_empty() {
                 ui.label(

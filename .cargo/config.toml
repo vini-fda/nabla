@@ -1,7 +1,10 @@
 [alias]
+# The release steps, also in `xtask`: see "Releasing" in the README.
+bump = "run -q -p xtask -- bump"
 # The app, built with the `fast` profile (see Cargo.toml): quick rebuilds while iterating.
 # On macOS it runs inside the app bundle, for the Liquid Glass Dock icon.
 nabla = "run -q -p xtask -- run --profile fast"
+tag = "run -q -p xtask -- tag"
 # Development tasks, in the `xtask` crate: `cargo xtask help`.
 xtask = "run -q -p xtask --"
 

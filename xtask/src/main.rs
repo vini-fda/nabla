@@ -2,6 +2,7 @@
 //! pattern: <https://github.com/matklad/cargo-xtask>). Run `cargo xtask help`.
 
 mod bundle;
+mod release;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -34,6 +35,12 @@ Repository:
   check
       The checks CI runs (.github/workflows/ci.yml) for this platform, plus the web build,
       which needs `trunk`.
+  bump <major|minor|patch>
+      Increase the workspace version in Cargo.toml and Cargo.lock, without committing.
+      `cargo bump` is this task.
+  tag
+      Check that this is `main`, clean and level with origin, and that the version in
+      Cargo.toml is new; then create its tag `vX.Y.Z`, ready to push. `cargo tag` is this task.
 ";
 
 /// The options shared by every task: which build of the app to use.
@@ -90,10 +97,12 @@ fn main() -> Result<ExitCode> {
     sh.change_dir(project_root());
     match (task.as_str(), args.as_slice()) {
         ("check", []) => check(&sh)?,
+        ("bump", [part]) => release::bump(&sh, part)?,
+        ("tag", []) => release::tag(&sh)?,
         ("bundle" | "run", _) => return app(&sh, &task, args),
         ("web-dev", args) => web_dev(&sh, args)?,
         ("help" | "--help" | "-h", _) => print_help(),
-        ("check", _) => bail!("wrong arguments for `{task}`\n\n{HELP}"),
+        ("check" | "bump" | "tag", _) => bail!("wrong arguments for `{task}`\n\n{HELP}"),
         _ => bail!("unknown task `{task}`\n\n{HELP}"),
     }
     Ok(ExitCode::SUCCESS)

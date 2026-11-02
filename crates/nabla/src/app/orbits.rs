@@ -2,10 +2,12 @@
 
 use super::{RightView, Vec3, ViewerApp, input_row, palette, world};
 use crate::controller_guide::{self, Icon};
+use crate::formula::{self, Formula};
 use crate::game::Objective;
 use crate::gamepad::{Button, State};
 use crate::keys;
-use crate::orbit::{self, Prediction, Target};
+use crate::orbit::{self, Phase, Prediction, Target};
+use crate::theme::icons::outline;
 
 #[derive(Default)]
 pub(super) struct Controls {
@@ -252,31 +254,49 @@ impl ViewerApp {
         let body = target.body;
         let mut engage = false;
         let mut manual = false;
-        egui::Grid::new("orbit-target")
-            .num_columns(2)
-            .show(ui, |ui| {
-                ui.label("Target");
-                egui::ComboBox::from_id_salt("orbit-body")
-                    .width(100.0)
-                    .selected_text(&self.game.world.bodies[body].name)
-                    .show_ui(ui, |ui| {
-                        for (i, body) in self.game.world.bodies.iter().enumerate() {
-                            ui.selectable_value(&mut target.body, i, &body.name);
-                        }
-                    });
-                ui.end_row();
-                ui.label("Altitude");
-                ui.add(
-                    egui::DragValue::new(&mut target.altitude)
-                        .range(Target::min_altitude(&self.game.world)..=orbit::MAX_ALTITUDE)
-                        .speed(0.1)
-                        .max_decimals(1),
-                );
-                ui.end_row();
-                ui.label("Direction");
-                ui.label(target.direction());
-                ui.end_row();
+        group_heading(ui, "Selected orbit", self.selected_orbit_color(), true);
+        icon_row(ui, outline::PLANET, "Target", None, |ui| {
+            egui::ComboBox::from_id_salt("orbit-body")
+                .width(100.0)
+                .selected_text(&self.game.world.bodies[body].name)
+                .show_ui(ui, |ui| {
+                    for (i, body) in self.game.world.bodies.iter().enumerate() {
+                        ui.selectable_value(&mut target.body, i, &body.name);
+                    }
+                });
+        });
+        formula_row(ui, &formula::ALTITUDE, "Altitude", |ui| {
+            ui.add(
+                egui::DragValue::new(&mut target.altitude)
+                    .range(Target::min_altitude(&self.game.world)..=orbit::MAX_ALTITUDE)
+                    .speed(0.1)
+                    .max_decimals(1)
+                    .suffix(" m"),
+            );
+        });
+        direction_row(ui, target);
+        if let Some(error) = &self.orbit_controls.error {
+            icon_row(
+                ui,
+                outline::WARNING,
+                "Preview",
+                Some(palette::YELLOW),
+                |ui| {
+                    let text = egui::RichText::new(error).color(palette::YELLOW);
+                    ui.add(egui::Label::new(text).wrap());
+                },
+            );
+        } else if let Some(prediction) = &self.orbit_controls.prediction {
+            let capture = prediction.capture_seconds;
+            formula_row(ui, &formula::CAPTURE_TIME, "Predicted capture time", |ui| {
+                ui.label(format!("{capture:.0} s"));
             });
+        } else {
+            icon_row(ui, outline::HOURGLASS_MEDIUM, "Preview", None, |ui| {
+                ui.label("Checking capture...");
+            });
+        }
+        ui.add_space(4.0);
         ui.horizontal_wrapped(|ui| {
             let square = controller_guide::SQUARE.inline(ui);
             engage = ui.button(("Engage orbit", square)).clicked();
@@ -297,27 +317,22 @@ impl ViewerApp {
             self.engage_objective();
         }
         if let Some(pilot) = self.game.orbit_pilot() {
-            ui.colored_label(
-                palette::GREEN,
-                format!(
-                    "Active: {} | altitude {:.1} | {} | {}",
-                    self.game.world.bodies[pilot.target.body].name,
-                    pilot.target.altitude,
-                    pilot.target.direction(),
-                    pilot.phase.label()
-                ),
-            );
-        }
-        if let Some(error) = &self.orbit_controls.error {
-            ui.colored_label(palette::YELLOW, format!("Preview: {error}"));
-        } else if let Some(prediction) = &self.orbit_controls.prediction {
-            ui.label(format!(
-                "Capture prediction: {:.0} s",
-                prediction.capture_seconds
-            ));
-            ui.small("Dashed orbit: selected | solid: active");
-        } else {
-            ui.label("Preview: checking capture...");
+            group_heading(ui, "Active orbit", palette::GREEN, false);
+            icon_row(ui, outline::PLANET, "Target", None, |ui| {
+                ui.label(&self.game.world.bodies[pilot.target.body].name);
+            });
+            formula_row(ui, &formula::ALTITUDE, "Altitude", |ui| {
+                ui.label(format!("{:.1} m", pilot.target.altitude));
+            });
+            direction_row(ui, pilot.target);
+            let color = (pilot.phase == Phase::Holding).then_some(palette::GREEN);
+            icon_row(ui, phase_icon(pilot.phase), "Phase", color, |ui| {
+                let mut text = egui::RichText::new(pilot.phase.label());
+                if let Some(color) = color {
+                    text = text.color(color);
+                }
+                ui.label(text);
+            });
         }
         controls_grid(ui, |ui| {
             objective_control_row(ui);
@@ -329,6 +344,15 @@ impl ViewerApp {
             control_row(ui, &[&controller_guide::L2], "Hold for fine altitude");
             control_row(ui, &[&controller_guide::RIGHT_STICK_CLICK], "Next target");
         });
+    }
+
+    /// The color of the selected orbit's dashed ring: a warning while it can't be captured.
+    fn selected_orbit_color(&self) -> egui::Color32 {
+        if self.orbit_controls.error.is_some() {
+            palette::YELLOW
+        } else {
+            palette::SKY
+        }
     }
 
     pub(super) fn draw_orbits(&self, painter: &egui::Painter, rect: egui::Rect) {
@@ -356,12 +380,7 @@ impl ViewerApp {
             draw(pilot.target, palette::GREEN, false);
         }
         if let Some(target) = self.orbit_controls.target {
-            let color = if self.orbit_controls.error.is_some() {
-                palette::YELLOW
-            } else {
-                palette::SKY
-            };
-            draw(target, color, true);
+            draw(target, self.selected_orbit_color(), true);
         }
     }
 
@@ -416,9 +435,114 @@ impl ViewerApp {
     }
 }
 
+/// Width of the column of icons and symbols in the rows of the objective view, and of the sample
+/// of an orbit's ring in the heading of its group, with the size of the icons.
+const SYMBOL_COLUMN_WIDTH: f32 = 28.0;
+const ICON_SIZE: f32 = 16.0;
+
+/// The heading of a group of the objective view: a sample of its orbit's ring on the canvas, in
+/// `color` and maybe `dashed`, then its name.
+fn group_heading(ui: &mut egui::Ui, name: &str, color: egui::Color32, dashed: bool) {
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        let size = egui::vec2(SYMBOL_COLUMN_WIDTH, ui.spacing().interact_size.y);
+        let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+        let ends = [
+            rect.left_center(),
+            rect.right_center() - egui::vec2(6.0, 0.0),
+        ];
+        let stroke = egui::Stroke::new(1.5, color);
+        if dashed {
+            ui.painter()
+                .add(egui::Shape::dashed_line(&ends, stroke, 4.0, 3.0));
+        } else {
+            ui.painter().line_segment(ends, stroke);
+        }
+        ui.label(group_name(name));
+    });
+}
+
+/// The name of a group of the objective view.
+fn group_name(name: &str) -> egui::RichText {
+    egui::RichText::new(name).small().color(palette::OVERLAY1)
+}
+
+/// A row of the objective view: `symbol`, captioned by `caption` when hovered, then `value`.
+fn symbol_row(
+    ui: &mut egui::Ui,
+    symbol: impl FnOnce(&mut egui::Ui) -> egui::Response,
+    caption: &str,
+    value: impl FnOnce(&mut egui::Ui),
+) {
+    ui.horizontal(|ui| {
+        let size = egui::vec2(SYMBOL_COLUMN_WIDTH, ui.spacing().interact_size.y);
+        let layout = egui::Layout::left_to_right(egui::Align::Center);
+        ui.allocate_ui_with_layout(size, layout, |ui| {
+            ui.set_min_size(size);
+            symbol(ui).on_hover_text(caption);
+        });
+        value(ui);
+    });
+}
+
+/// A [`symbol_row`] with a Phosphor icon, in `color` if given.
+fn icon_row(
+    ui: &mut egui::Ui,
+    icon: &str,
+    caption: &str,
+    color: Option<egui::Color32>,
+    value: impl FnOnce(&mut egui::Ui),
+) {
+    let symbol = |ui: &mut egui::Ui| {
+        let mut text = egui::RichText::new(icon).font(outline::font(ICON_SIZE));
+        if let Some(color) = color {
+            text = text.color(color);
+        }
+        ui.add(egui::Label::new(text).selectable(false))
+    };
+    symbol_row(ui, symbol, caption, value);
+}
+
+/// A [`symbol_row`] with a typeset symbol.
+fn formula_row(
+    ui: &mut egui::Ui,
+    formula: &Formula,
+    caption: &str,
+    value: impl FnOnce(&mut egui::Ui),
+) {
+    let symbol = |ui: &mut egui::Ui| {
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        formula.ui(ui, &font)
+    };
+    symbol_row(ui, symbol, caption, value);
+}
+
+/// The row with the direction `target` is orbited in.
+fn direction_row(ui: &mut egui::Ui, target: Target) {
+    let icon = if target.clockwise {
+        outline::ARROW_CLOCKWISE
+    } else {
+        outline::ARROW_COUNTER_CLOCKWISE
+    };
+    icon_row(ui, icon, "Direction", None, |ui| {
+        ui.label(target.direction());
+    });
+}
+
+/// The icon of what the orbit assist is doing.
+fn phase_icon(phase: Phase) -> &'static str {
+    match phase {
+        Phase::Turning => outline::COMPASS,
+        Phase::Burning => outline::FIRE,
+        Phase::Coasting => outline::ROCKET,
+        Phase::Holding => outline::CHECK_CIRCLE,
+    }
+}
+
 /// The objective view's list of controls: a column of icons, then what they do.
 fn controls_grid(ui: &mut egui::Ui, rows: impl FnOnce(&mut egui::Ui)) {
-    ui.add_space(4.0);
+    ui.add_space(8.0);
+    ui.label(group_name("Controls"));
     egui::Grid::new("objective-controls")
         .num_columns(2)
         .show(ui, rows);

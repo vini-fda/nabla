@@ -76,6 +76,8 @@ pub mod icons {
         pub const ARROW_U_UP_LEFT: &str = "\u{E08A}";
         pub const ARROWS_OUT_CARDINAL: &str = "\u{E0A4}";
         pub const ARROWS_OUT_SIMPLE: &str = "\u{E0A6}";
+        pub const CHECK_CIRCLE: &str = "\u{E184}";
+        pub const COMPASS: &str = "\u{E1C8}";
         pub const DICE_FIVE: &str = "\u{E1EE}";
         pub const FIRE: &str = "\u{E242}";
         pub const GAME_CONTROLLER: &str = "\u{E26E}";
@@ -83,6 +85,7 @@ pub mod icons {
         pub const GRID_FOUR: &str = "\u{E296}";
         pub const HAND_SWIPE_RIGHT: &str = "\u{EC92}";
         pub const HAND_TAP: &str = "\u{EC90}";
+        pub const HOURGLASS_MEDIUM: &str = "\u{E2B8}";
         pub const HOUSE: &str = "\u{E2C2}";
         pub const KEYBOARD: &str = "\u{E2D8}";
         pub const MAP_PIN: &str = "\u{E316}";
@@ -91,12 +94,14 @@ pub mod icons {
         pub const MOUSE_SCROLL: &str = "\u{E332}";
         pub const PATH: &str = "\u{E39C}";
         pub const PERSPECTIVE: &str = "\u{EBE6}";
+        pub const PLANET: &str = "\u{E652}";
         pub const QUESTION: &str = "\u{E3E8}";
         pub const ROCKET: &str = "\u{E3FC}";
         pub const ROCKET_LAUNCH: &str = "\u{E3FE}";
         pub const SEAL_QUESTION: &str = "\u{E608}";
         pub const SPEAKER_HIGH: &str = "\u{E44A}";
         pub const SPHERE: &str = "\u{EE66}";
+        pub const WARNING: &str = "\u{E4E0}";
 
         /// Name of the font family with the outline glyphs.
         pub(crate) const FAMILY: &str = "Phosphor Regular";

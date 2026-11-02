@@ -812,16 +812,6 @@ impl ViewerApp {
                 |u| format!("({:.3} N, {:.3} N m)", u.thrust, u.torque),
             );
             row(&formula::CONTROL, "control: thrust and torque", control);
-            if let Objective::Orbit(target) = self.game.objective() {
-                let body = &self.game.world.bodies[target.body];
-                let altitude = (s.x - f64::from(body.position[0]))
-                    .hypot(s.y - f64::from(body.position[1]))
-                    - f64::from(body.radius);
-                ui.label("Altitude")
-                    .on_hover_text("Altitude above the selected body's surface");
-                ui.monospace(format!("{altitude:.4} m"));
-                ui.end_row();
-            }
         });
     }
 

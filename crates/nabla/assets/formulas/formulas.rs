@@ -155,3 +155,17 @@ pub const G: Formula = Formula {
     width: 0.7860,
 };
 
+/// `$h_"alt"$`
+pub const ALTITUDE: Formula = Formula {
+    uri: "bytes://formula/altitude.svg",
+    svg: include_bytes!("altitude.svg"),
+    width: 1.4489,
+};
+
+/// `$t_"cap"$`
+pub const CAPTURE_TIME: Formula = Formula {
+    uri: "bytes://formula/capture_time.svg",
+    svg: include_bytes!("capture_time.svg"),
+    width: 1.4670,
+};
+

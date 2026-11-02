@@ -51,7 +51,7 @@ On Linux, builds link with [mold](https://github.com/rui314/mold) through clang 
 
 ## Running a server
 
-`nabla-server` runs on its own, without the app or `xtask`. Each [GitHub Release](https://github.com/vini-fda/nabla/releases) has it for Linux x86-64 and macOS on Apple silicon. To build it from the code, you need [rustup](https://rustup.rs), which installs the toolchain of `rust-toolchain.toml`, and a C compiler (on Linux, also mold and clang, as above):
+`nabla-server` runs on its own, without the app or `xtask`. To host it on your home network, follow [`MULTIPLAYER.md`](MULTIPLAYER.md). Each [GitHub Release](https://github.com/vini-fda/nabla/releases) has it for Linux x86-64 and macOS on Apple silicon. To build it from the code, you need [rustup](https://rustup.rs), which installs the toolchain of `rust-toolchain.toml`, and a C compiler (on Linux, also mold and clang, as above):
 
 ```sh
 cargo build --release -p nabla-server --bin nabla-server

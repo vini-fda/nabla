@@ -4,7 +4,7 @@
     {
       "name": "nabla-web",
       "runtimeExecutable": "trunk",
-      "runtimeArgs": ["serve", "--config", "crates/nabla/Trunk.toml", "--port", "8080"],
+      "runtimeArgs": ["serve", "--config", "crates/nabla-client/Trunk.toml", "--port", "8080"],
       "port": 8080
     }
   ]

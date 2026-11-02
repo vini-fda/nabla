@@ -40,7 +40,8 @@ Repository:
       `cargo bump` is this task.
   tag
       Check that this is `main`, clean and level with origin, and that the version in
-      Cargo.toml is new; then create its tag `vX.Y.Z`, ready to push. `cargo tag` is this task.
+      Cargo.toml is new; then create its tag `vX.Y.Z` and ask whether to push it, which
+      publishes the release. `cargo tag` is this task.
 ";
 
 /// The options shared by every task: which build of the app to use.
@@ -56,7 +57,11 @@ impl Build {
         let profile = &self.profile;
         let target = self.target.as_ref().map(|t| ["--target", t]);
         let target = target.iter().flatten();
-        cmd!(sh, "{cargo} build --profile {profile} {target...} -p nabla").run()?;
+        cmd!(
+            sh,
+            "{cargo} build --profile {profile} {target...} -p nabla-client"
+        )
+        .run()?;
 
         let mut dir = target_dir();
         if let Some(target) = &self.target {
@@ -160,7 +165,7 @@ fn web_dev(sh: &Shell, args: &[String]) -> Result<()> {
         .ignore_stdout()
         .run()
         .context("trunk is needed: `cargo install --locked trunk`")?;
-    let _app = sh.push_dir("crates/nabla");
+    let _app = sh.push_dir("crates/nabla-client");
     cmd!(sh, "trunk serve --port {port} {release...}").run()?;
     Ok(())
 }
@@ -181,7 +186,7 @@ fn check(sh: &Shell) -> Result<()> {
         "{cargo} clippy --locked --quiet --workspace --all-targets"
     )
     .run()?;
-    for package in ["nabla", "nabla-synth"] {
+    for package in ["nabla-client", "nabla-synth"] {
         cmd!(
             sh,
             "{cargo} clippy --locked --quiet -p {package} --lib --target wasm32-unknown-unknown"
@@ -190,7 +195,7 @@ fn check(sh: &Shell) -> Result<()> {
     }
     // As in CI: release mode, with debug assertions and overflow checks on for this
     // workspace's crates.
-    let checks = ["nabla-core", "nabla-synth", "nabla"]
+    let checks = ["nabla-core", "nabla-synth", "nabla-client"]
         .iter()
         .flat_map(|package| {
             ["debug-assertions", "overflow-checks"].map(|setting| {
@@ -206,7 +211,7 @@ fn check(sh: &Shell) -> Result<()> {
         "{cargo} test --locked --quiet --workspace --release {checks...}"
     )
     .run()?;
-    let _app = sh.push_dir("crates/nabla");
+    let _app = sh.push_dir("crates/nabla-client");
     cmd!(sh, "trunk build --release").run()?;
     Ok(())
 }

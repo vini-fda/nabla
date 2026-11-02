@@ -6,15 +6,15 @@ This is a finite, discretized version of a control problem described in `docs/ma
 
 - **[`nabla-core`](crates/nabla-core):** the exact sampled-data state-space model of the ship, with the control held constant over each step; the problem: the target set, the `Controller` interface and the fixed test cases every solution must solve; and the [solutions](crates/nabla-core/src/solutions) found so far.
 - **[`nabla-synth`](crates/nabla-synth):** the thruster sounds' synthesizer, also built alone for the web app's AudioWorklet.
-- **[`nabla`](crates/nabla):** the app, a game: fly the ship to the goal yourself, or let a solution fly it as autopilot.
+- **[`nabla-client`](crates/nabla-client):** the app, a game: fly the ship to the goal yourself, or let a solution fly it as autopilot.
 
 See [`TASK.md`](TASK.md) for the rules and the interface a solution implements.
 
-**Web app:** https://vini-fda.github.io/nabla/ lets you fly the ship on every test case, with the keyboard, touch or a game controller, with plots of the state and controls. An autopilot can fly it instead with any of the solutions, whose source it shows. The same app runs natively ([`crates/nabla/`](crates/nabla)).
+**Web app:** https://vini-fda.github.io/nabla/ lets you fly the ship on every test case, with the keyboard, touch or a game controller, with plots of the state and controls. An autopilot can fly it instead with any of the solutions, whose source it shows. The same app runs natively ([`crates/nabla-client/`](crates/nabla-client)).
 
 ```sh
 cargo test --workspace --release         # model, app and every solution
-cargo run --release -p nabla             # the app, natively
+cargo run --release -p nabla-client             # the app, natively
 ```
 
 Development tasks are in the `xtask` crate (`cargo xtask help`). `cargo xtask check` runs the same checks as CI, plus the web build. `cargo xtask web-dev` serves the web app locally, rebuilding it on every change. Every push to `main` deploys the web app.
@@ -31,14 +31,13 @@ Pushing a version tag `vX.Y.Z` builds the native app and publishes a [GitHub Rel
    cargo bump minor  # or major, or patch
    ```
 
-2. On `main`, tag it and push the tag:
+2. After the merge, on `main`, run:
 
    ```sh
    cargo tag
-   git push origin v0.2.0
    ```
 
-   `cargo tag` only tags if the checkout is `main`, has no uncommitted changes and is level with `origin/main`, and if the version in `Cargo.toml` is newer than every existing tag. It then prints the push command.
+   It only tags if the checkout is `main`, has no uncommitted changes and is level with `origin/main`, and if the version in `Cargo.toml` is newer than every existing tag. It then asks whether to push the tag, which publishes the release.
 
 `.github/workflows/release.yml` first checks that the tag matches the workspace version and reruns CI. It then builds each target on a native runner and publishes the release with checksums and the notes from `.github/release-notes.md`.
 

@@ -1,7 +1,7 @@
 # Typesets the app's math into `../assets/formulas/` (see `src/main.rs`). Run it after
 # editing a formula and commit what it writes:
 #
-#     cargo run --manifest-path crates/nabla/formulas/Cargo.toml
+#     cargo run --manifest-path crates/nabla-client/formulas/Cargo.toml
 #
 # A workspace of its own, outside the app's: Typst is slow to compile, and this way no
 # build of the app (or `cargo ... --workspace`) compiles it.

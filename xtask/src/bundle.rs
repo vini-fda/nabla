@@ -1,5 +1,5 @@
 //! The app as a macOS app bundle, `Nabla.app`, with the layered Icon Composer icon
-//! (`crates/nabla/macos/nabla_macOS.icon`) that macOS 26 renders with Liquid Glass. A bare
+//! (`crates/nabla-client/macos/nabla_macOS.icon`) that macOS 26 renders with Liquid Glass. A bare
 //! executable can only show a flat rounded icon in the Dock.
 
 use std::fs;
@@ -66,7 +66,7 @@ fn is_current(app: &Path) -> Result<bool> {
     let root = project_root();
     let mut inputs = vec![root.join("Cargo.toml"), root.join("xtask/src/bundle.rs")];
     collect_files(
-        &root.join("crates/nabla/macos/nabla_macOS.icon"),
+        &root.join("crates/nabla-client/macos/nabla_macOS.icon"),
         &mut inputs,
     )?;
     for input in inputs {
@@ -98,7 +98,7 @@ fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
 /// Compile the layered icon into `Assets.car` with Xcode's `actool`. Returns false, with a
 /// warning, if that fails: only Xcode 26's `actool` can compile `.icon` files.
 fn compile_layered_icon(sh: &Shell, resources: &Path) -> Result<bool> {
-    let icon = project_root().join("crates/nabla/macos/nabla_macOS.icon");
+    let icon = project_root().join("crates/nabla-client/macos/nabla_macOS.icon");
     let work = sh.create_temp_dir()?;
     let partial_plist = work.path().join("icon.plist");
     let compiled = cmd!(
@@ -135,7 +135,7 @@ fn warn(message: &str) {
 /// The flat fallback icon, `nabla_macOS.icns`, from the app icon PNG. macOS uses it where the
 /// layered icon is missing (before macOS 26, or without Xcode 26).
 fn compile_flat_icon(sh: &Shell, resources: &Path) -> Result<()> {
-    let png = project_root().join("crates/nabla/assets/app-icon-macos.png");
+    let png = project_root().join("crates/nabla-client/assets/app-icon-macos.png");
     let work = sh.create_temp_dir()?;
     let iconset = work.path().join("nabla_macOS.iconset");
     sh.create_dir(&iconset)?;

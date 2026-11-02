@@ -37,14 +37,14 @@ jobs:
       # The site is served from https://<owner>.github.io/<repository>/, so all URLs need
       # that prefix.
       - name: Build
-        working-directory: crates/nabla
+        working-directory: crates/nabla-client
         run: trunk build --release --public-url "/${{ github.event.repository.name }}/"
 
       - uses: actions/configure-pages@v6
 
       - uses: actions/upload-pages-artifact@v5
         with:
-          path: crates/nabla/dist
+          path: crates/nabla-client/dist
 
   deploy:
     needs: build

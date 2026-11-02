@@ -104,20 +104,20 @@ jobs:
       - name: Build and package (Linux)
         if: runner.os == 'Linux'
         run: |
-          cargo build --release -p nabla --target ${{ matrix.target }}
+          cargo build --release -p nabla-client --target ${{ matrix.target }}
           mkdir -p "dist/$NAME"
-          cp "target/${{ matrix.target }}/release/nabla" crates/nabla/README.md \
-            crates/nabla/LICENSE-MIT crates/nabla/LICENSE-APACHE "dist/$NAME/"
+          cp "target/${{ matrix.target }}/release/nabla" crates/nabla-client/README.md \
+            crates/nabla-client/LICENSE-MIT crates/nabla-client/LICENSE-APACHE "dist/$NAME/"
           tar -C dist -czf "dist/$NAME.tar.gz" "$NAME"
           rm -r "dist/$NAME"
 
       - name: Build and package (Windows)
         if: runner.os == 'Windows'
         run: |
-          cargo build --release -p nabla --target ${{ matrix.target }}
+          cargo build --release -p nabla-client --target ${{ matrix.target }}
           mkdir -p "dist/$NAME"
-          cp "target/${{ matrix.target }}/release/nabla.exe" crates/nabla/README.md \
-            crates/nabla/LICENSE-MIT crates/nabla/LICENSE-APACHE "dist/$NAME/"
+          cp "target/${{ matrix.target }}/release/nabla.exe" crates/nabla-client/README.md \
+            crates/nabla-client/LICENSE-MIT crates/nabla-client/LICENSE-APACHE "dist/$NAME/"
           (cd dist && 7z a -tzip "$NAME.zip" "$NAME" >/dev/null)
           rm -r "dist/$NAME"
 

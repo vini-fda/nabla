@@ -4,10 +4,10 @@
 use log::Level;
 use nabla_core::{Control, Params, State};
 
-use crate::game::{hold_torque, wrap};
 use crate::physics::{Physics, gravity_acceleration};
-use crate::span::span;
 use crate::world::World;
+use nabla_sim::span;
+use nabla_sim::steering::{hold_torque, wrap};
 
 pub const MAX_ALTITUDE: f64 = 100_000.0;
 const CLEARANCE: f64 = 0.5;

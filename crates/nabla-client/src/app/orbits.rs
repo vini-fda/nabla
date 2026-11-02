@@ -9,8 +9,8 @@ use crate::game::Objective;
 use crate::gamepad::{Button, State};
 use crate::keys;
 use crate::orbit::{self, Phase, Prediction, Target};
-use crate::span::span;
 use crate::theme::icons::outline;
+use nabla_sim::span;
 
 #[derive(Default)]
 pub(super) struct Controls {

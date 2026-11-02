@@ -20,19 +20,19 @@ mod highlight;
 mod keys;
 mod notifications;
 mod orbit;
-mod physics;
 mod planets;
 mod plume;
 pub mod replay;
 mod ship3d;
 mod sound;
-mod span;
 mod sprites;
 pub mod theme;
 mod version;
-pub mod world;
 mod world_io;
 pub use app::ViewerApp;
+use nabla_sim::physics;
+/// The world format, shared with the server (`nabla-sim`).
+pub use nabla_sim::world;
 
 /// Multisampling (MSAA samples) the native app asks eframe for. The web painter doesn't
 /// multisample. The 3D ship's pipeline must match egui's render pass, which eframe sets

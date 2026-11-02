@@ -5,6 +5,8 @@ A ship in the plane with thrust along its heading and a torque. Find a controlle
 This is a finite, discretized version of a control problem described in `docs/main.typ`. The workspace has three crates:
 
 - **[`nabla-core`](crates/nabla-core):** the exact sampled-data state-space model of the ship, with the control held constant over each step; the problem: the target set, the `Controller` interface and the fixed test cases every solution must solve; and the [solutions](crates/nabla-core/src/solutions) found so far.
+- **[`nabla-sim`](crates/nabla-sim):** the simulation of a world with no display, sound or network: the world format, the ship's physics among bodies, and how a pilot's input becomes a control. It builds for the web, and is what a multiplayer server shares with the client (`docs/multiplayer.typ`).
+- **[`nabla-net`](crates/nabla-net):** the multiplayer protocol as sans-IO state machines (server, client, margin controller), and a seeded simulated network that checks the theorems of `docs/multiplayer.typ` as assertions.
 - **[`nabla-synth`](crates/nabla-synth):** the thruster sounds' synthesizer, also built alone for the web app's AudioWorklet.
 - **[`nabla-client`](crates/nabla-client):** the app, a game: fly the ship to the goal yourself, or let a solution fly it as autopilot.
 

@@ -1,0 +1,19 @@
+[package]
+name = "nabla-sim"
+version.workspace = true
+edition.workspace = true
+description = "The simulation of a Nabla world without display, sound or network: ships, steering, collisions and gravity."
+publish = false
+
+[dependencies]
+log = "0.4.35"
+nabla-core.workspace = true
+# `enhanced-determinism`: the same results on every platform that follows IEEE 754-2008.
+rapier2d = { version = "0.36.1", features = ["enhanced-determinism"] }
+serde = { version = "1.0", features = ["derive"] }
+toml = "1.1.8"
+# `std::time::Instant` on the web too, where the standard one panics (src/span.rs).
+web-time = "1.1.0"
+
+[lints]
+workspace = true

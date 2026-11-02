@@ -25,9 +25,9 @@ use crate::plume::Plume;
 use crate::replay::{Replay, Series};
 use crate::ship3d::{self, DepthMap, SHIP_GLB, ShipModel, ShipRenderer};
 use crate::sound::Sound;
-use crate::span::span;
 use crate::theme::{self, icons, palette};
 use crate::version::build_version;
+use nabla_sim::span;
 
 mod orbits;
 mod title;

@@ -186,7 +186,7 @@ fn check(sh: &Shell) -> Result<()> {
         "{cargo} clippy --locked --quiet --workspace --all-targets"
     )
     .run()?;
-    for package in ["nabla-client", "nabla-synth"] {
+    for package in ["nabla-client", "nabla-net", "nabla-sim", "nabla-synth"] {
         cmd!(
             sh,
             "{cargo} clippy --locked --quiet -p {package} --lib --target wasm32-unknown-unknown"
@@ -195,17 +195,23 @@ fn check(sh: &Shell) -> Result<()> {
     }
     // As in CI: release mode, with debug assertions and overflow checks on for this
     // workspace's crates.
-    let checks = ["nabla-core", "nabla-synth", "nabla-client"]
-        .iter()
-        .flat_map(|package| {
-            ["debug-assertions", "overflow-checks"].map(|setting| {
-                [
-                    "--config".to_owned(),
-                    format!("profile.release.package.{package}.{setting}=true"),
-                ]
-            })
+    let checks = [
+        "nabla-core",
+        "nabla-net",
+        "nabla-sim",
+        "nabla-synth",
+        "nabla-client",
+    ]
+    .iter()
+    .flat_map(|package| {
+        ["debug-assertions", "overflow-checks"].map(|setting| {
+            [
+                "--config".to_owned(),
+                format!("profile.release.package.{package}.{setting}=true"),
+            ]
         })
-        .flatten();
+    })
+    .flatten();
     cmd!(
         sh,
         "{cargo} test --locked --quiet --workspace --release {checks...}"

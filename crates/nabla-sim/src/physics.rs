@@ -1,15 +1,18 @@
 //! Fixed-substep Rapier collisions and Newtonian gravity acting only on the player.
 
 use log::Level;
-use nabla_core::{Control, State};
+use nabla_core::{Control, Params, State};
+use rapier2d::math::rotation_from_angle;
 use rapier2d::prelude::{
     ColliderBuilder, MassProperties, PhysicsWorld, RigidBodyBuilder, RigidBodyHandle, Vector,
 };
 
-use crate::span::span;
+use crate::span;
 use crate::world::{CelestialBody, World};
 
-/// Sum G M (body - player) / r^3. Inside a body, use a uniform solid sphere's field,
+/// The gravitational acceleration at `position`, `sum G M (body - player) / r^3`.
+///
+/// Inside a body, use a uniform solid sphere's field,
 /// which is continuous at the surface and zero at the center, avoiding a singularity.
 /// Acceleration is independent of the player's mass; bodies never attract one another.
 pub fn gravity_acceleration(
@@ -42,7 +45,16 @@ pub struct Physics {
 }
 
 impl Physics {
+    /// The physics of the world's first player, who flies alone.
     pub fn new(save: &World) -> Self {
+        let p = &save.players[0];
+        Self::for_ship(save, p.state, &p.task.params, p.radius)
+    }
+
+    /// The physics of one ship in `save`'s world, starting in state `s`: with the world's bodies
+    /// and gravity, and the ship's own `params` and hull `radius`. A world with many ships has
+    /// one `Physics` for each, as ships do not touch.
+    pub fn for_ship(save: &World, s: State, params: &Params, radius: f32) -> Self {
         let _span = span!(Level::Debug, "physics of {} bodies", save.bodies.len());
         let mut world = PhysicsWorld {
             gravity: Vector::ZERO,
@@ -55,13 +67,10 @@ impl Physics {
                 ColliderBuilder::ball(body.radius).friction(0.5),
             );
         }
-        let p = &save.players[0];
-        let s = p.state;
-        let params = p.task.params;
         let (player, _) = world.insert(
             RigidBodyBuilder::dynamic()
                 .translation(Vector::new(s.x as f32, s.y as f32))
-                .rotation(crate::game::wrap(s.theta) as f32)
+                .rotation(crate::steering::wrap(s.theta) as f32)
                 .linvel(Vector::new(s.vx as f32, s.vy as f32))
                 .angvel(s.omega as f32)
                 .additional_mass_properties(MassProperties::new(
@@ -71,7 +80,7 @@ impl Physics {
                 ))
                 .ccd_enabled(true)
                 .can_sleep(false),
-            ColliderBuilder::ball(p.radius)
+            ColliderBuilder::ball(radius)
                 .density(0.0)
                 .friction(0.5)
                 .restitution(0.0),
@@ -85,6 +94,20 @@ impl Physics {
             gravity_constant: save.gravity_constant,
             theta: s.theta,
         }
+    }
+
+    /// Put the ship in state `s`, as a wall does when it stops one, keeping what else Rapier
+    /// remembers, which is only its contact cache.
+    pub fn set_state(&mut self, s: &State) {
+        let body = &mut self.world.bodies[self.player];
+        body.set_translation(Vector::new(s.x as f32, s.y as f32), true);
+        body.set_rotation(
+            rotation_from_angle(crate::steering::wrap(s.theta) as f32),
+            true,
+        );
+        body.set_linvel(Vector::new(s.vx as f32, s.vy as f32), true);
+        body.set_angvel(s.omega as f32, true);
+        self.theta = s.theta;
     }
 
     /// One control period, recording substeps for rendering through collisions.
@@ -118,13 +141,14 @@ impl Physics {
             let angle = self.world.bodies[self.player].rotation().angle();
             let expected =
                 f64::from(f32::midpoint(old_omega, self.world.bodies[self.player].angvel()) * dt);
-            self.theta += expected + crate::game::wrap(f64::from(angle - old_angle) - expected);
+            self.theta += expected + crate::steering::wrap(f64::from(angle - old_angle) - expected);
             samples.push(self.state());
         }
         samples
     }
 
-    fn state(&self) -> State {
+    /// The ship's state now.
+    pub fn state(&self) -> State {
         let body = &self.world.bodies[self.player];
         State {
             x: f64::from(body.translation().x),

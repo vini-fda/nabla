@@ -6,7 +6,7 @@ Vacuum flight uses the same exact sampled-data model the solutions are scored on
 
 ## Worlds and saves
 
-Choose **Pure vacuum**, **Planet**, or **Planet + moon** (the default) on the title screen, or switch from the **World** dropdown in flight, which starts the flight over. Each preset is an embedded TOML file in [`assets/worlds`](assets/worlds). The existing starting-condition presets and custom ship controls work inside the selected world.
+Choose **Pure vacuum**, **Planet**, or **Planet + moon** (the default) on the title screen, or switch from the **World** dropdown in flight, which starts the flight over. Each preset is an embedded TOML file in [`assets/worlds`](../nabla-sim/assets/worlds). The existing starting-condition presets and custom ship controls work inside the selected world.
 
 **Save world...** on the title screen saves the setup; in flight Settings it saves the player's current position, velocity, heading and spin. **Load world...** opens a TOML file and returns to the title screen; press Play to resume from that state. Native builds use file dialogs; the browser uploads and downloads the same portable format. Restart restores the selected world's starting state. Saves include ship parameters, size, goal and tolerances, but not replay history or UI/autopilot settings.
 

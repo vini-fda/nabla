@@ -1,9 +1,9 @@
 //! A wireframe of the controller, drawn with egui's painter over a pure black panel (black on an
 //! AMOLED screen is the pixels off), lit by the controller's state: the sticks move in their
-//! wells, the face buttons glow in their own colors, the D-pad, the bumpers and the small
-//! buttons light while held, and the triggers' gauges fill as far as they are pulled. Above, a
-//! callout for each shoulder button and trigger (L1, L2, R1, R2) points down at it with an
-//! elbow line, and lights with it.
+//! wells, the face buttons glow in their own colors, the touchpad, the D-pad, the bumpers and
+//! the small buttons light while held, and the triggers' gauges fill as far as they are
+//! pulled. Above, a callout for each shoulder button and trigger (L1, L2, R1, R2) points down at
+//! it with an elbow line, and lights with it. A heading names the controller.
 //!
 //! The outlines come from `controller_shape`, traced from a photo; the callouts are laid out
 //! here, in the same coordinates. Each line is drawn twice, wide and faint under thin and
@@ -58,15 +58,18 @@ const DOT_TRAVEL: f32 = shape::WELL_RADIUS - 4.0;
 const PS_Y: f32 = 247.0;
 const PS_RADIUS: f32 = 8.0;
 
-/// The panel's width at most, in points, its margin round the drawing, and its distance from
-/// the canvas's bottom.
+/// The panel's width at most, in points, its margin round the drawing, the height of the heading
+/// above it (down to the rule under it), and the panel's distance from the canvas's bottom.
 const MAX_WIDTH: f32 = 340.0;
 const PADDING: f32 = 10.0;
+const HEADING: f32 = 26.0;
 const BOTTOM_MARGIN: f32 = 12.0;
 
-/// The wireframe's color, and the light bars'.
-const LINE: Color32 = Color32::from_rgb(150, 170, 215);
+/// The wireframe's color: white. The light bars', which the touchpad lights in too when clicked.
+const LINE: Color32 = Color32::from_gray(235);
 const LIGHT: Color32 = palette::BLUE;
+/// The rule under the heading.
+const RULE: Color32 = Color32::from_gray(55);
 /// The lines' width and their glow's, in points.
 const LINE_WIDTH: f32 = 1.3;
 const GLOW_WIDTH: f32 = 5.0;
@@ -76,7 +79,7 @@ const LABEL_SIZE: f32 = 10.0;
 /// The panel's rectangle at the bottom middle of `canvas`.
 pub fn panel_rect(canvas: Rect) -> Rect {
     let width = MAX_WIDTH.min(canvas.width() - 2.0 * PADDING);
-    let height = width * VIEW.height() / VIEW.width() + 2.0 * PADDING;
+    let height = width * VIEW.height() / VIEW.width() + HEADING + 2.0 * PADDING;
     let width = width + 2.0 * PADDING;
     Rect::from_min_size(
         pos2(
@@ -96,11 +99,37 @@ pub fn paint(painter: &Painter, panel: Rect, state: Option<&State>) {
         Stroke::new(1.0, Color32::from_gray(38)),
         egui::StrokeKind::Inside,
     );
-    let inner = panel.shrink(PADDING);
+    // The heading: the controller's name, and a rule under it.
+    let name = state.map_or("No controller", |s| s.name.as_str());
+    // On one row, cut short with an ellipsis if wider than the panel.
+    let mut job = egui::text::LayoutJob::simple_singleline(
+        name.to_owned(),
+        egui::FontId::proportional(LABEL_SIZE),
+        palette::WHITE,
+    );
+    job.wrap = egui::text::TextWrapping {
+        max_width: panel.width() - 2.0 * PADDING - 2.0,
+        max_rows: 1,
+        break_anywhere: true,
+        overflow_character: Some('\u{2026}'),
+    };
+    let galley = painter.layout_job(job);
+    let top_left = pos2(
+        panel.left() + PADDING + 2.0,
+        panel.top() + HEADING / 2.0 + 2.0 - galley.size().y / 2.0,
+    );
+    painter.galley(top_left, galley, palette::WHITE);
+    painter.hline(
+        (panel.left() + PADDING)..=(panel.right() - PADDING),
+        panel.top() + HEADING,
+        Stroke::new(1.0, RULE),
+    );
+
+    let drawing = drawing_rect(panel);
     let view = View {
         painter,
-        origin: inner.min,
-        scale: inner.width() / VIEW.width(),
+        origin: drawing.min,
+        scale: drawing.width() / VIEW.width(),
         dim: state.is_none(),
     };
     let idle = State::default();
@@ -109,7 +138,7 @@ pub fn paint(painter: &Painter, panel: Rect, state: Option<&State>) {
 
     view.line(points(shape::BODY, false), true, LINE);
     view.line(points(shape::BAND, false), true, LINE.gamma_multiply(0.6));
-    view.line(points(shape::TOUCHPAD, false), true, LINE);
+    view.shape(points(shape::TOUCHPAD, false), s.touchpad.then_some(LIGHT));
     for right in [false, true] {
         view.line(points(shape::LIGHT_BAR, right), false, LIGHT);
     }
@@ -155,17 +184,14 @@ pub fn paint(painter: &Painter, panel: Rect, state: Option<&State>) {
         );
         view.dot(center + push * DOT_TRAVEL, palette::SAPPHIRE);
     }
+}
 
-    // The controller's name, between the grips.
-    let label = state.map_or("No controller", |s| s.name.as_str());
-    let bottom = shape::BODY.iter().map(|q| q[1]).fold(0.0, f32::max);
-    painter.text(
-        view.at(pos2(shape::AXIS, bottom - 40.0)),
-        egui::Align2::CENTER_CENTER,
-        label,
-        egui::FontId::proportional(LABEL_SIZE),
-        palette::OVERLAY0,
-    );
+/// Where the drawing goes in `panel`: under the heading, within the margin.
+fn drawing_rect(panel: Rect) -> Rect {
+    Rect::from_min_max(
+        pos2(panel.left() + PADDING, panel.top() + HEADING + PADDING),
+        panel.max - Vec2::splat(PADDING),
+    )
 }
 
 /// The D-pad, the face buttons, each with its symbol and lit in its color, and the small
@@ -252,8 +278,8 @@ impl View<'_> {
     }
 
     /// A closed shape through `points`, outlined, and filled with `lit` if given. The fill is
-    /// for convex shapes; the traced ones that light (the bumpers, the D-pad's arms and the
-    /// small buttons) nearly are.
+    /// for convex shapes; the traced ones that light (the touchpad, the bumpers, the D-pad's
+    /// arms and the small buttons) nearly are.
     fn shape(&self, points: Vec<Pos2>, lit: Option<Color32>) {
         if let Some(fill) = lit {
             let screen = points.iter().map(|&q| self.at(q)).collect();
@@ -496,7 +522,7 @@ mod tests {
     fn the_panel_keeps_the_drawing_in_proportion() {
         let canvas = Rect::from_min_size(Pos2::ZERO, vec2(1000.0, 800.0));
         let panel = panel_rect(canvas);
-        let inner = panel.shrink(PADDING);
+        let inner = drawing_rect(panel);
         let ratio = inner.width() / inner.height();
         assert!(
             (ratio - VIEW.width() / VIEW.height()).abs() < 1e-3,

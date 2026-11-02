@@ -19,6 +19,15 @@ use crate::game::Input;
 /// events don't wake egui up the way the mouse's and the keyboard's do.
 const SEARCH_INTERVAL: Duration = Duration::from_millis(250);
 
+/// The touchpad's click on macOS, which gilrs maps to no [`Button`], by its raw code: the 14th
+/// HID button (the button page's usage 14, which SDL's mappings call `b13`).
+#[cfg(not(target_arch = "wasm32"))]
+const MACOS_TOUCHPAD: u32 = (0x09 << 16) | 14;
+/// The touchpad's click in the browser's standard mapping: the button after the 17 standard
+/// ones, which gilrs doesn't read.
+#[cfg(target_arch = "wasm32")]
+const WEB_TOUCHPAD: u32 = 17;
+
 /// The buttons read as held: every one the controller view shows.
 const BUTTONS: [Button; 17] = [
     Button::South,
@@ -53,6 +62,8 @@ pub struct State {
     pub triggers: [f32; 2],
     /// The buttons held, the triggers once pulled past their threshold.
     pub held: Vec<Button>,
+    /// The touchpad is pressed down (clicked, not just touched).
+    pub touchpad: bool,
     /// The buttons pressed since the last frame, for the ones that switch something on a press
     /// rather than while held.
     pub pressed: Vec<Button>,
@@ -88,6 +99,45 @@ impl State {
     }
 }
 
+/// A controller's name without what the browser appends to it, such as Chrome's
+/// " (STANDARD GAMEPAD Vendor: 054c Product: 0ce6)".
+fn tidy_name(name: &str) -> String {
+    name.split(" (STANDARD GAMEPAD")
+        .next()
+        .unwrap_or(name)
+        .trim()
+        .to_owned()
+}
+
+/// Whether the touchpad of `pad` is pressed down (clicked, not just touched): on macOS, by its
+/// raw code, the touchpad being a button gilrs reads but doesn't name.
+#[cfg(not(target_arch = "wasm32"))]
+fn touchpad(pad: &gilrs::Gamepad<'_>) -> bool {
+    pad.state()
+        .buttons()
+        .any(|(code, data)| data.is_pressed() && code.into_u32() == MACOS_TOUCHPAD)
+}
+
+/// Whether the touchpad of the first connected controller is pressed down, read straight from
+/// the browser's Gamepad API: gilrs only reads the standard mapping's first 17 buttons. The
+/// controller is the one gilrs reads, `pad`: the first connected.
+#[cfg(target_arch = "wasm32")]
+fn touchpad(_pad: &gilrs::Gamepad<'_>) -> bool {
+    use wasm_bindgen::JsCast;
+    let Some(pads) = web_sys::window().and_then(|w| w.navigator().get_gamepads().ok()) else {
+        return false;
+    };
+    pads.iter()
+        .filter(|p| !p.is_null())
+        .map(JsCast::unchecked_into::<web_sys::Gamepad>)
+        .find(web_sys::Gamepad::connected)
+        .filter(|p| p.mapping() == web_sys::GamepadMappingType::Standard)
+        .is_some_and(|p| {
+            let button = p.buttons().get(WEB_TOUCHPAD);
+            !button.is_undefined() && button.unchecked_into::<web_sys::GamepadButton>().pressed()
+        })
+}
+
 /// The controllers, and the first connected one's state at the last [`Self::poll`].
 pub struct Gamepads {
     /// `None` where gilrs could not start (it logged why).
@@ -116,8 +166,11 @@ impl Gamepads {
         // are kept, with the controller they came from.
         let mut pressed = Vec::new();
         while let Some(Event { id, event, .. }) = gilrs.next_event() {
-            if let EventType::ButtonPressed(button, _) = event {
+            if let EventType::ButtonPressed(button, code) = event {
                 pressed.push((id, button));
+                if button == Button::Unknown {
+                    log::debug!("Unmapped controller button, code {}", code.into_u32());
+                }
             }
         }
         self.state = gilrs
@@ -126,7 +179,7 @@ impl Gamepads {
             .map(|(id, pad)| {
                 let depth = |button| pad.button_data(button).map_or(0.0, |d| d.value());
                 State {
-                    name: pad.name().to_owned(),
+                    name: tidy_name(pad.name()),
                     stick: [pad.value(Axis::LeftStickX), pad.value(Axis::LeftStickY)],
                     right_stick: [pad.value(Axis::RightStickX), pad.value(Axis::RightStickY)],
                     triggers: [depth(Button::LeftTrigger2), depth(Button::RightTrigger2)],
@@ -134,6 +187,7 @@ impl Gamepads {
                         .into_iter()
                         .filter(|&button| pad.is_pressed(button))
                         .collect(),
+                    touchpad: touchpad(&pad),
                     pressed: pressed
                         .iter()
                         .filter(|&&(from, _)| from == id)
@@ -179,6 +233,22 @@ mod tests {
         let cross = holding(&[Button::South], [1.0, 0.0]).input();
         assert!(cross.thrust, "Cross thrusts");
         assert_eq!(cross.turn, -1.0, "full right");
+    }
+
+    #[test]
+    fn names_lose_what_the_browser_appends() {
+        let chrome = "DualSense Wireless Controller (STANDARD GAMEPAD Vendor: 054c Product: 0ce6)";
+        assert_eq!(tidy_name(chrome), "DualSense Wireless Controller");
+        assert_eq!(
+            tidy_name("PS5 Controller"),
+            "PS5 Controller",
+            "native: as is"
+        );
+        assert_eq!(
+            tidy_name("Pad (wired)"),
+            "Pad (wired)",
+            "other parentheses stay"
+        );
     }
 
     #[test]

@@ -176,7 +176,7 @@ jobs:
           trunk --version
 
       - name: Trunk build
-        working-directory: crates/nabla
+        working-directory: crates/nabla-client
         run: trunk build --release
 
       - name: The build contains everything index.html refers to
@@ -186,5 +186,5 @@ jobs:
               assets/favicon.svg assets/nabla-logo.svg \
               assets/favicon-192x192.png assets/favicon-512x512.png \
               assets/maskable-512x512.png assets/apple-touch-icon.png; do
-            test -s "crates/nabla/dist/$file" || { echo "::error::crates/nabla/dist/$file is missing"; exit 1; }
+            test -s "crates/nabla-client/dist/$file" || { echo "::error::crates/nabla-client/dist/$file is missing"; exit 1; }
           done

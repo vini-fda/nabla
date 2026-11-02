@@ -142,7 +142,7 @@ only sends it a few numbers per frame and audio no longer waits on it.
   caption: [Notation.],
 )
 
-The *synthesizer* $cal(S)$ (`crates/nabla/src/synth.rs`) is a causal, deterministic
+The *synthesizer* $cal(S)$ (`crates/nabla-synth/src/lib.rs`) is a causal, deterministic
 discrete-time system. It maps a control sequence $c[n]$ (one control vector per output frame
 $n$) to stereo samples:
 
@@ -168,7 +168,7 @@ device plays whatever is there instead, which is usually silence.
 
 == Structure
 
-`crates/nabla/src/sound.rs` opens a cpal stream. On the web, cpal's `webaudio` host has *no
+`crates/nabla-client/src/sound.rs` opens a cpal stream. On the web, cpal's `webaudio` host has *no
 audio thread of its own*. It creates two `AudioBuffer`s, slots $A$ and $B$, of $N_"buf" = 2048$
 frames each. When a slot's `AudioBufferSourceNode` finishes playing, its `ended` event runs a
 JavaScript callback *on the main thread*. That callback calls our Rust closure, which calls
@@ -943,7 +943,7 @@ $tau_"fall" ln 1000 approx 0.83 "s"$. This is a fade, not a cut.
     ),
     caption: [Sketch of the worklet's ABI.],
   ) <abi>
-+ *`crates/nabla/assets/synth-worklet.js`* (@worklet-js), about 30 lines: register `nabla-synth`; instantiate
++ *`crates/nabla-client/assets/synth-worklet.js`* (@worklet-js), about 30 lines: register `nabla-synth`; instantiate
   the bytes from `processorOptions`; on each message call `synth_set`; in `process()` call
   `synth_render(128)` and copy the two buffers into `outputs[0]`; return `true`. The bytes are
   passed rather than a compiled `WebAssembly.Module`, because posting a module into a worklet
@@ -984,7 +984,7 @@ $tau_"fall" ln 1000 approx 0.83 "s"$. This is a fade, not a cut.
 
       registerProcessor("nabla-synth", NablaSynth);
       ```,
-      file: "crates/nabla/assets/synth-worklet.js",
+      file: "crates/nabla-client/assets/synth-worklet.js",
     ),
     caption: [Sketch of the processor.],
   ) <worklet-js>

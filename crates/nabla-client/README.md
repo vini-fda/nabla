@@ -119,7 +119,7 @@ src/
 From the repository root:
 
 ```sh
-cargo run --release -p nabla
+cargo run --release -p nabla-client
 ```
 
 While working on the viewer, use `cargo nabla`. It builds with the `fast` profile, which keeps release's optimization level but skips its link-time optimization, so after an edit the viewer rebuilds in seconds instead of about a minute.

@@ -165,7 +165,7 @@ fn web_dev(sh: &Shell, args: &[String]) -> Result<()> {
         .ignore_stdout()
         .run()
         .context("trunk is needed: `cargo install --locked trunk`")?;
-    let _app = sh.push_dir("crates/nabla");
+    let _app = sh.push_dir("crates/nabla-client");
     cmd!(sh, "trunk serve --port {port} {release...}").run()?;
     Ok(())
 }
@@ -211,7 +211,7 @@ fn check(sh: &Shell) -> Result<()> {
         "{cargo} test --locked --quiet --workspace --release {checks...}"
     )
     .run()?;
-    let _app = sh.push_dir("crates/nabla");
+    let _app = sh.push_dir("crates/nabla-client");
     cmd!(sh, "trunk build --release").run()?;
     Ok(())
 }

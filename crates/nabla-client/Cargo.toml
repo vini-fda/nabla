@@ -11,9 +11,11 @@ include = ["LICENSE-APACHE", "LICENSE-MIT", "**/*.rs", "Cargo.toml", "assets/con
 all-features = true
 targets = ["x86_64-unknown-linux-gnu", "wasm32-unknown-unknown"]
 
-# `main.rs` has no tests: without this, `cargo test --release` builds it as a test binary, with the
-# release profile's slow whole-program LTO.
+# `main.rs` has no tests: without `test = false`, `cargo test --release` builds it as a test binary,
+# with the release profile's slow whole-program LTO. Nor does it have docs of its own: named apart
+# from the library, it would otherwise get its own page from `cargo doc`.
 [[bin]]
+doc = false
 name = "nabla"
 path = "src/main.rs"
 test = false

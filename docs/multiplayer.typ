@@ -97,6 +97,8 @@
 #show figure.caption: set text(size: 0.93em)
 #show figure: set block(above: 1.3em, below: 1.3em)
 #show figure.where(kind: table): set block(breakable: true)
+// For a table short enough that splitting it across pages would only hurt.
+#let keep(body) = block(breakable: false, width: 100%, above: 1.3em, below: 1.3em, body)
 
 // Names of actions and functions of the specification.
 #let name(s) = $sans(#s)$
@@ -118,6 +120,9 @@
 #let RTT = name("RTT")
 #let neutral = $⊘$
 #let Log = $ell$
+#let Grant = name("Grant")
+#let Wall = name("wall")
+#let Pset = $cal(P)$
 #let unch(body) = $sans("UNCHANGED") #h(0.2em) #body$
 
 #title()
@@ -130,8 +135,8 @@
 #align(center, block(width: 88%, {
   set align(left)
   set text(size: 0.95em)
-  [*Abstract.* This paper specifies the multiplayer version of `nabla`: many pilots, one ship each, one
-  shared world, free flight, native and browser clients, over QUIC. We treat the game as a state
+  [*Abstract.* This paper specifies the multiplayer version of `nabla`: up to 16 pilots, each flying a ship
+  chosen in a lobby, in one shared world, in free flight, on native and browser clients, over QUIC. We treat the game as a state
   machine whose only replica of record is the server, and we derive what a client does (prediction,
   reconciliation, interpolation) as speculation against that machine. We write an ideal specification,
   give a protocol, and prove that the protocol implements it. We prove that no client can damage
@@ -148,31 +153,42 @@
 
 `nabla` flies one ship. We want this:
 
-/ R1: Each connected pilot controls one ship, and all ships share one world.
+/ R1: Up to 16 connected pilots each control one ship, and all ships share one world.
 / R2: The mode is free flight. There is no goal, score or round, so nothing needs a fair arbiter.
 / R3: Clients run natively and in the browser, through WASM. QUIC is the preferred transport.
 / R4: Ships will eventually collide with each other. We call the game without those collisions
   *Phase A* and the game with them *Phase B*. Phase A ships first, and must not preclude Phase B.
+/ R5: A pilot chooses the ship's parameters in a lobby, before joining. They stay fixed for the flight,
+  and the server has the final say over which are allowed.
+/ R6: The world is a square of configurable size.
+/ R7: Autopilots may fly.
+/ R8: Flight should feel smooth on a display refreshing at 60 Hz.
 
-The method is Lamport's @lamport1978 @lamport1994 @lamport2002. We first say what the system should
+The method is Lamport's @lamport1978 @lamport1994 @lamport2002. After fixing the tick, the edge of the
+world and what a ship may be (@world), we say what the system should
 do as if one computer ran it and all pilots shared its keyboards (@ideal). We then state what a
 network makes impossible (@time). We give the protocol as a state machine (@protocol) and prove that
 it implements the ideal (@safety). The ideal has no timing or display in it, so the questions that
 decide how the game feels get a separate, quantitative treatment (@errors). Proofs follow Lamport's
 hierarchical style @lamport2012, where they have more than one step worth naming.
 
-Numbers in this paper come from `nabla`'s bundled worlds (@constants). Measurements were taken on the
-code at commit `268a24f`. @numerics says how each was obtained. @decisions lists the design decisions
+Numbers in this paper come from `nabla`'s bundled worlds (@constants), at the tick chosen in @tick-rate.
+Measurements were taken on the code at commit `268a24f`. @numerics says how each was obtained. @decisions lists the design decisions
 and where each one is justified.
 
 #figure(
   rules(
     columns: (auto, 1fr, auto),
     ([Decision], [Choice], [Justified in]),
+    [Pilots], [At most 16: a snapshot fits one datagram.], [@bandwidth],
+    [Tick], [$h = 1 slash 60$ s, stored as the integer rate 60.], [@prop-idle],
+    [Edge of the world], [A configurable square, with a plastic wall.], [@lem-arena],
+    [Ship parameters], [Picked in a lobby, clamped, then fixed.], [@lem-grant],
     [Authority], [One server sequences the world's log. Clients never send state.], [@thm-refine, @thm-contain],
     [What is replicated], [State, in snapshots. The log is not replicated, and bit-exact determinism is not required.], [@replicate],
     [Clock], [The tick number. No synchronized clock exists anywhere.], [@thm-vt, @thm-margin],
     [Command], [The pilot's intent, stamped with the tick it is for.], [@protocol, @prop-flip],
+    [Autopilots], [Allowed, as clients sending direct commands.], [@thm-contain, @autopilots],
     [Own ship], [Predicted, and replayed from each snapshot.], [@thm-exact, @thm-sens],
     [Other ships, Phase A], [Hermite-interpolated between snapshots, in the past.], [@prop-hermite],
     [Other ships, Phase B], [Extrapolated into the pilot's own frame.], [@prop-zoh, @thm-first],
@@ -261,13 +277,13 @@ second line of defense.
 
 == Constants <constants>
 
-All three bundled worlds use the same ship. These are the values the rest of the paper plugs in.
+All three bundled worlds use the same ship, at $h = 0.02$ s. The rest of the paper plugs in these values, with the multiplayer tick of @tick-rate. A pilot may choose another ship (@lobby), and @caps says what the largest allowed one does to the results.
 
 #figure(
   rules(
     columns: (1fr, auto, 1fr, auto),
     ([Quantity], [Value], [Quantity], [Value]),
-    [Tick $h$], [$0.02$ s], [Largest linear acceleration $a$], [$10$],
+    [Tick $h$], [$1 slash 60$ s], [Largest linear acceleration $a$], [$10$],
     [Mass $m$, inertia $I$], [$0.5$, $0.2$], [Largest angular acceleration $beta$], [$25$ rad/s²],
     [$F_max$, $tau_max$], [$5$, $5$], [Ship radius $rho$], [$1$],
     [Planet $R$, $M$], [$7$, $343$], [Surface gravity, planet / moon], [$7$ / $2.5$],
@@ -283,30 +299,150 @@ Four things tie the code to one pilot, and all are mechanical to change. `World:
 `players.len() == 1`. `Physics::new` reads `save.players[0]`. The tick length $h$ sits in each
 player's `Params`, though all ships must share one. And `physics.rs`, `world.rs` and the steering
 functions live in `nabla-client`, which depends on eframe, wgpu and cpal, so a server cannot depend on it.
+Nor does anything keep a ship in the world: `World::validate` bounds positions at load, and never again.
+
+= The world a server runs <world>
+
+Three things must be fixed before there is a protocol to state, because each is part of the tick map that server and clients share: how long a tick is, where the world ends, and what a ship may be.
+
+== The tick <tick-rate>
+
+The bundled worlds tick at 50 Hz, and most displays refresh at 60 Hz. It is worth being exact about what that mismatch does, since the obvious fear is wrong. `Game::advance` gives every tick that has started its control, and the frame then draws the state at its own time $t$, by a partial step from the last tick's start. So drawn motion is a continuous function of $t$ at any tick rate, and 50 Hz does not judder. What the mismatch affects is input. A frame reads the input once, and that input reaches the world only through a tick that starts during the frame.
+
+#proposition(name: [Idle frames])[
+  Let frames come at a constant rate $f_d$ and ticks at a constant rate $f_t$. Each frame contains $floor(f_t slash f_d)$ or $ceil(f_t slash f_d)$ tick starts, and the fraction of frames containing none is $max(0, 1 - f_t slash f_d)$. The input read in such an idle frame waits for a later frame to reach the world.
+] <prop-idle>
+
+#proof[
+  Tick starts form a lattice of spacing $1 slash f_t$, and frames partition time into half-open intervals of length $1 slash f_d$. An interval holds the floor or the ceiling of the ratio of these lengths. If $f_t < f_d$ that is at most one, so each tick start occupies a different frame, and the occupied fraction is $f_t slash f_d$.
+]
+
+At $f_t = 50$ and $f_d = 60$, one frame in six is idle, a 10 Hz beat. At $f_t = f_d$, none is. So the display's own rate is the smallest tick rate with no idle frames, and going higher buys that display nothing, since it reads input once a frame. @tab-tick sets out the trade. *We choose $h = 1 slash 60$ s.* On a 120 Hz display every other frame is then idle, but it still draws fresh motion, and its input waits at most $8.3$ ms. Doubling the traffic does not seem worth removing that.
+
+#keep[#figure(
+  rules(
+    columns: (auto, auto, auto, auto, auto, auto, auto, auto),
+    align: (left, right, right, right, right, right, right, right),
+    ([Tick rate], [$h$ (ms)], [Idle, 60 Hz], [Idle, 120 Hz], [Substeps per s], [Wrong tick: $Delta v$, $Delta omega$], [$K$], [Mbit/s]),
+    [50 Hz], [$20$], [1 in 6], [7 in 12], [150], [0.20, 1.00], [4], [7.0],
+    [60 Hz], [$16.7$], [none], [1 in 2], [120], [0.17, 0.83], [5], [8.4],
+    [120 Hz], [$8.3$], [none], [none], [120], [0.08, 0.42], [10], [16.9],
+  ),
+  caption: [Three tick rates, for the bundled ship. The wrong tick is that of @flip. $K$ is the number of copies of a command that outlast a burst of 80 ms (@loss). The last column is server egress at $N = 16$ and $q = 1$ (@bandwidth).],
+) <tab-tick>]
+
+Four remarks.
+
+*An exact lock is neither available nor needed.* A "60 Hz" display may run at 59.94 Hz, and in any case its clock is not the server's, so a frame slips by one tick every so often, once in 16.7 s at that rate. If tick starts happen to sit near frame boundaries, frame-time jitter can make frames alternate between no ticks and two for a while. Motion stays smooth through all of this, because the accumulator and the partial step stay. The only cost is an input delayed by one frame. A client could use the stretch of @thm-margin to keep tick starts mid-frame, a refinement left to M7.
+
+*The rate must be an integer.* The number of substeps is $ceil(120 h)$. In `f64`, `120.0 * (1.0 / 60.0)` is exactly $2$, so there are two. A world file saying `h = 0.0167` would get three: $120 h = 2.004$. Two replicas that disagree on this fly different physics without any error being raised. So version 2 of the world format stores `tick_rate = 60`, and $h$ is computed from it.
+
+*Fewer substeps per second.* The rate falls from 150 to 120, so `Physics` follows @eq:ode a little less closely: in a 30 s test flight it strayed from an RK4 integration by $2.0$ units, against $1.3$ at 50 Hz. This costs the protocol nothing, since client and server run the same integrator, and free flight has no target that depends on the continuous model. The work per second hardly changes: `Physics::step` takes $3.2$ µs per tick at 60 Hz, against $4.0$ at 50 Hz.
+
+*What else was checked.* With the bundled worlds edited to $h = 1 slash 60$, 127 of `nabla-client`'s 128 unit tests pass. The other counts 110 ticks to mean "over two seconds", which is an assumption of the test and not of the code. All three autopilots still fly (@autopilots). The scoring suite is not touched: `suite::H` stays $0.02$, because a solution's score is its step count, and changing the tick would change every score.
+
+== The arena <arena>
+
+Free flight lets a ship thrust forever, and worlds with bodies keep positions in `f32`, so a world needs an edge well before `f32` gives out. By R6 the edge is a square. Let $S$ be its half-side and $S' = S - rho$, so that the hull is inside when the center is in $[-S', S']^2$.
+
+#definition(name: [Wall])[
+  $Wall(p, v)$ treats each axis $xi$ separately. If $p_xi > S'$ it sets $(p_xi, v_xi) := (S', min(v_xi, 0))$, if $p_xi < -S'$ it sets $(p_xi, v_xi) := (-S', max(v_xi, 0))$, and otherwise it changes nothing. It leaves $theta$ and $omega$ alone. So the wall is plastic and frictionless.
+]
+
+The map a ship undergoes per tick is now @eq:tick followed by the wall, with ship $i$'s own parameters (@lobby) in $phi_i$ and $alpha_i$, and the world's $h$:
+
+#numbered[$
+  f_i (x, c) = (Wall(phi_i (s, u)), eta') quad "where" (u, eta') = alpha_i (c, x).
+$ <eq:shipmap>]
+
+Because $Wall$ is a pure function of the state, it goes in $f$ and not in Rapier. It is the same in vacuum and with bodies, and a restore loses nothing of it. @thm-exact holds with no change, since it concerns $f$ whatever $f$ is. The drawing's partial step applies the same clamp.
+
+#lemma(name: [The arena holds])[
+  + $Wall$ maps every state into the arena and is idempotent. In position it is the projection on a convex set, so it never increases the distance between two positions.
+  + In a vacuum world, a ship that spawned with speed $v_0$ has, at every tick and on each axis $xi$,
+    $ |v_xi| <= sqrt(v_0^2 + 4 a S' + a^2 h^2). $
+] <lem-arena>
+
+#proof[
+  #st(1, 1)[Part 1 is immediate from the definition.]
+  #st(1, 2)[For part 2, let $v_xi = V > 0$ at a tick at time $t$. The other sign is symmetric. Going back from $t$, $v_xi (t - r) >= V - a r$, until $r = V slash a$ or the flight's start.]
+  #by[Thrust changes $v_xi$ at rate at most $a$, and the wall cannot break the inequality in that window. The far wall would leave $v_xi <= 0$, while the inequality makes it positive. The near wall can only leave $v_xi > 0$ by moving the ship forward, which adds distance below.]
+  #st(1, 3)[Over that window the ship covers at least $(V^2 - v_0^2) slash (2 a)$.]
+  #by[Integrate ⟨1⟩2. The right side at the window's start is $0$, or at most $v_0$ at the flight's start.]
+  #st(1, 4)[That distance is at most $2 S' + a h^2 slash 2$.]
+  #by[The ship ends inside the far wall. It starts at most $a h^2 slash 2$ past the near wall, as it can be past it only during the tick in which its velocity turned around, and at that tick $|v_xi| <= a h$ at the start.]
+  #st(1, 5)[Q.E.D., by ⟨1⟩3 and ⟨1⟩4.]
+]
+
+Adversarial pilots reached $0.9993$ of this bound and never passed it. With gravity, the same argument gives $a + g_max$ in place of $a$ for as long as the ship touches no body. A contact can turn motion along one axis into motion along the other, so in worlds with bodies we have no proof of a bound, and M3 will measure one instead.
+
+A wall is the mildest contact there is. Two nearby replicas that hit it on different ticks differ in velocity by the normal speed only for the ticks in between, and once both have hit, their errors along the normal are exactly zero. The wall forgets them.
+
+*Choosing $S$.* A body in Rapier moves once per solver iteration, four times a substep by default, so 480 times a second at this tick. A move smaller than half the `f32` spacing at the ship's coordinate is lost. Hence a coasting ship slower than $240$ spacings per second does not move at all, and a faster one advances in whole multiples of $480$ spacings per second. We measured this and it agrees to all digits: at $x = 990$, speed $0.01$ goes nowhere in 10 s, and speed $0.02$ covers $0.293$ rather than $0.2$; at $x = 4055$, speed $0.05$ goes nowhere.
+
+#keep[#figure(
+  rules(
+    columns: (auto, auto, auto, auto, auto, auto),
+    align: (right, right, right, right, right, right),
+    ([$S$], [Spacing near the wall], [Dead speed], [Center to wall], [Flip and burn across], [Top axis speed]),
+    [500], [$3.1 dot 10^(-5)$], [0.007], [10 s], [20 s], [141],
+    [*1000*], [$6.1 dot 10^(-5)$], [0.015], [14 s], [28 s], [200],
+    [2048], [$1.2 dot 10^(-4)$], [0.029], [20 s], [40 s], [286],
+    [4096], [$2.4 dot 10^(-4)$], [0.059], [29 s], [57 s], [405],
+    [10000], [$9.8 dot 10^(-4)$], [0.234], [45 s], [89 s], [632],
+  ),
+  caption: [What an arena's size means, for the bundled ship ($a = 10$). "Center to wall" is at full thrust from rest. The top axis speed is that of @lem-arena, without the small terms.],
+) <tab-arena>]
+
+The dead speed should be well below the speed autopilots are asked to settle at, the $0.05$ of `suite::TOLERANCE`, or they could not arrive everywhere. That excludes anything above $S = 2048$. *We take $S = 1000$*: it has more than three times that margin, a crossing takes half a minute, and sixteen pilots get $500 times 500$ units each. It is configurable in the world file, up to $2048$. Replay is not what limits it. Replays near the corners of arenas of up to $16000$ gave $|e_p| = 0$ and $|e_v| <= 4 dot 10^(-6)$, as client and server round alike. The limit is on the quality of the physics, not the protocol. Vacuum worlds use `f64` and have no dead speed, but Phase B puts every ship in Rapier, so all worlds share one limit.
+
+== The ships <lobby>
+
+By R5 a pilot picks the parameters $(m, I, F_max, tau_max)$ before joining, and the server decides what is allowed. Every bound in @errors is stated in terms of $a$ and $beta$, so those are what the server must cap. A box on the four parameters is not enough: the title screen's range of $0.05$ to $20$ for each allows $a = beta = 400$, at which one wrong tick spins a ship by 13 rad/s.
+
+#definition(name: [Allowed ships])[
+  A world file gives an interval for each of the four parameters, and two caps $a_"cap"$ and $beta_"cap"$. $Pset$ is the set of parameters within their intervals with $F_max slash m <= a_"cap"$ and $tau_max slash I <= beta_"cap"$. Loading a world checks that $a_"cap" m_min >= F_min$, that $beta_"cap" I_min >= tau_min$, and that its default ship is in $Pset$.
+]
+
+$Grant$ turns what a client asks for into a ship. It replaces each non-finite number with the default ship's, clamps each number into its interval, and then sets $F_max := min(F_max, a_"cap" m)$ and $tau_max := min(tau_max, beta_"cap" I)$.
+
+#lemma(name: [Grant])[
+  $Grant$ is total on wire values, its image lies in $Pset$, and it fixes each point of $Pset$.
+] <lem-grant>
+
+#proof[
+  After the clamp, each number is finite and in its interval. The last step enforces the caps, and keeps $F_max$ in its interval because $a_"cap" m >= a_"cap" m_min >= F_min$, and likewise $tau_max$. On a point of $Pset$, no step changes anything.
+]
+
+We start with $m, I in [0.1, 10]$, $F_max in [0.5, 20]$, $tau_max in [0.2, 20]$, $a_"cap" = 20$ and $beta_"cap" = 50$. The intervals contain every ship of the scoring suite, and the caps are twice the bundled ship's values.
+
+The server clamps rather than refuses. The lobby shows $Pset$, so a client that stays inside it never sees a clamp, and any other client still gets a ship and is told which. A client must predict with the parameters it was granted, never the ones it asked for, because @thm-exact needs its $f_i$ to be the server's.
+
+The tick and the arena are the world's, so no pilot chooses them. So is the hull radius $rho$: the title screen does not offer it today, and Phase B is simpler with one radius. Changing a ship means leaving and joining again, which makes a new ship at a new spawn.
 
 = The ideal <ideal>
 
 == Specification
 
-A world is a function $W$ from a finite set of active ships to $X$. For a command vector $c$ on
-$dom W$, the world map applies @eq:tick to each ship:
+A world is a function $W$ from a finite set of at most $N_max = 16$ active ships to $X$, and $P$ gives each active ship's parameters. For a command vector $c$ on
+$dom W$, the world map applies @eq:shipmap to each ship, with $f_i$ taken at $P(i)$:
 
 #numbered[$
   F(W, c)(i) = f_i (W(i), c(i)) quad "for every" i in dom W.
 $ <eq:product>]
 
 That the right side of @eq:product mentions only $i$ is the whole content of Phase A. @collisions
-drops it. The ideal has three variables: the tick $T$, the world $W$, and the log $Log$ of everything
+drops it. The ideal has four variables: the tick $T$, the world $W$, the parameters $P$, and the log $Log$ of everything
 that has happened.
 
-#action($"Init"_I$, conj[$T = 0$][$W = W_0$][$Log = ⟨⟩$])
-#action($"Tick"_I$, [$exists c in [dom W -> C] :$ #conj[$W' = F(W, c)$][$T' = T + 1$][$Log' = Log compose ⟨c⟩$]])
-#action($"Join"_I (i, x)$, conj[$i in.not dom W$][$W' = W union {i |-> x}$][$Log' = Log compose ⟨Join(i, x)⟩$][$T' = T$])
-#action($"Leave"_I (i)$, conj[$i in dom W$][$W' = W without {i}$][$Log' = Log compose ⟨Leave(i)⟩$][$T' = T$])
-#action($"Spec"_I$, conj[$"Init"_I$][$square [ "Tick"_I or exists i, x : "Join"_I (i, x) or exists i : "Leave"_I (i) ]_(⟨T, W, Log⟩)$][$"WF"_(⟨T, W, Log⟩) ("Tick"_I)$])
+#action($"Init"_I$, conj[$T = 0$][$W = W_0$][$P = P_0$][$Log = ⟨⟩$])
+#action($"Tick"_I$, [$exists c in [dom W -> C] :$ #conj[$W' = F(W, c)$][$T' = T + 1$][$Log' = Log compose ⟨c⟩$][$P' = P$]])
+#action($"Join"_I (i, x, p)$, conj[$i in.not dom W$][$|dom W| < N_max$][$p in Pset$][$W' = W union {i |-> x}$][$P' = P union {i |-> p}$][$Log' = Log compose ⟨Join(i, x, p)⟩$][$T' = T$])
+#action($"Leave"_I (i)$, conj[$i in dom W$][$W' = W without {i}$][$P' = P without {i}$][$Log' = Log compose ⟨Leave(i)⟩$][$T' = T$])
+#action($"Spec"_I$, conj[$"Init"_I$][$square [ "Tick"_I or exists i, x, p : "Join"_I (i, x, p) or exists i : "Leave"_I (i) ]_(⟨T, W, P, Log⟩)$][$"WF"_(⟨T, W, P, Log⟩) ("Tick"_I)$])
 
-The specification says only two things. The world changes by $F$ under *some* commands, and time does not
-stop. It does not say whose commands, or that they are the ones the pilots meant. That property, which we call
+The specification says only a few things. The world changes by $F$ under *some* commands, and time does not
+stop. There are never more than $N_max$ ships, and no action changes $P(i)$ while $i$ is active, which is the formal sense of R5's "fixed for the flight". It does not say whose commands, or that they are the ones the pilots meant. That property, which we call
 _fidelity_, is about the network, and is proved of the protocol in @thm-once.
 
 == The log determines the world
@@ -421,7 +557,7 @@ one-way delays, with $RTT = d^arrow.t + d^arrow.b$. A command stamped $k$ is on 
   and arrives at $R(T) + d^arrow.b$. Equating the two gives $(k - T) h = d^arrow.t + d^arrow.b + mu$.
 ]
 
-At $RTT = 100$ ms and $mu = 20$ ms, $L = 5$ ticks. @fig-spacetime shows the whole exchange. Notice that nothing here
+At $RTT = 100$ ms and $mu = h$, $L = 6$ ticks, and the horizon $L h$ equals the round trip, $0.1$ s. @fig-spacetime shows the whole exchange. Notice that nothing here
 requires the client to know $R$, or any clock of the server's: all it needs is $mu$, which the server reports (@thm-margin).
 
 #figure(
@@ -517,7 +653,7 @@ of what is in the client's causal past.
 ] <thm-nopresent>
 
 #proof[
-  #st(1, 1)[Take two runs that are identical up to the stamp in question, with $j$ in vacuum at $omega = 0$. In run
+  #st(1, 1)[Take two runs that are identical up to the stamp in question, with $j$ in vacuum at $omega = 0$, far from the walls. In run
   $A$, $j$ then holds $(F_max, 0)$, and in run $B$ it holds $(0, 0)$.]
   #by[Both are admissible, and by the hypothesis, neither choice is in $i$'s causal past, which is therefore the same in both runs.]
   #st(1, 2)[The true positions at $V$ differ by exactly $a t^2 slash 2$.]
@@ -549,7 +685,10 @@ special case of A1, so all of @safety would hold on one.
     columns: (auto, auto, 1fr),
     ([Message], [Channel], [Contents]),
     [`Hello`], [stream, up], [Protocol and build version.],
-    [`Welcome`], [stream, down], [The pilot's ship $i$, the world (validated TOML), a tick $T_0$, all ships' states at $T_0$.],
+    [`Lobby`], [stream, down], [The world (validated TOML, with its tick rate and arena), $Pset$, the default ship, the pilots present, and $N_max$.],
+    [`Join`], [stream, up], [The parameters the pilot asks for.],
+    [`Welcome`], [stream, down], [The pilot's ship $i$, its granted parameters, a tick $T_0$, all ships' states at $T_0$. Or `Full`, if there is no room.],
+    [`Leave`], [stream, up], [The ship goes. The connection stays, back in the lobby.],
     [`Roster`], [stream, down], [Ship $j$ exists for ticks in $[T_"since", T_"until")$, with its parameters and radius.],
     [`Commands`], [datagram, up], [A stamp $k$ and the commands stamped $k, k - 1, ..., k - K + 1$: the $K$ most recent.],
     [`Snapshot`], [datagram, down], [A label $T$, the client's margin $mu$, and for each ship in it, $(j, s_j, eta_j, u_j)$.],
@@ -563,13 +702,13 @@ know yet, and the roster at tick $T$ is a function of the *set* of entries, not 
 
 == The server
 
-The server's variables are $T$, $x$ (the world), and per ship: the buffer $"buf"[i]$, a partial function from
+The server's variables are $T$, $x$ (the world), $P$ (the parameters), and per ship: the buffer $"buf"[i]$, a partial function from
 stamps to $C$; the last command applied, $"last"[i]$; and the count $"miss"[i]$ of consecutive ticks with no command.
 The log $Log$ is a history variable @abadi1991, kept for the proofs and not needed by the code. The set $"up"$ holds datagrams in flight
 to the server, and $"down"$ those to clients. A datagram $m$ in $"up"$ has been split, for the specification, into single
 stamped commands. $N_b$ is the width of the buffer's window and $N_d$ the number of misses after which a ship goes neutral.
 
-#action($Deliver(m)$, conj[$m in "up"$][$T <= m."tick" < T + N_b$][$m."tick" in.not dom "buf"[m."ship"]$][$"buf"'[m."ship"] = "buf"[m."ship"] union {m."tick" |-> Sanitize(m."cmd")}$][#unch($⟨T, x, Log, "last", "miss"⟩$)])
+#action($Deliver(m)$, conj[$m in "up"$][$T <= m."tick" < T + N_b$][$m."tick" in.not dom "buf"[m."ship"]$][$"buf"'[m."ship"] = "buf"[m."ship"] union {m."tick" |-> Sanitize(m."cmd")}$][#unch($⟨T, x, P, Log, "last", "miss"⟩$)])
 
 A delivery outside the window has no effect. Below $T$ that is the Discard rule of @thm-vt. Above it, the rule bounds memory.
 With a command missing, the server uses the *hold rule*: the last command again, and after $N_d$ misses in a row that command with hands
@@ -577,10 +716,17 @@ off. For a manual command, that means no thrust, no turn, no aim, the steering m
 
 #action($Chosen(i)$, [IF $T in dom "buf"[i]$ THEN $"buf"[i][T]$ ELSE IF $"miss"[i] + 1 < N_d$ THEN $"last"[i]$ ELSE $neutral("last"[i])$])
 
-#action($Tick$, conj[$"let" c = [i in dom x |-> Chosen(i)]$ #h(0.3em) in][$x' = F(x, c)$][$T' = T + 1$][$Log' = Log compose ⟨c⟩$][$"last"' = c$][$"miss"'[i] = $ IF $T in dom "buf"[i]$ THEN $0$ ELSE $"miss"[i] + 1$, for all $i$][$"buf"'[i] = "buf"[i]$ without stamp $T$, for all $i$][$"down"' = "down" union {(i, T + 1, x'[i]) : i in dom x'}$])
+#action($Tick$, conj[$"let" c = [i in dom x |-> Chosen(i)]$ #h(0.3em) in][$x' = F(x, c)$][$T' = T + 1$][$Log' = Log compose ⟨c⟩$][$P' = P$][$"last"' = c$][$"miss"'[i] = $ IF $T in dom "buf"[i]$ THEN $0$ ELSE $"miss"[i] + 1$, for all $i$][$"buf"'[i] = "buf"[i]$ without stamp $T$, for all $i$][$"down"' = "down" union {(i, T + 1, x'[i]) : i in dom x'}$])
 
-$Tick$ has no precondition. That is the most important fact about it. $Join$ and $Leave$, which arrive on a stream, take effect between ticks as in
-the ideal, and so we do not repeat them.
+$Tick$ has no precondition. That is the most important fact about it.
+
+== The lobby
+
+A connection either has a ship or does not, and one without is in the lobby. `Hello` gets `Lobby` back, and the client shows its lobby screen: the world, the pilots present, and the title screen's rows for the four parameters, bounded by $Pset$ instead of by a constant. `Join` carries the request $r$, arrives on a stream, and takes effect between ticks:
+
+#action($Join(i, r)$, conj[$i in.not dom x$ #h(0.3em) and #h(0.3em) $|dom x| < N_max$][$x' = x union {i |-> "spawn"(i)}$][$P' = P union {i |-> Grant(r)}$][$Log' = Log compose ⟨Join(i, "spawn"(i), Grant(r))⟩$][$"buf"[i]$, $"last"[i]$ and $"miss"[i]$ start empty, neutral and $0$][#unch($T$)])
+
+A `Join` past $N_max$ changes nothing and is answered with `Full`. The function $"spawn"$ picks a place inside the arena, clear of the bodies, and in Phase B clear of other ships. $Leave(i)$ is as in the ideal, and happens on `Leave`, when the connection closes, or when a ship has been silent for $T_"idle"$, so that a forgotten tab does not hold one of the sixteen places for good.
 
 == The client
 
@@ -615,7 +761,7 @@ The strong fairness on $Absorb$ is what A4 grants: if snapshots with a label bey
 == The protocol implements the ideal
 
 #theorem(name: [Refinement])[
-  $"Spec"_N => "Spec"_I$, under the mapping that takes $T, x, Log$ of the protocol to $T, W, Log$ of the ideal.
+  $"Spec"_N => "Spec"_I$, under the mapping that takes $T, x, P, Log$ of the protocol to $T, W, P, Log$ of the ideal.
   Moreover $Tick$ is enabled in every state: no client, and no network, can stop the world.
 ] <thm-refine>
 
@@ -623,9 +769,10 @@ The strong fairness on $Absorb$ is what A4 grants: if snapshots with a label bey
   #st(1, 1)[$"Init"_N => "Init"_I$.]
   #by[The initial values agree by definition.]
   #st(1, 2)[$Tick => "Tick"_I$.]
-  #by[Take the witness $c = [i |-> Chosen(i)]$. $Chosen(i) in C$ because it is one of a sanitized buffered command, a previously applied command (initially, the neutral one), or its neutral form. The three conjuncts of $"Tick"_I$ appear verbatim in $Tick$.]
+  #by[Take the witness $c = [i |-> Chosen(i)]$. $Chosen(i) in C$ because it is one of a sanitized buffered command, a previously applied command (initially, the neutral one), or its neutral form. The conjuncts of $"Tick"_I$ appear verbatim in $Tick$.]
   #st(1, 3)[$Join$ and $Leave$ map to $"Join"_I$ and $"Leave"_I$.]
-  #st(1, 4)[$Deliver$, $Issue$, $Absorb$ and $Lose$ leave $T, x, Log$ unchanged.]
+  #by[The guards are the ideal's, and $Grant(r) in Pset$ by @lem-grant.]
+  #st(1, 4)[$Deliver$, $Issue$, $Absorb$ and $Lose$ leave $T, x, P, Log$ unchanged.]
   #by[By inspection. These are stuttering steps of the ideal.]
   #st(1, 5)[$"WF"("Tick"_I)$ holds.]
   #by[$Tick$ has no enabling condition, so $"WF"(Tick)$ makes it occur infinitely often, and by ⟨1⟩2 each occurrence is a $"Tick"_I$ step.]
@@ -660,8 +807,8 @@ base backward, so those three rules are needed. Replacing "first write wins" wit
 Lamport's Byzantine generals @lamport1982 are hard because each must trust what others say about the world. Here no client says anything about the world.
 
 #theorem(name: [Noninterference, Phase A])[
-  The trajectory of ship $i$ is a function of its initial state, and of the commands delivered on connection $i$ with the ticks at which they were delivered. So, whatever a client $j != i$ sends,
-  ship $i$ is unaffected in all respects.
+  The trajectory of ship $i$ is a function of its initial state, its parameters, and the commands delivered on connection $i$ with the ticks at which they were delivered. So, whatever a client $j != i$ sends,
+  ship $i$ is unaffected in all respects, once it has joined.
 ] <thm-contain>
 
 #proof[
@@ -670,8 +817,8 @@ Lamport's Byzantine generals @lamport1982 are hard because each must trust what 
 ]
 
 This is noninterference in the sense of Goguen and Meseguer @goguen1982. As for what a malicious client *can* do: it can fly its own ship with any admissible control, which is allowed by R2 and which
-is exactly what the autopilots do (so "cheating" has no meaning in free flight). By @lem-total, sending garbage does no more than that. It cannot grow the server's memory beyond $N_b$ commands. It can spend the server's bandwidth and CPU, which is not a theorem
-but an engineering item: per-connection rate limits, and QUIC's address validation. @collisions weakens the theorem in the only way Phase B must, by letting ship $j$ affect ship $i$ through physics.
+is exactly what the autopilots do (so "cheating" has no meaning in free flight). By @lem-total, sending garbage does no more than that, and by @lem-grant, asking for an impossible ship gets an allowed one. It cannot grow the server's memory beyond $N_b$ commands. It can spend the server's bandwidth and CPU, and many connections can fill the sixteen places, which is why "once it has joined" is in the theorem. Those are not theorems
+but engineering items: per-connection rate limits, $T_"idle"$, and QUIC's address validation. @collisions weakens the theorem in the only way Phase B must, by letting ship $j$ affect ship $i$ through physics.
 
 == Prediction
 
@@ -717,11 +864,11 @@ so a lost one needs no retransmission (@fig-spacetime).
 
 = How wrong can a display be? <errors>
 
-The theorems above assume the tick map is exact. They say nothing about the size of an error when it is not, or when a command is lost. This section does. All the bounds use the same technique: errors in the chain of integrators @eq:ode obey a linear comparison system.
+The theorems above assume the tick map is exact. They say nothing about the size of an error when it is not, or when a command is lost. This section does. All the bounds use the same technique: errors in the chain of integrators @eq:ode obey a linear comparison system. In each, $a$ and $beta$ are those of the ship in question. The numbers are for the bundled ship, and @caps restates them for the largest ship allowed.
 
 == Sensitivity
 
-Take two solutions of @eq:ode under the *same* piecewise-constant control, without contact. Let $E = (|e_p|, |e_v|, |e_theta|, |e_omega|)$ be the sizes of their differences, and let $Lambda$ be a Lipschitz constant of $g$.
+Take two solutions of @eq:ode under the *same* piecewise-constant control, without contact with a body or a wall. Let $E = (|e_p|, |e_v|, |e_theta|, |e_omega|)$ be the sizes of their differences, and let $Lambda$ be a Lipschitz constant of $g$.
 For `nabla`'s field, $Lambda = sum_b 2 G M_b slash R_b^3$. Outside a body, the Jacobian of a point source has eigenvalues $2 G M slash r^3$ (radially) and $-G M slash r^3$ (tangentially). Inside, where `gravity_acceleration` uses the solid-sphere field, it is $-G M slash R^3$ times the identity. The field is continuous across the surface, so the largest Jacobian norm is a Lipschitz constant.
 
 #theorem(name: [Sensitivity])[
@@ -749,7 +896,7 @@ For `nabla`'s field, $Lambda = sum_b 2 G M_b slash R_b^3$. Outside a body, the J
 Two remarks. First, the growth rate is $kappa$, so the natural time scale is $1 slash kappa$: $0.5$ s for the planet and moon. Over a horizon of $0.2$ s, $C = 1.08$, and the coefficients of $|e_v|$, $|e_theta|$ and $|e_omega|$ in the position bound differ from their vacuum values by under 3%. So *at replay horizons, gravity hardly matters to the error*: nothing diverges on the time scale of a round trip.
 Second, the theorem requires the same control in both solutions, so it covers `Raw` steering and direct commands. The assist and aim are feedback laws, and their torque differs between the two states. We don't bound them here. @thm-exact is unaffected, as it concerns $f$ rather than $u$.
 
-We checked the bound against the code: 20,000 random flights of `nabla_core::step` with perturbed starts gave worst ratios of actual to bound of $0.9999$ in position and $0.9997$ in velocity, with no violations. So the bound is essentially tight in the worst case. 1,500 runs of @eq:ode under the planet-and-moon field, integrated by RK4, gave $0.998$ and $0.968$, again without a violation.
+We checked the bound against the code: 20,000 random flights of `nabla_core::step` with perturbed starts gave worst ratios of actual to bound of $0.9999$ in position and $0.9997$ in velocity, with no violations. So the bound is essentially tight in the worst case. 1,500 runs of @eq:ode under the planet-and-moon field, integrated by RK4, gave $0.998$ and $0.974$, again without a violation.
 
 == Replay against the real physics <replay>
 
@@ -766,15 +913,15 @@ This is @thm-sens applied to each tick's defect, and summed. Rather than estimat
     columns: (auto, auto, auto, auto, auto, auto, auto, auto),
     align: (left, right, right, right, right, right, right, right),
     ([$L$], [free $|e_p|$], [free $|e_v|$], [free $|e_theta|$], [contact $|e_p|$], [contact $|e_v|$], [contact $|e_theta|$], [contact $|e_omega|$]),
-    [1], [$3.1 dot 10^(-5)$], [$1.5 dot 10^(-5)$], [$6.0 dot 10^(-7)$], [$1.9 dot 10^(-4)$], [$6.0 dot 10^(-3)$], [$4.7 dot 10^(-4)$], [$6.7 dot 10^(-3)$],
-    [5], [$6.1 dot 10^(-5)$], [$1.5 dot 10^(-5)$], [$1.1 dot 10^(-6)$], [$1.9 dot 10^(-4)$], [$1.1 dot 10^(-2)$], [$4.7 dot 10^(-4)$], [$1.2 dot 10^(-2)$],
-    [10], [$6.1 dot 10^(-5)$], [$1.6 dot 10^(-5)$], [$1.7 dot 10^(-6)$], [$2.7 dot 10^(-4)$], [$1.1 dot 10^(-2)$], [$4.7 dot 10^(-4)$], [$1.2 dot 10^(-2)$],
-    [25], [$6.1 dot 10^(-5)$], [$2.3 dot 10^(-5)$], [$2.1 dot 10^(-6)$], [$2.0 dot 10^(-3)$], [$1.1 dot 10^(-2)$], [$2.1 dot 10^(-3)$], [$1.2 dot 10^(-2)$],
+    [1], [$7.6 dot 10^(-6)$], [$7.6 dot 10^(-6)$], [$7.2 dot 10^(-7)$], [$1.2 dot 10^(-5)$], [$2.0 dot 10^(-3)$], [$2.8 dot 10^(-5)$], [$1.1 dot 10^(-3)$],
+    [6], [$6.1 dot 10^(-5)$], [$7.9 dot 10^(-6)$], [$1.0 dot 10^(-6)$], [$3.8 dot 10^(-5)$], [$7.7 dot 10^(-3)$], [$6.6 dot 10^(-5)$], [$8.6 dot 10^(-3)$],
+    [12], [$6.1 dot 10^(-5)$], [$9.5 dot 10^(-6)$], [$1.3 dot 10^(-6)$], [$2.8 dot 10^(-4)$], [$7.8 dot 10^(-3)$], [$7.1 dot 10^(-4)$], [$1.3 dot 10^(-2)$],
+    [30], [$6.8 dot 10^(-5)$], [$1.3 dot 10^(-5)$], [$1.8 dot 10^(-6)$], [$2.1 dot 10^(-3)$], [$2.1 dot 10^(-2)$], [$5.2 dot 10^(-3)$], [$1.5 dot 10^(-2)$],
   ),
-  caption: [Worst replay error from a restored state over about 6,000 windows per row, on the same machine, with $h = 0.02$. "Contact" means that a window touched a body. $|e_omega| = 0$ in free flight.],
+  caption: [Worst replay error from a restored state over about 7,000 windows per row, on the same machine, with $h = 1 slash 60$. "Contact" means that a window touched a body. $|e_omega| = 0$ in free flight.],
 ) <tab-replay>
 
-In free flight the position error sits at the `f32` resolution, about $6 dot 10^(-5)$ at the distance of $1000$ these flights reached, and doesn't grow with $L$. These corrections are under $10^(-4)$ of a ship radius, and invisible. In contact they are about three orders larger in velocity, presumably because the restore loses the contact cache and because small differences matter more there (@prop-graze), yet at $0.01$ units/s they are still small next to one tick of thrust ($a h = 0.2$). The conclusion: *`nabla` does not need bit-exact replay.* The cost is also negligible: `Physics::step` took 4 µs per tick in free flight and 10 µs in a flight with contacts, and `Physics::new` 3.4 µs (unoptimized `nabla-client`, optimized dependencies). A 5-tick replay is under 60 µs per snapshot, of a 20,000 µs tick.
+In free flight the position error sits at the `f32` resolution, about $6 dot 10^(-5)$ at the distances these flights reached, which are beyond the default arena, and doesn't grow with $L$. These corrections are under $10^(-4)$ of a ship radius, and invisible. In contact they are about three orders larger in velocity, presumably because the restore loses the contact cache and because small differences matter more there (@prop-graze), yet at $0.01$ to $0.02$ units/s they are still small next to one tick of thrust ($a h = 0.17$). The conclusion: *`nabla` does not need bit-exact replay.* The cost is also negligible: `Physics::step` took 3 µs per tick in free flight and 4 µs in a flight with contacts, and `Physics::new` 3.4 µs (unoptimized `nabla-client`, optimized dependencies). A 6-tick replay is under 30 µs per snapshot, of a 16,667 µs tick.
 
 This measurement is the one assumption in the paper that could have sunk the plan, so it should be repeated cross-platform, native against WASM, once there is a WASM client (@plan).
 
@@ -794,25 +941,51 @@ What does a mispredicted command cost? If a tick is flown with $(F, tau)$ where 
   $omega$ and $theta$ differ as stated, in closed form, and the headings differ by $Delta tau r^2 slash (2 I)$ at time $r$ into the tick. With $c = integral_0^h e(phi(r)) dif r$, the velocities differ by $|F c - F' c'| slash m <= Delta F |c| slash m + a |c - c'|$, with $|c| <= h$ and $|c - c'| <= integral_0^h Delta tau r^2 slash (2 I) dif r$. The position is the same, with the weight $h - r$ in the integrals.
 ]
 
-For the worst case in `nabla` (thrust off instead of on, and full left instead of full right), $b = (0.0020, 0.2007, 0.0100, 1.00)$, and a direct run of `step` gives $(0.0020, 0.2000, 0.0100, 1.00)$. Most of the damage is the spin: *one wrong tick can be off by 1 rad/s*, because $beta h$ is large, and the ship is agile. @eq:vacuum then carries it over the horizon: $0.1$ s later, $|e_theta| <= 0.11$ rad and $|e_p| <= 0.024$. That is visible as a small snap in heading, and is what the smoothing is for. This is also the case for sending *intent*, not the control. Under the assist, the server's feedback corrects a heading error, whereas a stale `Direct` torque would keep applying it.
+For the worst case in `nabla` (thrust off instead of on, and full left instead of full right), $b = (0.0014, 0.1671, 0.0069, 0.83)$, and a direct run of `step` gives $(0.0014, 0.1667, 0.0069, 0.83)$. Most of the damage is the spin: *one wrong tick can be off by 0.83 rad/s*, because $beta h$ is large, and the ship is agile. @eq:vacuum then carries it over the horizon: $0.1$ s later, $|e_theta| <= 0.09$ rad and $|e_p| <= 0.020$. That is visible as a small snap in heading, and is what the smoothing is for. This is also the case for sending *intent*, not the control. Under the assist, the server's feedback corrects a heading error, whereas a stale `Direct` torque would keep applying it.
 
 == Lost commands <loss>
 
 By @cor-hold, a misprediction needs a *changed* command to lose all $K$ copies. With independent loss probability $p$, and pilots changing input $lambda$ times per second, mispredictions come at rate $lambda p^K$:
 
-#figure(
+#keep[#figure(
   rules(
     columns: (auto, auto, auto, auto, auto),
     align: (left, right, right, right, right),
-    ([Loss $p$], [$K = 1$], [$K = 2$], [$K = 3$], [$K = 4$]),
-    [1%], [2.4], [0.024], [$2 dot 10^(-4)$], [$2 dot 10^(-6)$],
-    [5%], [12], [0.6], [0.03], [0.0015],
-    [10%], [24], [2.4], [0.24], [0.024],
+    ([Loss $p$], [$K = 1$], [$K = 2$], [$K = 3$], [$K = 5$]),
+    [1%], [2.4], [0.024], [$2 dot 10^(-4)$], [$2 dot 10^(-8)$],
+    [5%], [12], [0.6], [0.03], [$8 dot 10^(-5)$],
+    [10%], [24], [2.4], [0.24], [0.0024],
   ),
   caption: [Mispredicted input changes per minute, for $lambda = 4$ changes per second.],
-)
+)]
 
-We choose $K = 4$. Commands are about 9 bytes and mostly repeats, so this costs little: under 4 kB/s upstream, QUIC overhead included. Real loss comes in bursts @gilbert1960, and $K$ consecutive datagrams can die in one burst of more than $K h = 80$ ms. Independence overstates the benefit, which is why the plan measures it (@plan). Note that this table doesn't count *late* commands, which $K$ doesn't help with. Lateness is governed by the margin (@margin).
+We choose $K = 5$. Commands are about 9 bytes and mostly repeats, so this costs little: about 5 kB/s upstream, QUIC overhead included. Real loss comes in bursts @gilbert1960, and $K$ consecutive datagrams can die in one burst of more than $K h = 83$ ms. That is why $K$ is five and not four: bursts last a time, not a number of packets, and four at this tick would cover only $67$ ms. Independence overstates the benefit, which is why the plan measures it (@plan). Note that this table doesn't count *late* commands, which $K$ doesn't help with. Lateness is governed by the margin (@margin).
+
+== Autopilots <autopilots>
+
+Autopilots fly, by R7, and they run in the client. A controller built from a local `Task` (a goal inside the arena, a tolerance, a step budget, the granted parameters and the world's $h$) is asked for a control at each stamp, from $Pred(k)$, and the client sends the answer as a $Direct$ command. To the server this is a pilot with a steady hand: @thm-contain covers it, and $Sanitize$ clamps it. The orbit assist works the same way. Three things differ from flying by hand.
+
+*It reads a prediction.* By @thm-exact that is the true state whenever its commands arrive, exactly so in vacuum. A correction looks to the controller like a disturbance, and `mpc_bounded` already estimates one.
+
+*Its commands change every tick.* So @cor-hold gives it nothing: a command lost in all $K$ copies is a misprediction, of the size given by @prop-flip with $Delta F$ and $Delta tau$ the difference between the command held and the one lost. Neighboring samples are usually close, except at a bang-bang switch.
+
+*It has a deadline.* A control must be ready within a tick, and @tab-autopilot gives the cost.
+
+#keep[#figure(
+  rules(
+    columns: (auto, auto, auto, auto),
+    align: (left, right, right, right),
+    ([Policy], [99th percentile], [Worst], [Over $16.7$ ms]),
+    [`flip_and_burn_tuned`], [under 1 µs], [6 µs], [0 of 14,320],
+    [`mpc_bounded`], [1.3 ms], [4.4 ms], [0 of 6,636],
+    [`mpc`], [0.8 ms], [218 ms], [10 of 6,637],
+  ),
+  caption: [Time for one `Controller::control` at $h = 1 slash 60$, optimized, native, on one thread, over 12 cases of the suite.],
+) <tab-autopilot>]
+
+A control that misses its stamp is not a safety matter. The hold rule flies the last one, and nobody else is affected. So `mpc`'s spikes are tolerable on a native client if the controller runs off the frame loop. A browser has one thread, where a spike would also stall the frame, so there the default stays `mpc_bounded`, which is already the app's. M6 repeats the timing in WASM.
+
+All three fly at this tick. Each solves all 80 standard and holdout cases at $h = 1 slash 60$ with the same 400 s budget, in a total flight time of 1168 s against 1124 s at $h = 0.02$ for `mpc_bounded`, 1007 s against 1009 s for `mpc`, and 2244 s against 2244 s for `flip_and_burn_tuned`. They also solve all 80 with the largest ship allowed ($a = 20$, $beta = 50$), and with a heavy one ($a = beta = 2$). The weakest ship allowed ($a = 0.05$, $beta = 0.02$) often cannot arrive within 400 s: `mpc_bounded` solved 64 of 80 and `flip_and_burn_tuned` 55, the rest by timeout. That is the ship's limit and a pilot's own choice. `mpc`, on a ship weaker still, panicked when a flight outlasted its budget, indexing past the end of its plan, so a networked client must keep the `catch_unwind` that `Game` has around controllers today.
 
 == Other ships in the past: interpolation
 
@@ -836,7 +1009,7 @@ In Phase A, a remote ship is drawn at $r < T_b$, between two snapshots, each car
   #by[$|dot.double(p)| <= a + g_max$, and scaling back multiplies by $(q h)^2$.]
 ]
 
-So at $q = 1$, and at spins up to $10$ rad/s, the error is under $10^(-6)$ units. The surprise is in case 2: *at $q = 5$ (10 Hz), the error is still at most $0.012$ units*, about a hundredth of the ship's radius. Remote ships need far fewer updates than the tick rate, which is a large part of the bandwidth budget (@bandwidth). The interpolation delay must cover the interval: $D_r h >= q h + J$, where $J$ is the jitter allowance. Contact breaks the $C^1$ assumption, and the velocity jump in a snapshot pair shows up as a brief kink, which is acceptable.
+So at $q = 1$, and at spins up to $10$ rad/s, the error is under $10^(-6)$ units. The surprise is in case 2: *at $q = 6$ (10 Hz), the error is still at most $0.012$ units*, about a hundredth of the ship's radius. Remote ships need far fewer updates than the tick rate, which is a large part of the bandwidth budget (@bandwidth). The interpolation delay must cover the interval: $D_r h >= q h + J$, where $J$ is the jitter allowance. Contact breaks the $C^1$ assumption, and the velocity jump in a snapshot pair shows up as a brief kink, which is acceptable.
 
 == Other ships in the present: extrapolation
 
@@ -874,7 +1047,7 @@ So at $q = 1$, and at spins up to $10$ rad/s, the error is under $10^(-6)$ units
   caption: [Errors in the own frame, as a function of the frame gap for interpolation and of the snapshot's age for extrapolation. Extrapolation's error does not depend on speed, while interpolation's does. At horizons around $0.1$ s the extrapolation bound is far below the interpolation error at all but low speeds. The dashed line is @thm-nopresent.],
 ) <fig-frames-error>
 
-Compare at $RTT = 100$ ms, with $t = L h = 0.1$ s and $G = 0.16$ s (with $D_r h = 60$ ms). Extrapolation's worst case is $0.1$ units. Interpolation at the bundled worlds' starting speed of $5.7$ is off by $0.9$, and at speed $10$ by $1.6$, more than a ship's radius. Interpolation only wins below $0.1 slash 0.16 approx 0.6$ units/s. So:
+Compare at $RTT = 100$ ms, with $t = L h = 0.1$ s and $G = 0.16$ s (with $D_r h = 57$ ms). Extrapolation's worst case is $0.1$ units. Interpolation at the bundled worlds' starting speed of $5.7$ is off by $0.9$, and at speed $10$ by $1.6$, more than a ship's radius. Interpolation only wins below $0.1 slash 0.16 approx 0.6$ units/s. So:
 
 - In Phase A, interpolate. It draws only true states, needs no corrections, and the gap has no consequence, since ships pass through each other.
 - In Phase B, extrapolate at least the ships near the pilot. Speed no longer enters the error, and the worst case is within a factor of 4 of what @thm-nopresent says is possible for any display. This is why $u_j$ is in the snapshot from the start.
@@ -907,35 +1080,56 @@ where $w_n$ is the disturbance: clock drift, and changes in delay.
   The stability condition is the Levin–May result for this delay equation @levin1976, and the second condition is the classical one for the characteristic equation to have a positive real root @gyori1991. For the gain: $(n slash (n + 1))^n >= 1 slash e > 1 slash 3$ gives $gamma <= n^n slash (n + 1)^(n + 1)$, which lies below the stability limit. The delay margin solves $gamma = 2 sin(pi slash (2 (2 n' + 1))) approx pi slash (2 n' + 1)$, so $n' approx (3 pi (n_f + 1) - 1) slash 2$. The steady state follows by setting $e_(n + 1) = e_n = e_(n - n_f)$.
 ]
 
-We verified the thresholds by computing the roots for $n_f$ up to 25, and the delay margin at $n_f = 5$: stable to a delay of 27, unstable at 28. At $RTT = 100$ ms, $n_f = 5$, and an error decays to 5% in $0.7$ s without undershoot. Clock drift of $zeta = 10^(-4)$ gives a steady error of $36$ µs, far below anything of interest. Lamport's bound for physical clocks @lamport1978 applies to a system that needs them synchronized. This one needs only that one quantity stays positive, and observes it directly. We clamp the stretch to $plus.minus 5%$ of $h$, so that the pilot cannot perceive it. An error too big for that (a hidden tab, a stall) is handled by a jump, $k := T_b + L$. The target $mu^*$ is a high quantile of recent delays around their mean, in the manner of an adaptive jitter buffer.
+We verified the thresholds by computing the roots for $n_f$ up to 25, and the delay margin at $n_f = 6$: stable to a delay of 32, unstable at 33. At $RTT = 100$ ms, $n_f = 6$, and an error decays to 5% in $0.7$ s without undershoot. Clock drift of $zeta = 10^(-4)$ gives a steady error of $35$ µs, far below anything of interest. Lamport's bound for physical clocks @lamport1978 applies to a system that needs them synchronized. This one needs only that one quantity stays positive, and observes it directly. We clamp the stretch to $plus.minus 5%$ of $h$, so that the pilot cannot perceive it. An error too big for that (a hidden tab, a stall) is handled by a jump, $k := T_b + L$. The target $mu^*$ is a high quantile of recent delays around their mean, in the manner of an adaptive jitter buffer.
 
 Remote playout runs the same law, with the newest snapshot's arrival as the signal.
 
 == Bandwidth <bandwidth>
 
-A ship's record is 66 bytes: id, six `f64`s, `hold`, and two `f32`s for the control. With `f32` states from Rapier it is 46. Every QUIC path carries packets of at least 1200 bytes @rfc9000. Taking $B = 1150$ after QUIC's headers, and 8 bytes for the snapshot's own header, a datagram holds 17 records, or 24, and more ships mean more datagrams, each independently useful. Each client gets its own ship every tick and the others every $q$ ticks.
+A ship's record is 66 bytes: id, six `f64`s, `hold`, and two `f32`s for the control. With `f32` states from Rapier it is 46. Every QUIC path carries packets of at least 1200 bytes @rfc9000. Taking $B = 1150$ after QUIC's headers, and 8 bytes for the snapshot's own header, a datagram holds 17 records. R1 makes that enough: *a whole snapshot fits one datagram*, at $16 dot 66 + 8 = 1064$ bytes. So the codec needs no fragmentation, and a snapshot arrives whole or not at all. Each client gets its own ship every tick and the others every $q$ ticks, in the same datagram.
 
-#figure(
+#keep[#figure(
   rules(
     columns: (auto, auto, auto, auto, auto),
     align: (left, right, right, right, right),
-    ([Ships $N$], [Client, $q = 1$], [Server, $q = 1$], [Client, $q = 5$], [Server, $q = 5$]),
-    [4], [0.14], [0.6], [0.06], [0.2],
-    [8], [0.24], [2.0], [0.08], [0.7],
-    [16], [0.46], [7.3], [0.13], [2.0],
-    [32], [0.90], [28.6], [0.21], [6.8],
-    [64], [1.77], [113.5], [0.39], [24.9],
+    ([Ships $N$], [Client, $q = 1$], [Server, $q = 1$], [Client, $q = 6$], [Server, $q = 6$]),
+    [2], [0.08], [0.17], [0.06], [0.11],
+    [4], [0.15], [0.59], [0.07], [0.27],
+    [8], [0.27], [2.2], [0.09], [0.71],
+    [16], [0.53], [8.4], [0.13], [2.1],
   ),
-  caption: [Downstream bandwidth in Mbit/s at $h = 0.02$, with 34 bytes of overhead per datagram, before any delta compression.],
-)
+  caption: [Downstream bandwidth in Mbit/s at $h = 1 slash 60$, with 34 bytes of overhead per datagram, before any delta compression.],
+)]
 
-Server egress grows as $N^2$, and is what limits $N$, not CPU: at 4–10 µs per ship per tick in a world of a few bodies, 64 ships take under a millisecond of a 20 ms tick. With $q = 5$, which @prop-hermite says costs nothing visible, 32 pilots fit in 7 Mbit/s. Phase B needs quicker updates for close ships, so $q$ becomes per pair, as a function of distance. That is ordinary interest management @fiedler-state and doesn't change the protocol, since snapshots are already partial.
+Neither bandwidth nor CPU limits sixteen pilots. At 3–4 µs per ship per tick, 16 ships take under $0.1$ ms of a $16.7$ ms tick, and server egress is $8.4$ Mbit/s at worst. With $q = 6$, which @prop-hermite says costs nothing visible, it is $2.1$ Mbit/s. Phase B needs quicker updates for close ships, and can simply use $q = 1$ for everyone. The per-pair $q$ of interest management @fiedler-state remains available as an optimization, and doesn't change the protocol, since snapshots are already partial. The server's `max_pilots` can be set from 1 to 16. Raising the ceiling would undo the one-datagram fact, so it is a change of design and not of configuration.
+
+== The largest ship <caps>
+
+The lobby lets a pilot pick a stronger ship than the bundled one. The bounds above are linear in $a$ and $beta$, so doubling them doubles the errors, and nothing changes regime. @tab-caps collects the results.
+
+#keep[#figure(
+  rules(
+    columns: (1fr, auto, auto, auto),
+    align: (left, right, right, left),
+    ([Quantity], [Bundled], [Largest], [From]),
+    [$a$, $beta$], [10, 25], [20, 50], [@lobby],
+    [One wrong tick: $Delta v$, $Delta omega$], [0.17, 0.83], [0.33, 1.67], [@prop-flip],
+    [$0.1$ s after it: $|e_p|$, $|e_theta|$], [0.020, 0.09], [0.043, 0.18], [@eq:vacuum],
+    [Floor for any display, at $0.1$ s], [0.025], [0.05], [@thm-nopresent],
+    [Extrapolation, worst case, at $0.1$ s], [0.1], [0.2], [@prop-zoh],
+    [Interpolation at $q = 6$, with planet and moon], [0.012], [0.018], [@prop-hermite],
+    [Top axis speed at $S = 1000$, in vacuum], [200], [283], [@lem-arena],
+    [Horizon of two alike, gap 5, closing at 10], [0.31 s], [0.28 s], [@lem-horizon],
+    [Horizon of two alike, gap 2, closing at 10], [0.15 s], [0.14 s], [@lem-horizon],
+  ),
+  caption: [The bundled ship, and the largest allowed by the default caps, at $h = 1 slash 60$. The worst case for the error of a remote ship is set by that ship's parameters, not the viewer's.],
+) <tab-caps>]
 
 = Ship collisions <collisions>
 
 Phase B removes @eq:product. Ships still obey one world map, $F(W, c)$, and the server is still the only authority, so @thm-refine, @thm-once and @thm-live go through unchanged. We list what breaks and how to repair it.
 
-*Containment weakens.* A client can now affect another ship, but only by flying into it. @thm-contain becomes: ship $i$'s trajectory is a function of its own commands *and the contacts it undergoes*. It remains true that no message from $j$ reaches $i$'s state other than through physics, and that $j$'s commands are admissible. In free flight, ramming has no score attached, so griefing is a social matter. A server option to disable ship collisions is the remedy of last resort, and is cheap given the plan below.
+*Containment weakens.* A client can now affect another ship, but only by flying into it. @thm-contain becomes: ship $i$'s trajectory is a function of its own commands *and the contacts it undergoes*. It remains true that no message from $j$ reaches $i$'s state other than through physics, and that $j$'s commands are admissible. In free flight, ramming has no score attached, so griefing is a social matter. The lobby does add a lever: with restitution $0$, a head-on hit changes ship $j$'s speed by $m_i slash (m_i + m_j)$ of the closing speed, so the allowed range of mass is how the server says how hard one ship can shove another. A server option to disable ship collisions is the remedy of last resort, and is cheap given the plan below.
 
 *Prediction is no longer exact.* To replay ship $i$ the client now needs the commands of every ship that could touch it, and those are unknown for the last $L$ ticks. It holds each at its last known control, per @prop-zoh. But a contact can only come from nearby, and the speed and acceleration limits say how nearby.
 
@@ -948,7 +1142,7 @@ Phase B removes @eq:product. Ships still obey one world map, $F(W, c)$, and the 
   Each ship's acceleration is at most $a + g_max$, so the relative acceleration is at most $A$. Integrating twice, with the triangle inequality, the distance at time $s$ is at least $r - w s - A s^2 slash 2$. This exceeds $R$ for $s < H_(i j)$, the positive root.
 ]
 
-Fixed bodies fit too, with $v = 0$ and $A = a_i + g_max$. For `nabla`'s constants, two ships have $A = 39$. A gap of $5$ closing at $10$ gives $H = 0.31$ s, and a gap of $2$ at the same speed $0.15$ s, longer than the replay horizon of $0.1$ s at $RTT = 100$ ms. So ships that are not within a few units of each other cannot interact within a replay.
+Fixed bodies fit too, with $v = 0$ and $A = a_i + g_max$. Since pilots choose their ships, each pair has its own $A$. Two bundled ships have $A = 39$. A gap of $5$ closing at $10$ gives $H = 0.31$ s, and a gap of $2$ at the same speed $0.15$ s, longer than the replay horizon of $0.1$ s at $RTT = 100$ ms, and this stays true at the caps (@tab-caps). So ships that are not within a few units of each other cannot interact within a replay, unless they are closing fast. Near the arena's top speeds the horizon shrinks to about the gap over $w$, so at $400$ units/s an edge reaches $40$ units. With at most 16 ships there are at most 120 pairs to check.
 
 #definition(name: [Coupling graph])[
   $G_t$ has an edge between $i$ and $j$ iff $H_(i j) <= t$.
@@ -979,7 +1173,7 @@ Fixed bodies fit too, with $v = 0$ and $A = a_i + g_max$. For `nabla`'s constant
 
 This is the square-root singularity known from grazing impacts @nordmark1991. At $c = 10$, a difference at `f32` resolution ($d approx 8 dot 10^(-6)$ at distance $100$) gives $0.012$ units/s, the same size as what @tab-replay measured in contact, though we have not shown this to be the cause. A difference of $0.1$, as extrapolation might make, gives $1.4$ units/s. So near-misses between ships will produce visible corrections, unavoidably: no amount of bit-exactness helps with an unknown command, and @thm-nopresent says the command can't be known. Smoothing and the small horizon are the available tools. Free flight is forgiving here, as a slightly wrong bump costs nothing.
 
-*Physics changes.* Phase A runs one `Physics` per ship, exactly the code that exists, which makes @eq:product true by construction, and makes the client's predictor the same code as the server's stepper. Phase B needs one Rapier world with all ships as dynamic bodies. Rapier's determinism promise depends on insertion order, and client and server won't have the same bodies in the same order, so a client's replay is not bit-exact, near contact, on any platform. By @replay and @prop-graze, that is acceptable. To restore a component for a replay, the client needs a function setting states on existing bodies, without rebuilding the world. Whether Rapier's solver gives acceptable results across a restore for ship-to-ship contact, as it does for planets (@tab-replay), is the main thing Phase B must measure.
+*Physics changes.* Phase A runs one `Physics` per ship, exactly the code that exists, which makes @eq:product true by construction, and makes the client's predictor the same code as the server's stepper. Phase B needs one Rapier world with all ships as dynamic bodies. Rapier's determinism promise depends on insertion order, and client and server won't have the same bodies in the same order, so a client's replay is not bit-exact, near contact, on any platform. By @replay and @prop-graze, that is acceptable. To restore a component for a replay, the client needs a function setting states on existing bodies, without rebuilding the world. Whether Rapier's solver gives acceptable results across a restore for ship-to-ship contact, as it does for planets (@tab-replay), is the main thing Phase B must measure. Two smaller points. At a closing speed of $400$ units/s, two ships move $3.3$ units per substep, more than $R = 2$, so they need the continuous collision detection that `Physics::new` already enables. And $Wall$'s clamp could push one ship into another, in which case Phase B would replace it with four static colliders.
 
 = Transport and the Rust stack <transport>
 
@@ -997,7 +1191,7 @@ This is the square-root singularity known from grazing impacts @nordmark1991. At
   caption: [The network assumptions of @protocol, and QUIC's features that supply them.],
 )
 
-Two details fit the protocol unusually well. `quinn`'s `send_datagram` evicts the oldest queued datagrams when its buffer is full @quinn-docs. For most protocols that would be a hazard, but here the newest snapshot supersedes older ones, and each `Commands` carries the last $K$, so eviction discards just what is no longer useful. And `max_datagram_size` can change as the path MTU estimate changes, so $B$ must be read at runtime, not assumed. We leave 0-RTT disabled, since 0-RTT data can be replayed, and nothing here benefits from a saved round trip at connect.
+Two details fit the protocol unusually well. `quinn`'s `send_datagram` evicts the oldest queued datagrams when its buffer is full @quinn-docs. For most protocols that would be a hazard, but here the newest snapshot supersedes older ones, and each `Commands` carries the last $K$, so eviction discards just what is no longer useful. And `max_datagram_size` can change as the path MTU estimate changes, so $B$ must be read at runtime, not assumed. A full snapshot fits in what QUIC guarantees (@bandwidth), so this should only ever be a check. If $B$ were smaller, the server would spread remote records over several ticks, as $q$ already allows. We leave 0-RTT disabled, since 0-RTT data can be replayed, and nothing here benefits from a saved round trip at connect.
 
 == Browsers reach QUIC only through WebTransport
 
@@ -1006,7 +1200,8 @@ A web page cannot open a QUIC connection. It can open a WebTransport session, ov
 The costs, as of this writing:
 
 - *UDP-blocked networks fail outright.* Chrome and Firefox don't implement the HTTP/2 fallback @webtransport-baseline. By @protocol a WebSocket fallback would be safe, as FIFO is a special case of A1, if slower under loss. We keep the transport behind a narrow trait so it can be added, and do not build it now.
-- *Certificates.* A browser requires a certificate it trusts, or else `serverCertificateHashes`, which requires ECDSA P-256 and a validity of under two weeks @mdn-webtransport. Production uses an ordinary certificate. Development can use the hash, where the browser supports it. We have not confirmed which do (@open).
+- *Certificates.* A browser requires a certificate it trusts, or else `serverCertificateHashes`, which requires ECDSA P-256 and a validity of under two weeks @mdn-webtransport. MDN's compatibility data lists that option in every engine that has WebTransport: Chrome and Edge 100, Firefox 125, Opera 86, Safari 26.4, and their mobile versions. So a public server uses an ordinary certificate, and a development or LAN server without a domain name works in any current browser: `wtransport` generates a suitable self-signed identity, and its client verifies by hash too (`with_server_certificate_hashes`) @wtransport-docs. The hash has to reach the pilot out of band, as part of the address, since a page cannot learn it over the connection it authenticates. And the certificate must be renewed within two weeks, so a long-running server without a domain has to restart or re-key.
+- *Options we must not rely on.* The same data shows `requireUnreliable`, `congestionControl` and `allowPooling` missing from the Chromium family, and `protocols` arriving only in Chrome 143 and Firefox 155. The client therefore passes nothing but the URL and any hashes. Versions are negotiated in `Hello`, not through `protocols`.
 - *Rust bindings.* `web_sys::WebTransport` exists but is gated behind `--cfg=web_sys_unstable_apis` @websys-webtransport. Since a `RUSTFLAGS` variable replaces the flags in `.cargo/config.toml` (as that file's comments note, for CI and `cargo xtask check`), the flag must be added in all three places.
 - *Tooling.* Browser developer tools have little visibility into WebTransport traffic yet @webtransport-baseline, so the client must log its own metrics.
 
@@ -1036,9 +1231,9 @@ A specification made of atomic actions is only meaningful if the code's actions 
 
 - `nabla-net` is synchronous, with methods like `ServerMachine::on_datagram(&mut self, ...)` and `ServerMachine::tick(&mut self) -> Vec<Outgoing>`. A call is one action of @protocol. `&mut self` means the type system excludes anything running concurrently with it, so the *grain of atomicity is a method call*, by construction.
 - One `tokio` task owns the `ServerMachine`, and alternates between its tick timer and an inbox. Connection tasks decode datagrams and send them to the inbox through a bounded channel, and never touch the world. An `.await` is the only place another task may run, and the owner task holds no borrowed state across one. No locks are needed on game state.
-- The timer is `tokio::time::interval`, with catch-up on missed ticks. An interval tracks deadlines rather than sleeping relative to the last wakeup, so it doesn't accumulate drift. If the server falls behind, ticks burst to catch up. If it can't catch up, $R(T)$ slips, margins go up, and the clients' control law eases off. Tick numbers remain correct throughout, since $T$ never meant real time.
+- The timer is `tokio::time::interval`, with catch-up on missed ticks. An interval tracks deadlines rather than sleeping relative to the last wakeup, so it doesn't accumulate drift. `tokio`'s timers have millisecond granularity, and $16 2/3$ ms is not a whole number of milliseconds, so a tick may fire up to about a millisecond late. To a client that is delay jitter, which $mu$ absorbs. If the server falls behind, ticks burst to catch up. If it can't catch up, $R(T)$ slips, margins go up, and the clients' control law eases off. Tick numbers remain correct throughout, since $T$ never meant real time.
 
-On the client, the frame loop in `Game::advance` is already a fixed-step accumulator in the sense of Fiedler @fiedler-timestep. Two things must change for a networked flight. `MAX_FRAME_TIME` discards time after a stall, and pausing stops it, whereas the server's tick doesn't stop for anyone, so both give way to the jump of @thm-margin. And `Replay` is append-only today, while @eq:pred must rewrite the last $L$ ticks at each $Absorb$. A hidden tab stops running frames, so its ship receives no commands, and after $N_d$ ticks (we suggest one second) goes neutral and coasts. That's the same behavior as a lost connection, and needs no special case. Native clients run the network on a background thread with its own `tokio` runtime, and the UI polls channels without blocking, so no frame ever waits on the network. On the web, there is only one thread, and `spawn_local` tasks share it with the frame loop.
+On the client, the frame loop in `Game::advance` is already a fixed-step accumulator in the sense of Fiedler @fiedler-timestep. Two things must change for a networked flight. `MAX_FRAME_TIME` discards time after a stall, and pausing stops it, whereas the server's tick doesn't stop for anyone, so both give way to the jump of @thm-margin. And `Replay` is append-only today, while @eq:pred must rewrite the last $L$ ticks at each $Absorb$. A hidden tab stops running frames, so its ship receives no commands, and after $N_d$ ticks (we suggest one second) goes neutral and coasts. That's the same behavior as a lost connection, and needs no special case. After $T_"idle"$ the ship leaves. Native clients run the network on a background thread with its own `tokio` runtime, and the UI polls channels without blocking, so no frame ever waits on the network. On the web, there is only one thread, and `spawn_local` tasks share it with the frame loop.
 
 = Plan <plan>
 
@@ -1049,15 +1244,33 @@ On the client, the frame loop in `Game::advance` is already a fixed-step accumul
     columns: (auto, 1fr, auto),
     ([Crate], [Contents], [Dependencies of note]),
     [`nabla-core`], [Unchanged: the ship model, the problem, the solutions.], [`serde`],
-    [`nabla-sim`, new], [From `nabla-client`: `world.rs`, `physics.rs`, and `Input`, `Aim`, `Steering`, `steer`, `wrap`, `hold_torque`. New: `Command`, $Sanitize$, $f$.], [`rapier2d`, `toml`],
-    [`nabla-net`, new], [Sans-IO: wire types, codec, `ServerMachine`, `ClientMachine`, the margin controller.], [`postcard`],
-    [`nabla-server`, new], [A binary: config, `wtransport` listener, the owner task.], [`tokio`, `wtransport`],
-    [`nabla-client`], [Gains `net::{native, web}`, networked flight in `Game`, and rewinding in `Replay`.], [`wtransport` (native), `web-sys` (web)],
+    [`nabla-sim`, new], [From `nabla-client`: `world.rs`, `physics.rs`, and `Input`, `Aim`, `Steering`, `steer`, `wrap`, `hold_torque`. New: `Command`, $Sanitize$, $Wall$, $Grant$, $f$.], [`rapier2d`, `toml`],
+    [`nabla-net`, new], [Sans-IO: wire types, codec, the lobby's exchange, `ServerMachine`, `ClientMachine`, the margin controller.], [`postcard`],
+    [`nabla-server`, new], [A binary: config (world file, address, certificate, `max_pilots`), `wtransport` listener, the owner task.], [`tokio`, `wtransport`],
+    [`nabla-client`], [Gains the lobby screen, `net::{native, web}`, networked flight and autopilots in `Game`, and rewinding in `Replay`.], [`wtransport` (native), `web-sys` (web)],
   ),
   caption: [The workspace after Phase A. `nabla-sim` and `nabla-net` must build for `wasm32-unknown-unknown`.],
 )
 
-Worlds gain a version 2 of the format, in which `h` belongs to the world, and `players` become spawn templates, of which there may be many. Version 1 saves keep loading. The client's `Task` (goal, tolerance, step budget) stops mattering to the server, and is used only locally, by autopilots.
+Worlds gain a version 2 of the format, in which the tick belongs to the world, as an integer rate, and `players` become spawn templates, of which there may be many, the first giving the default ship. It also holds the arena and the allowed ships, which are how a server is configured:
+
+```toml
+version = 2
+tick_rate = 60            # h = 1 / tick_rate
+
+[arena]
+half_side = 1000.0        # S, at most 2048
+
+[ships]                   # the set of allowed ships, and the server's final word
+mass = [0.1, 10.0]
+inertia = [0.1, 10.0]
+f_max = [0.5, 20.0]
+tau_max = [0.2, 20.0]
+acceleration_cap = 20.0   # a_cap
+angular_cap = 50.0        # beta_cap
+```
+
+The same defaults, and the ceilings of 2048 for $S$ and 16 for `max_pilots`, are constants in `nabla-sim`. Version 1 saves keep loading and flying as they do today. The client's `Task` (goal, tolerance, step budget) stops mattering to the server, and is used only locally, by autopilots.
 
 The protocol's constants start at the values below. All are to be tuned at M7.
 
@@ -1065,12 +1278,16 @@ The protocol's constants start at the values below. All are to be tuned at M7.
   rules(
     columns: (auto, auto, 1fr),
     ([Constant], [Start at], [Why]),
-    [$h$], [$0.02$ s], [The bundled worlds' tick, at which every number here was computed.],
-    [$K$], [$4$], [@loss.],
-    [$N_d$], [$50$ ticks], [One second of silence before a ship goes neutral. Must exceed the longest stall worth riding out.],
-    [$N_b$], [$50$ ticks], [Must exceed $mu^* slash h$ with room for a jump. Bounds memory per ship.],
-    [$q$], [$1$, then $5$], [@prop-hermite. Remote ships only. Start at $1$ to keep M5 simple.],
-    [$mu^*$], [$20$ ms], [Until the client has delay statistics of its own.],
+    [$h$], [$1 slash 60$ s], [@tick-rate. Every number here was computed at it.],
+    [$N_max$], [$16$], [R1. A whole snapshot then fits one datagram (@bandwidth).],
+    [$S$], [$1000$], [@arena. At most $2048$.],
+    [$a_"cap"$, $beta_"cap"$], [$20$, $50$], [@lobby. Twice the bundled ship.],
+    [$K$], [$5$], [@loss.],
+    [$N_d$], [$60$ ticks], [One second of silence before a ship goes neutral. Must exceed the longest stall worth riding out.],
+    [$T_"idle"$], [$60$ s], [Silence before a ship leaves and frees its place.],
+    [$N_b$], [$60$ ticks], [Must exceed $mu^* slash h$ with room for a jump. Bounds memory per ship.],
+    [$q$], [$1$, then $6$], [@prop-hermite. Remote ships only. Start at $1$ to keep M5 simple.],
+    [$mu^*$], [$17$ ms], [One tick, until the client has delay statistics of its own.],
     [$D_r h$], [$q h + 40$ ms], [The interval, plus an allowance for jitter.],
     [$gamma$], [$1 slash (3 (n_f + 1))$], [@thm-margin. The stretch is clamped to $plus.minus 5%$ of $h$.],
     [$tau_s$], [$0.1$ s], [@prop-smooth. Short enough that a correction doesn't linger. To be judged by playing.],
@@ -1088,12 +1305,12 @@ Each milestone's acceptance test is a theorem of this paper, checked on a runnin
     ([], [Work], [Accepted when]),
     [M0], [Run the TLA+ module of @tla through SANY and TLC, with larger bounds than we enumerated.], [The invariants of @thm-once hold. Fix the spec first if not.],
     [M1], [Extract `nabla-sim`. No behavior changes.], [All existing tests pass. `cargo tree -p nabla-sim` has no egui, wgpu or cpal. It builds for WASM.],
-    [M2], [World version 2, `Command`, $Sanitize$. Fix the NaN of @steering.], [@lem-total as a property test over arbitrary bit patterns.],
-    [M3], [`nabla-net` and a seeded simulated network with delay, jitter, loss, reordering, duplication, and hostile clients.], [@thm-once, @thm-contain and @thm-exact as assertions in the simulator, over $10^6$ ticks of seeds. @thm-margin: margins settle as predicted.],
-    [M4], [`nabla-server`, and a headless native bot client.], [16 bots for 10 minutes over loopback with impaired links: no assertion fires, $p_99$ tick time under $h$, bandwidth as in @bandwidth.],
-    [M5], [Native client: prediction, reconciliation, smoothing, interpolation, remote plumes.], [Two pilots fly in one world at 100 ms RTT. In vacuum with no lost changes, corrections are exactly zero (@thm-exact). Elsewhere they match @tab-replay.],
-    [M6], [Web client, certificates, `RUSTFLAGS`.], [A browser and a native pilot share a world, in Chrome, Firefox and Safari. Repeat @tab-replay native against WASM. A hidden tab behaves as specified.],
-    [M7], [Tuning: $q$, $K$, $mu^*$, per-connection rate limits, metrics.], [@bandwidth met for the chosen $N$. Burst-loss behavior measured against @loss.],
+    [M2], [World version 2 (tick rate, arena, allowed ships), `Command`, $Sanitize$, $Wall$, $Grant$. Fix the NaN of @steering.], [@lem-total and @lem-grant as property tests over arbitrary bit patterns. @lem-arena against adversarial pilots.],
+    [M3], [`nabla-net` and a seeded simulated network with delay, jitter, loss, reordering, duplication, and hostile clients.], [@thm-once, @thm-contain and @thm-exact as assertions in the simulator, over $10^6$ ticks of seeds. @thm-margin: margins settle as predicted. Speeds in worlds with bodies measured, where @lem-arena gives no bound.],
+    [M4], [`nabla-server`, and a headless native bot client.], [16 bots for 10 minutes over loopback with impaired links: no assertion fires, $p_99$ tick time under $h$, bandwidth as in @bandwidth. A 17th `Join` gets `Full`.],
+    [M5], [Native client: lobby screen, prediction, reconciliation, smoothing, interpolation, remote plumes, autopilots.], [Two pilots with different ships fly in one world at 100 ms RTT. In vacuum with no lost changes, corrections are exactly zero (@thm-exact). Elsewhere they match @tab-replay. An autopilot arrives while another pilot flies by hand.],
+    [M6], [Web client, certificates, `RUSTFLAGS`.], [A browser and a native pilot share a world, in Chrome, Firefox and Safari, against a server that has only `serverCertificateHashes` to offer. Repeat @tab-replay native against WASM, and @tab-autopilot in WASM. A hidden tab behaves as specified.],
+    [M7], [Tuning: $q$, $K$, $mu^*$, the ranges and caps, per-connection rate limits, metrics.], [@bandwidth met at $N = 16$. Burst-loss behavior measured against @loss. Idle frames measured against @prop-idle on a real 60 Hz display.],
     [M8], [*Phase B.* A shared Rapier world, extrapolation into the own frame, the coupling graph, and contact smoothing. Rework @thm-contain and the module of @tla.], [Corrections in contact are measured and judged acceptable by playing. Worst-case bound of @prop-zoh holds in the simulator.],
   ),
   caption: [The milestones, in order. M3 can be done without any socket, and most of the risk is settled by then.],
@@ -1103,22 +1320,21 @@ The order is deliberate. Everything through M3 runs without a network, and is de
 
 == Non-goals
 
-*Lag compensation* @bernier2001, which rewinds the world to judge a shot by what its shooter saw: nothing here shoots. *Server fault tolerance*: a crash ends the session (@prop-log). *Peer-to-peer* and NAT traversal: there is one server. *Accounts and persistence*. *Fair arbitration* of races: R2 has no contests. Should the game gain any of these, R2 changes, and with it several of the arguments above.
+*Lag compensation* @bernier2001, which rewinds the world to judge a shot by what its shooter saw: nothing here shoots. *Server fault tolerance*: a crash ends the session (@prop-log). *Peer-to-peer* and NAT traversal: there is one server. *Accounts and persistence*. *Fair arbitration* of races: R2 has no contests. Should the game gain any of these, R2 changes, and with it several of the arguments above. *Changing a ship in flight*: a pilot leaves and joins again. *More than 16 pilots*: @bandwidth rests on that number.
 
 == Open questions <open>
 
-+ *How many pilots?* $N$ sets how much of M7 is needed. Up to about 16, nothing is required but $q$.
-+ *Where is the edge of the world?* Free flight lets a ship thrust forever, and `f32` resolution degrades with distance: at $a = 10$ a ship passes $10^6$, where `World::validate` draws its limit and the resolution is $0.06$, in under eight minutes. A soft boundary, or per-ship origin shifting, is needed for worlds with bodies. In vacuum, `f64` makes this moot.
-+ *Which browsers honor `serverCertificateHashes`?* The sources we read don't settle it, for Safari especially. It affects development only.
-+ *May autopilots fly in multiplayer?* @thm-contain says yes, safely. They will read the predicted rather than exact state, so they won't match their scores on the test suite. MPC controllers that overrun $h$ just arrive late, and are held. We propose yes.
-+ *Do ships choose their parameters?* We propose that the server assigns them from the world, since they are physics, and physics is the server's.
++ *How should the wall feel?* A plastic, frictionless wall is the simplest map that stops a ship. A bounce would be a one-function change and @thm-exact would not notice, but it would lose the speed bound of @lem-arena. To be judged by playing.
++ *Should single-player move to 60 Hz too?* @prop-idle applies to it equally. Its worlds stay at $h = 0.02$ s for now, and moving them takes one line per file and one test that counts ticks (@tick-rate). `suite::H` should stay in any case. Nothing in this paper depends on the answer.
++ *Are the default ranges and caps right?* They were chosen to contain the suite's ships and to keep @tab-caps within a factor of two. Whether they make for interesting ships is a matter for playing.
++ *What should a full server do?* We answer `Full`. A queue would be easy to add, as a client waiting in the lobby holds no ship.
 
 #counter(heading).update(0)
 #set heading(numbering: "A.1")
 
 = The protocol in TLA+ <tla>
 
-This module states the machine of @protocol for a fixed set of ships, without $Join$ and $Leave$ or the hold rule's per-command neutral form. The ship state is the free monoid: `x[i]` is the sequence of commands applied so far. Any deterministic $f$ factors through this sequence, so an equality of sequences proved here is an equality of states for every $f$.
+This module states the machine of @protocol for a fixed set of ships, without $Join$ and $Leave$ or the hold rule's per-command neutral form. The ship state is the free monoid: `x[i]` is the sequence of commands applied so far. Any deterministic $f$ factors through this sequence, so an equality of sequences proved here is an equality of states for every $f$. That includes the tick rate, the wall and each ship's parameters, which all live inside $f$. $Grant$ and $N_max$ are not modeled.
 
 *Status of this module.* No TLA+ tools were available when this was written, so neither SANY nor TLC has seen it, and it may contain syntax errors. That is milestone M0. What has been checked is the same transition system, enumerated exhaustively by a throwaway Python program, with $"Cmds" = {a, b}$, $"Window" = 3$, $"Drop" = 2$: all invariants below held over 256,105 states and 1,183,634 transitions (one ship, `MaxTick` = 3), and over 100,193 states and 421,401 transitions (two ships, `MaxTick` = 1). Mutants, to see that the invariants can fail: accepting late commands violates `HistoryStable`, removing the monotone guard violates `BaseMonotone`, and removing Advance violates `Lead`. Last-write-wins violates nothing, as @thm-once discusses. Liveness was not checked, as the bounded model has no infinite behaviors of interest, and @thm-live rests on its proof alone.
 
@@ -1254,14 +1470,18 @@ BaseMonotone == [][\A i \in Ships : baseT'[i] >= baseT[i]]_vars
 
 = How the numbers were obtained <numerics>
 
-All measurements were taken on a copy of the repository at commit `268a24f`, with temporary tests added, on one Mac, in the test profile (`nabla-client` unoptimized, dependencies at `opt-level = 2`). None of the test code is in the repository.
+All measurements were taken on a copy of the repository at commit `268a24f`, with temporary tests added, on one Mac, in the test profile (`nabla-client` unoptimized, dependencies at `opt-level = 2`), at $h = 1 slash 60$ unless stated. None of the test code is in the repository.
 
 - *@thm-sens against the code.* 20,000 flights of `nabla_core::step` with the bundled ship, of 1 to 50 ticks, with random admissible controls and starting perturbations between $10^(-4)$ and $10^(-1)$. The gravity version used RK4 on @eq:ode, with the planet-and-moon field, over 1,500 runs of up to 100 ticks.
-- *@tab-replay.* The planet-and-moon world under random controls for 6,000 ticks, in two flights, and the planet world starting on the surface with random hops, for contact. 1,702 of the 6,000 ticks of that last flight were within $0.05$ of contact. Each window restores with `Physics::new` and replays. These are worst cases over what these flights reached, not bounds. In particular, they do not cover ship-ship contact, or a restore across platforms.
+- *@tab-replay.* The planet-and-moon world under random controls for 7,200 ticks, in two flights, and the planet world starting on the surface with random hops, for contact. 2,286 of the 7,200 ticks of that last flight were within $0.05$ of contact. Each window restores with `Physics::new` and replays. These are worst cases over what these flights reached, not bounds. In particular, they do not cover ship-ship contact, or a restore across platforms.
+- *@tick-rate.* The unit tests of `nabla-client`, with the three bundled worlds edited to `h = 0.016666666666666666`. The accuracy figures are one flight of 30 s of the planet-and-moon world under random controls, at each tick, against RK4 at 16 steps per tick. `Physics::step` at each tick in a loop.
+- *@arena.* For the dead speed: a ship coasting for 10 s without gravity at $0.99 S$, for $S$ from 1000 to 16000 and speeds from $0.002$ to $0.1$. The figure of 480 moves per second fits every result, and is 60 ticks times 2 substeps times Rapier's default of 4 solver iterations. For replay: $L = 6$ from flights starting at $0.97 S$. For @lem-arena: 400 flights per setting of a Python model of the wall and the ship, with pilots that thrust along an axis, along the diagonal, along the velocity, and at random.
+- *@lem-grant.* 200,000 random requests to a Python model of $Grant$, a third of the numbers being NaN, infinite, zero, negative or extreme. No result fell outside $Pset$, $Grant$ was idempotent on all, and the 365 that were already allowed were granted as asked. M2 repeats this on the real code.
+- *@autopilots.* `cargo test --release` on `nabla-core`. Flights are the 80 cases of `suite::standard` and `suite::holdout`, with the tick and ship replaced and `max_steps` set to 400 s. `mpc` was not flown on the weakest ship of @lobby, since it takes minutes timing out. An earlier run on a weaker ship ($a = beta = 0.01$) is where the panic appeared, at `mpc.rs:969`.
 - *NaN.* `steer` with `aim.heading` of NaN and of infinity, and `Physics::step` with a NaN torque, as described in @steering.
 - *Timing.* `Physics::step` and `Physics::new` in a loop on the same machine. The figures are for scale only.
 - *Computed values*, in tables and in the text: from the formulas given, with the constants of @constants. Bandwidth assumes the record sizes of @bandwidth, which are estimates pending the real codec.
-- *External facts.* Browser versions, Rapier's determinism conditions and `quinn`'s datagram behavior were read from the cited pages in November 2026, and will age.
+- *External facts.* Browser versions and options come from MDN's compatibility tables @mdn-webtransport. Rapier's determinism conditions, `quinn`'s datagram behavior, `wtransport`'s certificate functions and `tokio`'s timer granularity were read from the cited pages and crate documentation in November 2026. All of this will age.
 
 #bibliography(
   bytes(

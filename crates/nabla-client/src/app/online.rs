@@ -307,15 +307,30 @@ impl ViewerApp {
         }
     }
 
-    /// The flight: a bar along the bottom, the settings panel on the left, and the canvas.
+    /// The flight: a bar along the bottom, the settings panel on the left, the plots on the
+    /// right, and the canvas.
     fn online_flight_ui(&mut self, ui: &mut egui::Ui) {
+        let Some(online) = &mut self.online else {
+            return;
+        };
+        let local = online.local_time();
+        let views = online.views(local);
         egui::Panel::bottom("online_bar").show(ui, |ui| self.online_bar_ui(ui));
         let mut show_controls = self.show_controls;
         super::CONTROLS_PANEL.show(ui, &mut show_controls, &mut 0, |ui, _| {
             self.online_controls_ui(ui);
         });
         self.show_controls = show_controls;
-        egui::CentralPanel::default().show(ui, |ui| self.online_canvas_ui(ui));
+        let mut show_plots = self.show_plots;
+        let reveal = super::ONLINE_PLOTS_PANEL.show(ui, &mut show_plots, &mut 0, |ui, _| {
+            if let Some(own) = views.first().filter(|view| view.own) {
+                Self::plots_of(ui, &own.replay, own.t);
+            }
+        });
+        self.show_plots = show_plots;
+        egui::CentralPanel::default().show(ui, |ui| {
+            self.online_canvas_ui(ui, super::canvas_inset(reveal), &views);
+        });
     }
 
     /// The settings panel of a flight on a server: who is flying, and how the canvas looks.
@@ -441,14 +456,11 @@ impl ViewerApp {
         }
     }
 
-    fn online_canvas_ui(&mut self, ui: &mut egui::Ui) {
+    fn online_canvas_ui(&mut self, ui: &mut egui::Ui, inset: f32, views: &[View]) {
         let (rect, response) =
             ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
-        let Some(online) = &mut self.online else {
-            return;
-        };
-        let local = online.local_time();
-        let views = online.views(local);
+        // Where the gizmo and the buttons go, in its top right corner.
+        let corner = rect.with_max_x(rect.right() - inset);
         let Some(own) = views.first().filter(|view| view.own) else {
             ui.painter_at(rect)
                 .rect_filled(rect, 0.0, ui.visuals().extreme_bg_color);
@@ -458,6 +470,8 @@ impl ViewerApp {
             own.replay.thrust_fraction(own.t) as f32,
             own.replay.torque_fraction(own.t) as f32,
         ));
+        self.gizmo
+            .input(ui, corner, &mut self.camera, self.show_gizmo);
 
         self.drag_and_zoom(ui, &response, rect, false);
         if self.online_fit {
@@ -471,27 +485,76 @@ impl ViewerApp {
             self.online_fit = false;
         }
         let painter = ui.painter_at(rect);
-        self.draw_online_scene(ui, &painter, rect, &views);
-        self.aiming = self.online_aim(&response, rect, &views[0].state);
+        self.draw_online_scene(ui, &painter, rect, views);
+        if self.show_path {
+            let k = (own.t / own.replay.h()).floor() as usize;
+            self.draw_path(
+                &painter,
+                rect,
+                &own.replay,
+                k.min(own.replay.last_frame()),
+                &own.state,
+            );
+        }
+        self.aiming = self.online_aim(&response, rect, &own.state);
         if let Some((pointer, heading)) = self.aiming {
-            self.draw_aim(&painter, rect, &views[0].state, pointer, heading);
+            self.draw_aim(&painter, rect, &own.state, pointer, heading);
         }
         if let Some(online) = &self.online
             && online.assisted()
         {
-            self.draw_goal(&painter, rect, &views[0].replay, &views[0].state);
-            self.draw_goal_marker(&painter, rect, rect, &views[0].replay, &views[0].state);
+            self.draw_goal(&painter, rect, &own.replay, &own.state);
+            self.draw_goal_marker(&painter, rect, rect, &own.replay, &own.state);
         }
-        let corner = rect;
-        let _buttons = canvas_buttons::show(
+        if self.show_gizmo {
+            self.gizmo.paint(ui, &painter, corner, &self.camera);
+        }
+        let buttons = self.online_canvas_buttons(ui, &painter, corner);
+        self.reserved = std::iter::once(buttons)
+            .chain(crate::gizmo::ViewGizmo::area(corner).filter(|_| self.show_gizmo))
+            .collect();
+        if self.show_help {
+            self.help_window(ui.ctx(), rect);
+        }
+    }
+
+    /// The canvas's buttons, in its top right `corner`: where they are drawn.
+    fn online_canvas_buttons(
+        &mut self,
+        ui: &egui::Ui,
+        painter: &egui::Painter,
+        corner: egui::Rect,
+    ) -> egui::Rect {
+        canvas_buttons::show(
             ui,
-            &painter,
+            painter,
             corner,
             &mut [
+                Button::toggle(
+                    icons::outline::SPHERE,
+                    &mut self.show_gizmo,
+                    "Show the navigation gizmo",
+                ),
                 Button::toggle(
                     icons::outline::ROCKET_LAUNCH,
                     &mut self.follow_ship,
                     "Follow the ship (F)",
+                ),
+                Button::toggle(
+                    icons::outline::PATH,
+                    &mut self.show_path,
+                    "Show the path flown in the last half minute",
+                ),
+                Button::switch(
+                    [
+                        icons::outline::ARROWS_OUT_CARDINAL,
+                        icons::outline::ARROW_COUNTER_CLOCKWISE,
+                    ],
+                    &mut self.drag_orbits,
+                    [
+                        "Dragging the canvas pans. Click to rotate instead",
+                        "Dragging the canvas rotates the camera. Click to pan instead",
+                    ],
                 ),
                 Button::switch(
                     [icons::outline::GRID_FOUR, icons::outline::PERSPECTIVE],
@@ -508,10 +571,7 @@ impl ViewerApp {
                 )
                 .color(palette::YELLOW),
             ],
-        );
-        if self.show_help {
-            self.help_window(ui.ctx(), rect);
-        }
+        )
     }
 
     /// Where the player points, as [`ViewerApp::read_aim`] has it, for the ship in `state`.

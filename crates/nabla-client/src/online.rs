@@ -37,8 +37,9 @@ pub const SMOOTHING: f64 = 0.1;
 const Q: f64 = 1.0;
 /// The allowance for jitter in `D_r h = q h + 40 ms`, the delay remote ships are drawn in.
 const REMOTE_JITTER: f64 = 0.040;
-/// How many ticks of its own flight the client keeps, for the plume.
-const TRAIL: Tick = 120;
+/// How many ticks of its own flight the client keeps, for the plume, the path and the plots:
+/// half a minute.
+const TRAIL: Tick = 1800;
 /// The longest a remote ship is extrapolated past its newest snapshot, in seconds.
 const MAX_EXTRAPOLATION: f64 = 0.1;
 /// The longest frame the offset decays over, in seconds: a stall is not a long frame.

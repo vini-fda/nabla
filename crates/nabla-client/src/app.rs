@@ -52,6 +52,14 @@ const CONTROLS_PANEL: SidePanel = SidePanel {
     min_width: 320.0,
     default_width: 320.0,
 };
+/// The plots of a flight on a server, which has no objective to show beside them.
+const ONLINE_PLOTS_PANEL: SidePanel = SidePanel {
+    dock: Dock::Right,
+    id: "online_plots_panel",
+    titles: &["State plots"],
+    min_width: 220.0,
+    default_width: 300.0,
+};
 const RIGHT_PANEL: SidePanel = SidePanel {
     dock: Dock::Right,
     id: "plots_panel",
@@ -1243,9 +1251,13 @@ impl ViewerApp {
 
     /// The plots of the flight so far, which grows every frame.
     fn plots_ui(&self, ui: &mut egui::Ui) {
+        Self::plots_of(ui, &self.game.replay, self.game.time());
+    }
+
+    /// The plots of `replay`, with the present marked at `t` seconds into it.
+    fn plots_of(ui: &mut egui::Ui, replay: &Replay, t: f64) {
         let _span = span!(Level::Trace, "plots");
-        let plots = Plots::new(&self.game.replay);
-        let t = self.game.time();
+        let plots = Plots::new(replay);
         ui.heading("State plots");
         egui::ScrollArea::vertical().show(ui, |ui| {
             time_plot(

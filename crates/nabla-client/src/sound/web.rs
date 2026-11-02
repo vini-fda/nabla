@@ -37,14 +37,26 @@ impl Output {
     /// Creates the audio context, and starts loading the processor.
     pub fn open() -> Result<Self, String> {
         let context = AudioContext::new().map_err(describe)?;
+        log::debug!(
+            "audio: context created, state {:?}, {} Hz, base latency {:.1} ms",
+            context.state(),
+            context.sample_rate(),
+            base_latency_ms(&context)
+        );
         let node: Rc<RefCell<Option<AudioWorkletNode>>> = Rc::default();
         let error: Rc<RefCell<Option<String>>> = Rc::default();
         wasm_bindgen_futures::spawn_local({
             let (context, node, error) = (context.clone(), Rc::clone(&node), Rc::clone(&error));
             async move {
                 match load(&context).await {
-                    Ok(loaded) => *node.borrow_mut() = Some(loaded),
-                    Err(e) => *error.borrow_mut() = Some(e),
+                    Ok(loaded) => {
+                        log::debug!("audio: worklet processor loaded and connected");
+                        *node.borrow_mut() = Some(loaded);
+                    }
+                    Err(e) => {
+                        log::debug!("audio: loading the worklet failed: {e}");
+                        *error.borrow_mut() = Some(e);
+                    }
                 }
             }
         });
@@ -65,15 +77,26 @@ impl Output {
             .map(JsValue::from)
             .collect();
         if let Err(e) = node.port().and_then(|port| port.post_message(&message)) {
-            log::warn!("Audio output: {}", describe(e));
+            log::warn!("audio: posting to the worklet failed: {}", describe(e));
         }
+    }
+
+    /// The context's state and whether the processor has loaded, on one line for the log.
+    pub fn status(&self) -> String {
+        format!(
+            "context {:?}, {} Hz, base latency {:.1} ms, processor loaded {}",
+            self.context.state(),
+            self.context.sample_rate(),
+            base_latency_ms(&self.context),
+            self.node.borrow().is_some()
+        )
     }
 
     /// Resumes the audio context, which the browser suspends until the page is interacted
     /// with.
     pub fn resume(&self) {
         if let Err(e) = self.context.resume() {
-            log::warn!("Audio output: {}", describe(e));
+            log::warn!("audio: resuming the context failed: {}", describe(e));
         }
     }
 
@@ -86,8 +109,9 @@ impl Output {
 impl Drop for Output {
     fn drop(&mut self) {
         // Closing the context stops the processor, and frees the audio device.
+        log::debug!("audio: closing the context");
         if let Err(e) = self.context.close() {
-            log::warn!("Audio output: {}", describe(e));
+            log::warn!("audio: closing the context failed: {}", describe(e));
         }
     }
 }
@@ -123,6 +147,14 @@ async fn load(context: &AudioContext) -> Result<AudioWorkletNode, String> {
     node.connect_with_audio_node(&context.destination())
         .map_err(describe)?;
     Ok(node)
+}
+
+/// The context's `baseLatency`, in milliseconds (read by name: not every engine has it).
+fn base_latency_ms(context: &AudioContext) -> f64 {
+    Reflect::get(context, &"baseLatency".into())
+        .ok()
+        .and_then(|latency| latency.as_f64())
+        .map_or(f64::NAN, |seconds| seconds * 1e3)
 }
 
 /// A JavaScript error's message.

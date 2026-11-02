@@ -167,6 +167,13 @@ RUST_LOG=warn,nabla_client::game=trace cargo nabla      # one module only
 
 Set `RUST_LOG` as above to say otherwise; with it unset, the filter is `info` for everything and `debug` for `nabla-*`. Any other way of starting the app (`cargo run -p nabla-client`, a release build) keeps the lean format, unless `NABLA_LOG_STYLE=dev` is in the environment.
 
+The sound logs under `nabla_client::sound`, every line beginning with `audio:`: changes at `debug` (sound on or off, the output opened, a thruster starting or stopping, the knobs, the output device and its format), a status line from the backend every two seconds (natively how many times the audio callback ran, the frames it rendered, its peak level and whether it went quiet; in a browser the context's state and whether the processor has loaded), and the controls published every frame at `trace`:
+
+```sh
+cargo nabla 2>&1 | grep audio:                          # what the sound is doing
+RUST_LOG=nabla_client::sound=trace cargo nabla          # also every frame's controls
+```
+
 On the web, the page's address says it, as in `?log=debug`, and the log is in the browser's console.
 
 Costly operations log their start and their end, with how long they took: `let _span = span!(Level::Debug, "...");` (`src/span.rs`). Frames over 100 ms are logged as warnings, at most once a second, and with `debug`, so is any control sample over the sampling period.

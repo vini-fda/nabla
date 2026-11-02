@@ -64,7 +64,13 @@ impl Notifications {
     }
 
     /// Paint the notifications, stacked down from the top of the `canvas`, centered across it.
+    /// They go above everything else, and may go past a narrow canvas rather than get cut off.
     pub fn paint(&self, painter: &egui::Painter, canvas: egui::Rect) {
+        let mut painter = painter.clone().with_layer_id(egui::LayerId::new(
+            egui::Order::Foreground,
+            painter.layer_id().id.with("notifications"),
+        ));
+        painter.set_clip_rect(painter.ctx().content_rect());
         let mut top = canvas.top() + TOP;
         for n in &self.shown {
             let age = self.now - n.posted;

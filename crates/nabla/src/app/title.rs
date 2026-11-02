@@ -6,7 +6,9 @@ use std::ops::RangeInclusive;
 
 use nabla_core::suite;
 
-use super::{ViewerApp, input_group, input_row, toggled};
+use super::{
+    CONTROLLER_STATUS_SIZE, ViewerApp, controller_status_ui, input_group, input_row, toggled,
+};
 use crate::formula::{self, Formula};
 use crate::game::Steering;
 use crate::gamepad;
@@ -68,6 +70,14 @@ impl ViewerApp {
     pub(super) fn title_ui(&mut self, ui: &mut egui::Ui) {
         let mut play = self.title_keys(ui);
         egui::CentralPanel::default().show(ui, |ui| {
+            let corner = ui.max_rect().right_top();
+            let status = egui::Rect::from_min_size(
+                corner - egui::vec2(CONTROLLER_STATUS_SIZE, 0.0),
+                egui::Vec2::splat(CONTROLLER_STATUS_SIZE),
+            );
+            ui.scope_builder(egui::UiBuilder::new().max_rect(status), |ui| {
+                controller_status_ui(ui, &self.gamepads);
+            });
             let window = ui.ctx().content_rect().size();
             let available = ui.available_size();
             let margins = window - available;
@@ -118,6 +128,11 @@ impl ViewerApp {
                 self.fit_title(ui.ctx(), rest, window.y * self.title_fit / needed);
             }
         });
+        self.notifications
+            .paint(ui.painter(), ui.ctx().content_rect());
+        if self.notifications.any() {
+            ui.ctx().request_repaint();
+        }
         if play {
             // The flight is at the player's own zoom.
             let ctx = ui.ctx();
@@ -445,7 +460,9 @@ impl ViewerApp {
                 ui,
                 &[
                     keys::Run::Icon(icons::outline::GAME_CONTROLLER),
-                    keys::Run::Text(" Connect a game controller to see its controls"),
+                    keys::Run::Text(
+                        " Connect a game controller and press a button to see its controls",
+                    ),
                 ],
             );
         }

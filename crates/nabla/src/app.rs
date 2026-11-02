@@ -115,6 +115,8 @@ const GOAL_RADIUS_PX: f32 = 10.0;
 const GOAL_LABEL_OFFSET_PX: f32 = 12.0;
 const START_RADIUS_PX: f32 = 5.0;
 
+/// Size of the icon that shows whether a controller is connected, in points.
+const CONTROLLER_STATUS_SIZE: f32 = 20.0;
 /// Below this width (in points), e.g. on phones, the panels are shown one at a time.
 const COMPACT_WIDTH: f32 = 800.0;
 
@@ -1182,6 +1184,9 @@ impl ViewerApp {
                 format!("t = {:.2} s, k = {k}", game.time())
             };
             ui.monospace(time);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                controller_status_ui(ui, &self.gamepads);
+            });
         });
         if home {
             self.screen = Screen::Title;
@@ -1958,8 +1963,18 @@ impl eframe::App for ViewerApp {
     /// Called each time the UI needs repainting, which may be many times per second.
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.poll_world_file();
-        self.gamepads.poll(ui.ctx());
         self.notifications.tick(ui.input(|i| i.time));
+        match self.gamepads.poll(ui.ctx()) {
+            Some(gamepad::Connection::Connected(name)) => {
+                self.notifications
+                    .post(format!("{name} connected"), palette::GREEN);
+            }
+            Some(gamepad::Connection::Disconnected(name)) => {
+                self.notifications
+                    .post(format!("{name} disconnected"), palette::YELLOW);
+            }
+            None => {}
+        }
         match self.screen {
             Screen::Title => self.title_ui(ui),
             Screen::Flight => self.flight_ui(ui),
@@ -2272,6 +2287,25 @@ fn paint_collapse_icon(
 fn outline_button(ui: &mut egui::Ui, icon: &str) -> egui::Response {
     let size = egui::TextStyle::Button.resolve(ui.style()).size;
     ui.button(egui::RichText::new(icon).font(icons::outline::font(size)))
+}
+
+/// A controller icon: green with one connected, gray without, saying which on hover.
+fn controller_status_ui(ui: &mut egui::Ui, gamepads: &Gamepads) {
+    let color = if gamepads.state().is_some() {
+        palette::GREEN
+    } else {
+        palette::OVERLAY0
+    };
+    let hint = if cfg!(target_arch = "wasm32") {
+        "No controller: connect one and press a button on it"
+    } else {
+        "No controller connected"
+    };
+    let icon = egui::RichText::new(icons::outline::GAME_CONTROLLER)
+        .font(icons::outline::font(CONTROLLER_STATUS_SIZE))
+        .color(color);
+    ui.add(egui::Label::new(icon).selectable(false))
+        .on_hover_text(gamepads.state().map_or(hint, |pad| pad.name.as_str()));
 }
 
 /// The other way of steering: the stability assist on or off.

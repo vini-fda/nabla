@@ -42,21 +42,24 @@ const Y_LABEL_SPACING: (f32, f32) = (12.0, 45.0);
 const CONTROLS_PANEL: SidePanel = SidePanel {
     dock: Dock::Left,
     id: "config_panel",
-    title: "Settings",
+    titles: &["Settings"],
     // Narrowest the contents can be dragged to; below this their rows would be cut off.
     min_width: 320.0,
     default_width: 320.0,
 };
-const PLOTS_PANEL: SidePanel = SidePanel {
+const RIGHT_PANEL: SidePanel = SidePanel {
     dock: Dock::Right,
     id: "plots_panel",
-    title: "State plots",
+    // In the order of `RightView::ALL`.
+    titles: &["State plots", "Objective"],
     min_width: 220.0,
     default_width: 300.0,
 };
 /// Width of the vertical title bar along a side panel's window edge: all that is left of the
 /// panel when it is collapsed.
 const TITLE_BAR_WIDTH: f32 = 30.0;
+/// A side panel's unselected tabs in its title bar, against the selected one's white.
+const TITLE_BAR_TAB_COLOR: egui::Color32 = palette::OVERLAY0;
 /// Seconds the pointer must stay away from a collapsed panel's title bar before the bar
 /// slides out of the window, leaving only its triangle.
 const TITLE_BAR_HIDE_DELAY: f64 = 0.5;
@@ -146,6 +149,19 @@ enum CompactView {
     Canvas,
     Controls,
     Plots,
+    Objective,
+}
+
+/// What the right panel of the wide layout shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum RightView {
+    #[default]
+    Plots,
+    Objective,
+}
+
+impl RightView {
+    const ALL: [Self; 2] = [Self::Plots, Self::Objective];
 }
 
 /// Fraction of the canvas left empty around the ship and the goal by "Fit view".
@@ -290,9 +306,10 @@ pub struct ViewerApp {
     show_controller: bool,
     cases: Vec<CaseEntry>,
     fit_pending: bool,
-    /// Wide layout: show the left (controls) and right (plots) side panels.
+    /// Wide layout: show the left (controls) and right (plots or objective) side panels.
     show_controls: bool,
     show_plots: bool,
+    right_view: RightView,
     compact_view: CompactView,
     view: CanvasView,
     /// Draws the 3D ship and its plumes; `None` where OpenGL can't (then the canvas shows the
@@ -351,6 +368,7 @@ impl Default for ViewerApp {
             fit_pending: true,
             show_controls: true,
             show_plots: true,
+            right_view: RightView::default(),
             compact_view: CompactView::default(),
             view: CanvasView::default(),
             ship3d: None,
@@ -1057,7 +1075,6 @@ impl ViewerApp {
     /// autopilot and pointing (with its cone), and the time. `compact`, for narrow screens,
     /// shortens the autopilot's, the cone's and the time's labels so the row fits a phone.
     fn game_bar_ui(&mut self, ui: &mut egui::Ui, compact: bool) {
-        self.objective_ui(ui);
         let assisted = self.assisted();
         let game = &self.game;
         let (mut pause, mut restart, mut sas, mut autopilot) = (false, false, false, false);
@@ -1135,9 +1152,12 @@ impl ViewerApp {
                 format!("t = {:.2} s, k = {k}", game.time())
             };
             ui.monospace(time);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                controller_status_ui(ui, &self.gamepads);
-            });
+            // A narrow bar has no room left for it; the banners still tell.
+            if !compact {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    controller_status_ui(ui, &self.gamepads);
+                });
+            }
         });
         if home {
             self.screen = Screen::Title;
@@ -1879,16 +1899,27 @@ impl ViewerApp {
         });
     }
 
-    /// Desktop layout: the game's bar along the bottom, controls left and plots right above it.
+    /// Desktop layout: the game's bar along the bottom, controls left and the plots or the
+    /// objective right above it.
     fn wide_layout(&mut self, ui: &mut egui::Ui) {
         // The bar first, across the whole window, so neither side panel (nor its collapsed
         // title bar, which slides back in when the pointer comes near) reaches it.
         egui::Panel::bottom("game_bar").show(ui, |ui| self.game_bar_ui(ui, false));
         let mut show_controls = self.show_controls;
-        CONTROLS_PANEL.show(ui, &mut show_controls, |ui| self.controls_ui(ui));
+        CONTROLS_PANEL.show(ui, &mut show_controls, &mut 0, |ui, _| self.controls_ui(ui));
         self.show_controls = show_controls;
         let mut show_plots = self.show_plots;
-        PLOTS_PANEL.show(ui, &mut show_plots, |ui| self.plots_ui(ui));
+        let mut view = self.right_view as usize;
+        RIGHT_PANEL.show(
+            ui,
+            &mut show_plots,
+            &mut view,
+            |ui, view| match RightView::ALL[view] {
+                RightView::Plots => self.plots_ui(ui),
+                RightView::Objective => self.objective_ui(ui),
+            },
+        );
+        self.right_view = RightView::ALL[view];
         self.show_plots = show_plots;
         // The plots panel's triangle floats over the canvas's corner while it's collapsed.
         let inset = if show_plots { 0.0 } else { TITLE_BAR_WIDTH };
@@ -1901,11 +1932,12 @@ impl ViewerApp {
         if self.compact_view != CompactView::Controls {
             egui::Panel::bottom("game_bar").show(ui, |ui| self.game_bar_ui(ui, true));
         }
-        // No heading above the controls or plots: the selected tab already names the view.
+        // No heading above the controls: the selected tab already names the view.
         egui::CentralPanel::default().show(ui, |ui| match self.compact_view {
             CompactView::Canvas => self.canvas_ui(ui, 0.0),
             CompactView::Controls => self.controls_ui(ui),
             CompactView::Plots => self.plots_ui(ui),
+            CompactView::Objective => self.objective_ui(ui),
         });
     }
 }
@@ -1986,8 +2018,9 @@ impl ViewerApp {
                 ui.horizontal(|ui| {
                     for (view, label) in [
                         (CompactView::Canvas, "View"),
-                        (CompactView::Controls, CONTROLS_PANEL.title),
+                        (CompactView::Controls, CONTROLS_PANEL.titles[0]),
                         (CompactView::Plots, "Plots"),
+                        (CompactView::Objective, RIGHT_PANEL.titles[1]),
                     ] {
                         ui.selectable_value(&mut self.compact_view, view, label);
                     }
@@ -2017,7 +2050,8 @@ enum Dock {
 struct SidePanel {
     dock: Dock,
     id: &'static str,
-    title: &'static str,
+    /// What the title bar names: with several, the tabs to choose what the panel shows.
+    titles: &'static [&'static str],
     /// The contents' widths, not counting the title bar.
     min_width: f32,
     default_width: f32,
@@ -2028,12 +2062,13 @@ impl SidePanel {
         &self,
         ui: &mut egui::Ui,
         expanded: &mut bool,
-        add_contents: impl FnOnce(&mut egui::Ui),
+        selected: &mut usize,
+        add_contents: impl FnOnce(&mut egui::Ui, usize),
     ) {
         let Self {
             dock,
             id,
-            title,
+            titles,
             min_width,
             default_width,
         } = *self;
@@ -2101,7 +2136,8 @@ impl SidePanel {
                         rect.with_min_x(rect.right() - TITLE_BAR_WIDTH)
                     };
                     let icon = icon_in_bar.then_some(openness);
-                    let toggled = title_bar(ui, bar_rect, dock, title, icon, show_contents);
+                    let toggled =
+                        title_bar(ui, bar_rect, dock, titles, selected, icon, show_contents);
                     if show_contents {
                         let (x, content_rect) = match dock {
                             Dock::Left => (bar_rect.right(), rect.with_min_x(bar_rect.right())),
@@ -2113,7 +2149,7 @@ impl SidePanel {
                             ui.new_child(egui::UiBuilder::new().max_rect(content_rect));
                         egui::Frame::new()
                             .inner_margin(egui::Margin::symmetric(8, 2))
-                            .show(&mut content, add_contents);
+                            .show(&mut content, |ui| add_contents(ui, *selected));
                     }
                     ui.advance_cursor_after_rect(rect);
                     toggled
@@ -2160,14 +2196,17 @@ fn title_bar_icon_y(ui: &egui::Ui, bar: egui::Rect) -> f32 {
 }
 
 /// Paints a side panel's vertical title bar in `rect`: the collapse triangle at the top
-/// (when `icon` gives its openness), then the title, reading away from the triangle toward
+/// (when `icon` gives its openness), then the titles, reading away from the triangle toward
 /// the bottom on the right and toward the top on the left, so the letters always stand on
-/// the panel's contents. Returns whether the bar was clicked.
+/// the panel's contents. The `selected` title is white and the others are gray tabs, which
+/// select themselves when clicked. Returns whether the panel is to be shown or hidden: the
+/// rest of the bar was clicked, or a tab while the panel is collapsed.
 fn title_bar(
     ui: &egui::Ui,
     rect: egui::Rect,
     dock: Dock,
-    title: &str,
+    titles: &[&str],
+    selected: &mut usize,
     icon: Option<f32>,
     expanded: bool,
 ) -> bool {
@@ -2185,22 +2224,65 @@ fn title_bar(
         paint_collapse_icon(ui, &response, icon_center, dock, openness);
     }
 
-    let color = ui.style().interact(&response).fg_stroke.color;
+    let bar_color = ui.style().interact(&response).fg_stroke.color;
     let font = egui::TextStyle::Heading.resolve(ui.style());
-    let galley = ui.painter().layout_no_wrap(title.to_owned(), font, color);
-    let size = galley.size();
-    let top = icon_center.y + ui.spacing().icon_width / 2.0 + ui.spacing().item_spacing.y;
-    let (pos, angle) = match dock {
-        Dock::Left => (
-            egui::pos2(rect.center().x - size.y / 2.0, top + size.x),
-            -TAU / 4.0,
-        ),
-        Dock::Right => (egui::pos2(rect.center().x + size.y / 2.0, top), TAU / 4.0),
-    };
-    ui.painter()
-        .add(egui::epaint::TextShape::new(pos, galley, color).with_angle(angle));
+    let gap = 2.0 * ui.spacing().item_spacing.y;
+    let mut top = icon_center.y + ui.spacing().icon_width / 2.0 + ui.spacing().item_spacing.y;
+    let mut clicked_tab = None;
+    for (i, title) in titles.iter().enumerate() {
+        if i > 0 {
+            let y = top + gap / 2.0;
+            let x = rect.center().x;
+            let half = ui.spacing().icon_width / 2.0;
+            let stroke = egui::Stroke::new(1.0, TITLE_BAR_TAB_COLOR);
+            ui.painter().hline((x - half)..=(x + half), y, stroke);
+            top += gap;
+        }
+        let galley = ui.painter().layout_no_wrap(
+            (*title).to_owned(),
+            font.clone(),
+            egui::Color32::PLACEHOLDER,
+        );
+        let size = galley.size();
+        let color = if i == *selected {
+            bar_color
+        } else {
+            let tab = egui::Rect::from_min_size(
+                egui::pos2(rect.left(), top),
+                egui::vec2(rect.width(), size.x),
+            );
+            let tab = ui
+                .interact(
+                    tab,
+                    ui.scope_id().with(("title_bar", i)),
+                    egui::Sense::click(),
+                )
+                .on_hover_text(format!("Show {title}"));
+            if tab.clicked() {
+                clicked_tab = Some(i);
+            }
+            if tab.hovered() {
+                palette::SUBTEXT
+            } else {
+                TITLE_BAR_TAB_COLOR
+            }
+        };
+        let (pos, angle) = match dock {
+            Dock::Left => (
+                egui::pos2(rect.center().x - size.y / 2.0, top + size.x),
+                -TAU / 4.0,
+            ),
+            Dock::Right => (egui::pos2(rect.center().x + size.y / 2.0, top), TAU / 4.0),
+        };
+        ui.painter()
+            .add(egui::epaint::TextShape::new(pos, galley, color).with_angle(angle));
+        top += size.x;
+    }
 
-    response.clicked()
+    if let Some(tab) = clicked_tab {
+        *selected = tab;
+    }
+    response.clicked() || (clicked_tab.is_some() && !expanded)
 }
 
 /// The collapse triangle of a side panel's title bar, centered on `center`, in the colors
@@ -2457,4 +2539,74 @@ fn time_plot(
         }
         plot_ui.vline(VLine::new("", t).color(CURSOR_COLOR));
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const BAR: egui::Rect =
+        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(TITLE_BAR_WIDTH, 400.0));
+
+    /// Clicks the title bar at height `y`, with the first of its two tabs selected. Returns the
+    /// selected tab and whether the panel is to be shown or hidden.
+    fn click_title_bar(y: f32, expanded: bool) -> (usize, bool) {
+        let ctx = egui::Context::default();
+        let pos = egui::pos2(BAR.center().x, y);
+        let button = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let mut selected = 0;
+        let mut toggled = false;
+        for events in [
+            vec![egui::Event::PointerMoved(pos)],
+            vec![button(true)],
+            vec![button(false)],
+        ] {
+            let input = egui::RawInput {
+                events,
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                toggled |= title_bar(
+                    ui,
+                    BAR,
+                    Dock::Right,
+                    RIGHT_PANEL.titles,
+                    &mut selected,
+                    None,
+                    expanded,
+                );
+            });
+            output.textures_delta.clear();
+        }
+        (selected, toggled)
+    }
+
+    /// The height of a point on the second title, found by clicking down the bar.
+    fn second_tab_y() -> f32 {
+        (0..40)
+            .map(|i| i as f32 * 10.0)
+            .find(|&y| click_title_bar(y, true).0 == 1)
+            .expect("the second title is a tab")
+    }
+
+    #[test]
+    fn a_tab_selects_itself_and_only_shows_a_collapsed_panel() {
+        let y = second_tab_y();
+        assert_eq!(click_title_bar(y, true), (1, false));
+        assert_eq!(click_title_bar(y, false), (1, true));
+    }
+
+    #[test]
+    fn the_rest_of_the_title_bar_still_shows_and_hides_the_panel() {
+        // The selected title, and the empty end of the bar.
+        for y in [40.0, 390.0] {
+            assert_eq!(click_title_bar(y, true), (0, true));
+            assert_eq!(click_title_bar(y, false), (0, true));
+        }
+    }
 }

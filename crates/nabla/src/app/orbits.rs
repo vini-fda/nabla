@@ -1,6 +1,6 @@
 //! Orbit commands: preview edits never change an engaged target until confirmed.
 
-use super::{Vec3, ViewerApp, palette, world};
+use super::{RightView, Vec3, ViewerApp, palette, world};
 use crate::game::Objective;
 use crate::gamepad::{Button, State};
 use crate::orbit::{self, Prediction, Target};
@@ -131,12 +131,14 @@ impl ViewerApp {
         self.invalidate_orbit_preview();
     }
 
-    /// Returns whether Square was consumed. Left/right selects the objective; Circle always wins.
+    /// Returns whether Square was consumed. Left/right selects the objective, and says so: the
+    /// panel with its details may be closed or hidden. Circle always wins.
     pub(super) fn orbit_buttons(&mut self, pad: &State) -> bool {
         if pad.just_pressed(Button::East) {
             self.manual_flight();
             return true; // Cancel wins over a simultaneous engage.
         }
+        let objective = self.game.objective();
         if pad.just_pressed(Button::DPadLeft) {
             self.choose_objective(Objective::ReachB);
         } else if pad.just_pressed(Button::DPadRight)
@@ -144,6 +146,13 @@ impl ViewerApp {
             && let Some(target) = self.orbit_controls.target
         {
             self.choose_objective(Objective::Orbit(target));
+        }
+        if self.game.objective() != objective {
+            self.right_view = RightView::Objective;
+            self.notifications.post(
+                format!("Objective: {}", self.game.objective().label()),
+                palette::WHITE,
+            );
         }
         if self.game.objective() == Objective::ReachB {
             return false;
@@ -191,10 +200,11 @@ impl ViewerApp {
         }
     }
 
+    /// The flight's objective and, for an orbit, its target, preview and engagement.
     pub(super) fn objective_ui(&mut self, ui: &mut egui::Ui) {
-        let mut objective = self.game.objective();
-        ui.horizontal_wrapped(|ui| {
-            ui.strong("Objective");
+        ui.heading("Objective");
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            let mut objective = self.game.objective();
             egui::ComboBox::from_id_salt("flight-objective")
                 .selected_text(objective.label())
                 .show_ui(ui, |ui| {
@@ -206,18 +216,19 @@ impl ViewerApp {
                         }
                     }
                 });
-            ui.small("D-pad left/right: objective");
-        });
-        if objective != self.game.objective() {
-            self.choose_objective(objective);
-        }
-        match self.game.objective() {
-            Objective::ReachB => {
-                ui.small("Reach B and stop | Square / A: autopilot | Circle: manual");
-                ui.separator();
+            if objective != self.game.objective() {
+                self.choose_objective(objective);
             }
-            Objective::Orbit(_) => self.orbit_ui(ui),
-        }
+            match self.game.objective() {
+                Objective::ReachB => {
+                    ui.label("Reach B and stop.");
+                    ui.small("D-pad left/right: objective");
+                    ui.small("Square / A: autopilot");
+                    ui.small("Circle: manual");
+                }
+                Objective::Orbit(_) => self.orbit_ui(ui),
+            }
+        });
     }
 
     fn orbit_ui(&mut self, ui: &mut egui::Ui) {
@@ -227,24 +238,32 @@ impl ViewerApp {
         let body = target.body;
         let mut engage = false;
         let mut manual = false;
+        egui::Grid::new("orbit-target")
+            .num_columns(2)
+            .show(ui, |ui| {
+                ui.label("Target");
+                egui::ComboBox::from_id_salt("orbit-body")
+                    .width(100.0)
+                    .selected_text(&self.game.world.bodies[body].name)
+                    .show_ui(ui, |ui| {
+                        for (i, body) in self.game.world.bodies.iter().enumerate() {
+                            ui.selectable_value(&mut target.body, i, &body.name);
+                        }
+                    });
+                ui.end_row();
+                ui.label("Altitude");
+                ui.add(
+                    egui::DragValue::new(&mut target.altitude)
+                        .range(Target::min_altitude(&self.game.world)..=orbit::MAX_ALTITUDE)
+                        .speed(0.1)
+                        .max_decimals(1),
+                );
+                ui.end_row();
+                ui.label("Direction");
+                ui.label(target.direction());
+                ui.end_row();
+            });
         ui.horizontal_wrapped(|ui| {
-            ui.strong("Orbit");
-            egui::ComboBox::from_id_salt("orbit-body")
-                .width(100.0)
-                .selected_text(&self.game.world.bodies[body].name)
-                .show_ui(ui, |ui| {
-                    for (i, body) in self.game.world.bodies.iter().enumerate() {
-                        ui.selectable_value(&mut target.body, i, &body.name);
-                    }
-                });
-            ui.label("Altitude");
-            ui.add(
-                egui::DragValue::new(&mut target.altitude)
-                    .range(Target::min_altitude(&self.game.world)..=orbit::MAX_ALTITUDE)
-                    .speed(0.1)
-                    .max_decimals(1),
-            );
-            ui.label(target.direction());
             engage = ui.button("Engage orbit [Square]").clicked();
             manual = ui
                 .add_enabled(self.assisted(), egui::Button::new("Manual [Circle]"))
@@ -277,16 +296,17 @@ impl ViewerApp {
             ui.colored_label(palette::YELLOW, format!("Preview: {error}"));
         } else if let Some(prediction) = &self.orbit_controls.prediction {
             ui.label(format!(
-                "Capture prediction: {:.0} s | dashed orbit = selected, solid = active",
+                "Capture prediction: {:.0} s",
                 prediction.capture_seconds
             ));
+            ui.small("Dashed orbit: selected | solid: active");
         } else {
             ui.label("Preview: checking capture...");
         }
-        ui.small(
-            "D-pad up/down: altitude | L2: fine | R3: target | Square: engage | Circle: manual",
-        );
-        ui.separator();
+        ui.small("D-pad left/right: objective");
+        ui.small("D-pad up/down: altitude | L2: fine");
+        ui.small("R3: target");
+        ui.small("Square: engage | Circle: manual");
     }
 
     pub(super) fn draw_orbits(&self, painter: &egui::Painter, rect: egui::Rect) {
@@ -481,6 +501,40 @@ mod tests {
             !press(&mut app, &[Button::West], false),
             "vacuum delegates Square"
         );
+    }
+
+    /// The height of the game's bar, drawn on its own at a width that fits it on one row.
+    fn game_bar_height(app: &mut ViewerApp) -> f32 {
+        let ctx = egui::Context::default();
+        let mut height = 0.0;
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            height = ui
+                .scope(|ui| app.game_bar_ui(ui, false))
+                .response
+                .rect
+                .height();
+        });
+        output.textures_delta.clear();
+        height
+    }
+
+    #[test]
+    fn switching_objectives_keeps_the_game_bar_height() {
+        let mut app = planet_app();
+        let orbit = game_bar_height(&mut app);
+        press(&mut app, &[Button::DPadLeft], false);
+        assert_eq!(app.game.objective(), Objective::ReachB);
+        assert_eq!(game_bar_height(&mut app), orbit);
+    }
+
+    #[test]
+    fn dpad_objective_switch_brings_up_the_objective_view() {
+        let mut app = planet_app();
+        assert_eq!(app.right_view, RightView::Plots);
+        press(&mut app, &[Button::DPadUp], false);
+        assert_eq!(app.right_view, RightView::Plots, "no change, no switch");
+        press(&mut app, &[Button::DPadLeft], false);
+        assert_eq!(app.right_view, RightView::Objective);
     }
 
     #[test]

@@ -85,7 +85,8 @@ pub struct Aim {
 /// The controls the player holds.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Input {
-    pub thrust: bool,
+    /// How hard to thrust, from 0 to 1 (full thrust).
+    pub thrust: f64,
     /// How hard to turn, from -1 (full torque to the right, clockwise) to 1 (full torque to the
     /// left, counterclockwise).
     pub turn: f64,
@@ -97,10 +98,11 @@ pub struct Input {
 }
 
 impl Input {
-    /// Both's controls held: the turns add up, to at most a full turn either way.
+    /// Both's controls held: the harder thrust counts, and the turns add up, to at most a full
+    /// turn either way.
     pub fn or(self, other: Self) -> Self {
         Self {
-            thrust: self.thrust || other.thrust,
+            thrust: self.thrust.max(other.thrust),
             turn: self.turn + other.turn,
             fine: self.fine || other.fine,
             aim: self.aim.or(other.aim),
@@ -110,18 +112,19 @@ impl Input {
     /// The control these inputs ask of a ship with `params`: always admissible.
     pub fn control(self, params: &Params) -> Control {
         let power = if self.fine { FINE } else { 1.0 };
-        // NaN, which a turn should never be, turns not at all.
+        // NaN, which neither should ever be, thrusts and turns not at all.
         let turn = if self.turn.is_nan() {
             0.0
         } else {
             self.turn.clamp(-1.0, 1.0)
         };
+        let thrust = if self.thrust.is_nan() {
+            0.0
+        } else {
+            self.thrust.clamp(0.0, 1.0)
+        };
         Control {
-            thrust: if self.thrust {
-                power * params.f_max
-            } else {
-                0.0
-            },
+            thrust: power * thrust * params.f_max,
             torque: power * turn * params.tau_max,
         }
     }
@@ -534,7 +537,7 @@ fn steer(
         u.torque = hold_torque(params, s, s.theta + error);
         if error.abs() <= aim.cone {
             let thrust = Input {
-                thrust: true,
+                thrust: 1.0,
                 ..input
             };
             u.thrust = thrust.control(params).thrust;
@@ -761,12 +764,13 @@ impl Pads {
                 .flatten()
         });
         self.held = Input {
-            thrust: self
-                .touches
-                .values()
-                .copied()
-                .chain(pointer)
-                .any(|p| Pad::Thrust.contains(canvas, p)),
+            thrust: f64::from(u8::from(
+                self.touches
+                    .values()
+                    .copied()
+                    .chain(pointer)
+                    .any(|p| Pad::Thrust.contains(canvas, p)),
+            )),
             turn: self.knob.map_or(0.0, |p| f64::from(stick_turn(canvas, p))),
             fine: self.fine,
             aim: None,
@@ -835,7 +839,7 @@ impl Pads {
     pub fn paint(&self, painter: &egui::Painter, canvas: Rect) {
         self.paint_stick(painter, canvas);
         for (pad, held, color) in [
-            (Pad::Thrust, self.held.thrust, palette::PEACH),
+            (Pad::Thrust, self.held.thrust > 0.0, palette::PEACH),
             (Pad::Fine, self.fine, palette::GREEN),
         ] {
             let (center, radius) = pad.circle(canvas);
@@ -965,7 +969,7 @@ mod tests {
         resumed.advance(
             0.1,
             Input {
-                thrust: true,
+                thrust: 1.0,
                 ..Input::default()
             },
             Steering::Raw,
@@ -990,12 +994,36 @@ mod tests {
             ..Input::default()
         };
         let full = Input {
-            thrust: true,
+            thrust: 1.0,
             ..turn(1.0)
         };
         let u = full.control(&params);
         assert!(u.is_admissible(&params), "full power");
         assert_eq!((u.thrust, u.torque), (params.f_max, params.tau_max), "full");
+        let thrust = |thrust| Input {
+            thrust,
+            ..Input::default()
+        };
+        let halfway = thrust(0.5).control(&params).thrust;
+        assert!((halfway - 0.5 * params.f_max).abs() < 1e-12, "{halfway}");
+        let fine_halfway = Input {
+            fine: true,
+            ..thrust(0.5)
+        };
+        let fine_halfway = fine_halfway.control(&params).thrust;
+        assert!(
+            (fine_halfway - FINE * 0.5 * params.f_max).abs() < 1e-12,
+            "{fine_halfway}"
+        );
+        assert_eq!(thrust(2.0).control(&params).thrust, params.f_max, "at most");
+        for out_of_range in [-1.0, f64::NAN] {
+            let u = thrust(out_of_range).control(&params);
+            assert_eq!(u.thrust, 0.0, "{out_of_range}");
+        }
+        assert!(
+            (thrust(0.25).or(thrust(0.5)).thrust - 0.5).abs() < 1e-12,
+            "the harder counts"
+        );
         let fine = Input {
             fine: true,
             ..turn(-1.0)
@@ -1046,7 +1074,7 @@ mod tests {
         let mut g = game();
         let h = g.replay.h();
         let thrust = Input {
-            thrust: true,
+            thrust: 1.0,
             ..Input::default()
         };
         g.advance(2.5 * h, thrust, Steering::Raw);
@@ -1231,7 +1259,7 @@ mod tests {
             let mut g = Game::new(case);
             // Pressing everything: the policy flies, not the player.
             let input = Input {
-                thrust: true,
+                thrust: 1.0,
                 turn: 1.0,
                 ..aim(1.0, 0.1)
             };
@@ -1257,7 +1285,7 @@ mod tests {
         let solution = &nabla_core::solutions::SOLUTIONS[0];
         let mut g = game();
         let thrust = Input {
-            thrust: true,
+            thrust: 1.0,
             turn: 0.5,
             ..Input::default()
         };

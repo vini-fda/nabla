@@ -535,7 +535,7 @@ impl ViewerApp {
             let left = f64::from(u8::from(held(egui::Key::ArrowLeft)));
             let right = f64::from(u8::from(held(egui::Key::ArrowRight)));
             Input {
-                thrust: held(egui::Key::Space) || held(egui::Key::ArrowUp),
+                thrust: f64::from(u8::from(held(egui::Key::Space) || held(egui::Key::ArrowUp))),
                 turn: left - right,
                 fine: i.modifiers.shift,
                 aim: None,
@@ -1039,7 +1039,7 @@ impl ViewerApp {
             input_row(
                 ui,
                 |ui| gesture(ui, HAND_SWIPE_RIGHT, "drag stick"),
-                |ui| ui.label("Turn, harder the further"),
+                |ui| ui.label("Turn, -100% to +100%"),
             );
             input_row(
                 ui,

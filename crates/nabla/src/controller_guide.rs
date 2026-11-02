@@ -247,7 +247,7 @@ fn rows() -> Vec<Row> {
         ),
         row(
             vec![part(LEFT_STICK)],
-            "Turn, harder the further".into(),
+            "Turn, -100% to +100%".into(),
             Input::LeftStickSideways,
             palette::SAPPHIRE,
             left(270.0, 97.0, 252.2, [258.9, 252.2]),
@@ -261,7 +261,7 @@ fn rows() -> Vec<Row> {
         ),
         row(
             vec![part(R2)],
-            "Thrust".into(),
+            "Thrust, 0 to 100%".into(),
             Input::Trigger(1, Button::RightTrigger2),
             palette::PEACH,
             right(70.0, 700.0, 98.0, [522.0, 98.0]),
@@ -597,12 +597,16 @@ mod tests {
             triggers: [0.0, 0.3],
             ..State::default()
         };
-        assert_eq!(lit(&r2), ["Thrust"], "pulled, short of its threshold");
+        assert_eq!(
+            lit(&r2),
+            ["Thrust, 0 to 100%"],
+            "pulled, short of its threshold"
+        );
         let stick = State {
             stick: [-0.5, 0.0],
             ..State::default()
         };
-        assert_eq!(lit(&stick), ["Turn, harder the further"]);
+        assert_eq!(lit(&stick), ["Turn, -100% to +100%"]);
         let up = State {
             stick: [0.0, 0.9],
             ..State::default()

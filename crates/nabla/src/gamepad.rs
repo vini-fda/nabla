@@ -72,6 +72,9 @@ const BUTTONS: [Button; 17] = [
     Button::DPadRight,
 ];
 
+/// How far a trigger may rest from 0 (they drift) and still thrust not at all, from 0 to 1.
+const TRIGGER_DEAD_ZONE: f32 = 0.02;
+
 /// A controller's state, as read this frame.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct State {
@@ -94,14 +97,28 @@ pub struct State {
 
 impl State {
     /// The flight's controls held on the controller: the left stick turns, as hard as it is
-    /// pushed sideways (left, counterclockwise), Cross or R2 thrusts, and L2 is fine control.
+    /// pushed sideways (left, counterclockwise), Cross thrusts in full and R2 as hard as it is
+    /// pulled, and L2 is fine control.
     pub fn input(&self) -> Input {
         Input {
-            thrust: self.is_held(Button::South) || self.is_held(Button::RightTrigger2),
+            thrust: if self.is_held(Button::South) {
+                1.0
+            } else {
+                self.r2_thrust()
+            },
             turn: f64::from(-self.stick[0]),
             fine: self.is_held(Button::LeftTrigger2),
             aim: None,
         }
+    }
+
+    /// How hard R2 thrusts: in full for a trigger that's held without a depth to tell.
+    fn r2_thrust(&self) -> f64 {
+        let depth = self.triggers[1];
+        if depth <= 0.0 && self.is_held(Button::RightTrigger2) {
+            return 1.0;
+        }
+        f64::from(((depth - TRIGGER_DEAD_ZONE) / (1.0 - TRIGGER_DEAD_ZONE)).clamp(0.0, 1.0))
     }
 
     /// Which way the shoulder buttons zoom while held: 1 in (R1), -1 out (L1), 0 for neither
@@ -330,14 +347,46 @@ mod tests {
     fn the_controller_flies_as_the_keyboard_and_the_joystick_do() {
         assert_eq!(State::default().input(), Input::default(), "nothing held");
         let input = holding(&[Button::RightTrigger2, Button::LeftTrigger2], [-0.5, 0.9]).input();
-        assert!(input.thrust && input.fine, "R2 thrusts, L2 is fine control");
+        assert_eq!(
+            input.thrust, 1.0,
+            "a trigger without a depth thrusts in full"
+        );
+        assert!(input.fine, "L2 is fine control");
         assert_eq!(
             input.turn, 0.5,
             "left turns left, as hard as pushed; up does not count"
         );
         let cross = holding(&[Button::South], [1.0, 0.0]).input();
-        assert!(cross.thrust, "Cross thrusts");
+        assert_eq!(cross.thrust, 1.0, "Cross thrusts");
         assert_eq!(cross.turn, -1.0, "full right");
+    }
+
+    #[test]
+    fn r2_thrusts_as_hard_as_it_is_pulled() {
+        let pulled = |depth| {
+            State {
+                triggers: [0.0, depth],
+                ..State::default()
+            }
+            .input()
+            .thrust
+        };
+        assert_eq!(pulled(0.0), 0.0, "let go");
+        assert_eq!(pulled(TRIGGER_DEAD_ZONE), 0.0, "resting, a bit off 0");
+        assert_eq!(pulled(1.0), 1.0, "all the way");
+        for depth in [0.1, 0.25, 0.5, 0.75, 0.9] {
+            let thrust = pulled(depth);
+            assert!(
+                (thrust - f64::from(depth)).abs() < 0.02,
+                "at {depth}: {thrust}"
+            );
+        }
+        let both = State {
+            triggers: [0.0, 0.5],
+            held: vec![Button::South],
+            ..State::default()
+        };
+        assert_eq!(both.input().thrust, 1.0, "Cross is always full thrust");
     }
 
     #[test]

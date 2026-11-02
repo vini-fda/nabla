@@ -626,7 +626,7 @@ mod tests {
         app.game.advance(
             0.1,
             Input {
-                thrust: true,
+                thrust: 1.0,
                 ..Input::default()
             },
             Steering::Raw,

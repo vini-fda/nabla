@@ -33,6 +33,7 @@ fn main() -> eframe::Result {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1400.0, 850.0])
             .with_min_inner_size([700.0, 600.0])
+            .with_maximized(true)
             .with_title("Nabla")
             .with_icon(app_icon()),
         renderer: eframe::Renderer::Wgpu,

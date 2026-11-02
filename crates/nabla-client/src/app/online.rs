@@ -83,6 +83,24 @@ impl ViewerApp {
         self.notifications.clear();
     }
 
+    /// The controller's buttons, as in a single-player flight, but for pause, which a server
+    /// does not have: North toggles the stability assist, West the autopilot, and Select (Create)
+    /// shows or hides the controller's guide.
+    fn online_controller_buttons(&mut self) {
+        let Some(pad) = self.gamepads.state().cloned() else {
+            return;
+        };
+        if pad.just_pressed(gamepad::Button::North) {
+            self.toggle_steering();
+        }
+        if pad.just_pressed(gamepad::Button::West) {
+            self.toggle_online_autopilot();
+        }
+        if pad.just_pressed(gamepad::Button::Select) {
+            self.toggle_controller_guide();
+        }
+    }
+
     /// What the pilot holds now, on the keyboard, the controller, and the pointer.
     fn online_hands(&self, ui: &egui::Ui) -> Hands {
         let controller = self
@@ -113,6 +131,7 @@ impl ViewerApp {
                 self.toggle_online_autopilot();
             }
         }
+        self.online_controller_buttons();
         let hands = self.online_hands(ui);
         let Some(online) = &mut self.online else {
             self.screen = super::Screen::Title;
@@ -288,10 +307,61 @@ impl ViewerApp {
         }
     }
 
-    /// The flight: a bar along the bottom, and the canvas.
+    /// The flight: a bar along the bottom, the settings panel on the left, and the canvas.
     fn online_flight_ui(&mut self, ui: &mut egui::Ui) {
         egui::Panel::bottom("online_bar").show(ui, |ui| self.online_bar_ui(ui));
+        let mut show_controls = self.show_controls;
+        super::CONTROLS_PANEL.show(ui, &mut show_controls, &mut 0, |ui, _| {
+            self.online_controls_ui(ui);
+        });
+        self.show_controls = show_controls;
         egui::CentralPanel::default().show(ui, |ui| self.online_canvas_ui(ui));
+    }
+
+    /// The settings panel of a flight on a server: who is flying, and how the canvas looks.
+    fn online_controls_ui(&mut self, ui: &mut egui::Ui) {
+        egui::ScrollArea::both().show(ui, |ui| {
+            ui.heading("Online");
+            if let Some(online) = &self.online {
+                if let Some(world) = online.world() {
+                    ui.label(format!("World: {}", world.name));
+                }
+                let info = online.info();
+                ui.label(format!(
+                    "{} {} in the world",
+                    info.ships,
+                    if info.ships == 1 { "ship" } else { "ships" }
+                ));
+                if let Some(tick) = info.tick {
+                    ui.monospace(format!("tick {tick}"));
+                }
+            }
+            ui.separator();
+            ui.heading("Display options");
+            ui.add_enabled_ui(self.ship3d.is_some(), |ui| {
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut self.view, super::CanvasView::Ship3d, "3D");
+                    ui.selectable_value(&mut self.view, super::CanvasView::Debug, "Debug")
+                        .on_hover_text("Flat ships");
+                });
+            });
+            ui.checkbox(&mut self.show_grid, "Grid");
+            ui.add_enabled_ui(!self.debug_view(), |ui| {
+                ui.checkbox(&mut self.show_plume, "Thruster plumes");
+            });
+            ui.horizontal(|ui| {
+                if ui.button("Fit view").clicked() {
+                    self.online_fit = true;
+                }
+                if ui.button("Reset view").clicked() {
+                    self.camera = crate::camera::Camera::default();
+                    self.gizmo.stop();
+                    self.online_fit = true;
+                }
+            });
+            ui.separator();
+            self.sound.ui(ui);
+        });
     }
 
     fn online_bar_ui(&mut self, ui: &mut egui::Ui) {
@@ -431,8 +501,17 @@ impl ViewerApp {
                         "Perspective view. Click for orthographic",
                     ],
                 ),
+                Button::toggle(
+                    icons::outline::SEAL_QUESTION,
+                    &mut self.show_help,
+                    "User inputs: how to fly. The controller's Create button shows it too",
+                )
+                .color(palette::YELLOW),
             ],
         );
+        if self.show_help {
+            self.help_window(ui.ctx(), rect);
+        }
     }
 
     /// Where the player points, as [`ViewerApp::read_aim`] has it, for the ship in `state`.

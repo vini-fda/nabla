@@ -343,6 +343,8 @@ pub struct ViewerApp {
     join_request: nabla_sim::world::ShipRequest,
     /// Frame the camera around the ship, the next time the canvas shows.
     online_fit: bool,
+    /// How hard the player holds thrust this frame, for the log.
+    input_thrust: f64,
     /// The orbit controls have been set for the ship that is flying.
     online_ready: bool,
     /// How hard the own ship's thrusters fire, for the sound.
@@ -413,6 +415,7 @@ impl Default for ViewerApp {
             online_error: None,
             join_request: world_default_request(),
             online_fit: false,
+            input_thrust: 0.0,
             online_ready: false,
             online_levels: None,
         }
@@ -2069,6 +2072,28 @@ impl eframe::App for ViewerApp {
         } else {
             heard.map(|(r, t)| (r.thrust_fraction(t) as f32, r.torque_fraction(t) as f32))
         };
+        // Where the sound's levels come from, for the log: an engaged autopilot flies in place of
+        // the player, whose input then does nothing, and a paused flight is silent.
+        let source = match self.screen {
+            Screen::Title => "title screen".to_owned(),
+            Screen::Flight if self.game.paused => "flight, paused".to_owned(),
+            Screen::Flight | Screen::Online => {
+                let place = if self.screen == Screen::Online {
+                    "online flight"
+                } else {
+                    "flight"
+                };
+                if self.assisted() {
+                    let objective = self.flight_objective().label();
+                    format!("{place}, autopilot ({objective}); the input is ignored")
+                } else if self.input_thrust > 0.0 {
+                    format!("{place}, by hand, thrust held ({:.2})", self.input_thrust)
+                } else {
+                    format!("{place}, by hand, no thrust held")
+                }
+            }
+        };
+        self.sound.note_source(&source);
         self.sound.update(&ctx, levels);
 
         let took = started.elapsed().as_secs_f64();
@@ -2100,6 +2125,7 @@ impl ViewerApp {
             heading,
             cone: self.aim_cone.to_radians(),
         });
+        self.input_thrust = input.thrust;
         let dt = f64::from(ui.input(|i| i.stable_dt));
         let was_landed = self.game.landed().is_some();
         self.game.advance(dt, input, self.steering);

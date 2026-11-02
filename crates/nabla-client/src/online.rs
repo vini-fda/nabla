@@ -43,6 +43,8 @@ const REMOTE_JITTER: f64 = 0.040;
 const TRAIL: Tick = 1800;
 /// The longest a remote ship is extrapolated past its newest snapshot, in seconds.
 const MAX_EXTRAPOLATION: f64 = 0.1;
+/// How far into a tick, as a fraction of it, the plume and the sound read its control at most.
+const LAST_OF_TICK: f64 = 0.999;
 /// The longest frame the offset decays over, in seconds: a stall is not a long frame.
 const MAX_FRAME: f64 = 0.25;
 
@@ -566,8 +568,20 @@ impl Online {
         }
         run.reverse();
         let states: Vec<State> = run.iter().map(|step| step.state).collect();
-        let controls: Vec<Control> = run.iter().filter_map(|step| step.control).collect();
-        let t = (run.len().saturating_sub(2)) as f64 * h + fraction * h;
+        // A tick the snapshots overtook before it was issued has no control, and the ship held the
+        // one before: skipping it would move every later control a tick early, leaving none for
+        // now, and the sound silent until that tick leaves the trail.
+        let mut held = Control::default();
+        let controls: Vec<Control> = run[..run.len().saturating_sub(1)]
+            .iter()
+            .map(|step| {
+                held = step.control.unwrap_or(held);
+                held
+            })
+            .collect();
+        // Inside the tick, never at its end: a frame later than the tick's due time has run past
+        // the last control, and the plume and the sound would find none (so silence) there.
+        let t = (run.len().saturating_sub(2)) as f64 * h + fraction.min(LAST_OF_TICK) * h;
         Some(View {
             ship,
             own: true,

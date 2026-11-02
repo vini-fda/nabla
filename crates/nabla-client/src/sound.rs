@@ -48,6 +48,7 @@ struct Logged {
     volumes: [f32; 3],
     /// UI time of the last status line.
     status_at: f64,
+    source: String,
 }
 
 /// Sound settings, and the audio output once opened.
@@ -79,6 +80,15 @@ impl Default for Sound {
 }
 
 impl Sound {
+    /// Say where the levels of this frame come from, as a few words: logged when they change,
+    /// so that a silent thruster can be told from a silent sound.
+    pub fn note_source(&mut self, source: &str) {
+        if self.logged.source != source {
+            log::debug!("audio: levels from {source}");
+            self.logged.source = source.to_owned();
+        }
+    }
+
     /// Call once per frame, after the UI: `levels` is the thrust and torque (as fractions of
     /// their maxima) while the replay plays, `None` while it doesn't.
     pub fn update(&mut self, ctx: &egui::Context, levels: Option<(f32, f32)>) {
@@ -167,7 +177,11 @@ impl Sound {
         if time - logged.status_at >= STATUS_PERIOD {
             logged.status_at = time;
             if let Some(output) = &self.output {
-                log::debug!("audio: status {}", output.status());
+                log::debug!(
+                    "audio: status {}; published thrust {thrust:.3} torque {torque:.3}, levels from {}",
+                    output.status(),
+                    logged.source
+                );
             }
         }
     }

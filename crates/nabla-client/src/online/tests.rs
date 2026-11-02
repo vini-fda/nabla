@@ -556,3 +556,138 @@ fn the_orbit_assist_flies_a_ship_on_a_server_around_a_body() {
     );
     assert!(!client.forecast().is_empty(), "a forecast of the orbit");
 }
+
+/// The thrust fraction a screen would give the sound at `now`, for the own ship.
+fn heard(rig: &mut Rig) -> f64 {
+    let now = rig.now;
+    let views = rig.clients[0].views(now);
+    let own = views.first().filter(|view| view.own).expect("the own ship");
+    own.replay.thrust_fraction(own.t)
+}
+
+#[test]
+fn a_frame_that_runs_long_does_not_silence_the_thrust_after_it() {
+    // On a short path the client leads the snapshots by a tick or two, so a frame of a few tens of
+    // milliseconds (an orbit's forecast, say) lets one overtake the tick the client was about to
+    // issue. That tick stays in the trail with no control, and the controls after it must stay
+    // on their own ticks: they moved a tick early, which left none for now, and the sound heard
+    // nothing while the pilot held full thrust, until that tick left the trail half a minute on.
+    let world = vacuum();
+    let ours = ShipRequest::from(world.default_ship());
+    let mut rig = Rig::new(world, 0.0005, 0.0, 6);
+    rig.add(ours);
+    rig.join_all(&[ours]);
+    let thrust = |level: f64| {
+        move |_: usize, _: f64| Hands {
+            input: Input {
+                thrust: level,
+                ..Input::default()
+            },
+            steering: Steering::Raw,
+        }
+    };
+    rig.run(3.0, &thrust(1.0));
+    // A few long frames, with all that came during each read at once.
+    for _ in 0..20 {
+        rig.stalled[0] = true;
+        for _ in 0..40 {
+            rig.step(&thrust(1.0));
+        }
+        rig.stalled[0] = false;
+        let came: Vec<Incoming> = rig.wires[0].stash.drain(..).collect();
+        rig.wires[0].inbox.borrow_mut().extend(came);
+        rig.step(&thrust(1.0));
+    }
+    let k = rig.clients[0].machine.tick().expect("playing");
+    assert!(
+        rig.clients[0]
+            .trail
+            .range(..k)
+            .any(|(_, step)| step.control.is_none()),
+        "a tick with no control in the trail, or this tests nothing"
+    );
+    let (mut samples, mut silent) = (0, 0);
+    for step in 0..2000 {
+        rig.step(&thrust(1.0));
+        if step % 16 == 0 && step > 500 {
+            samples += 1;
+            if heard(&mut rig) < 0.99 {
+                silent += 1;
+            }
+        }
+    }
+    assert_eq!(silent, 0, "{silent} of {samples} frames heard no thrust");
+    // Letting go is heard as well: the controls are on their own ticks, not merely present.
+    rig.run(0.2, &thrust(0.0));
+    assert!(heard(&mut rig) < 0.01, "thrust heard after letting go");
+}
+
+#[test]
+fn thrust_is_heard_again_when_the_orbit_assist_hands_the_ship_back() {
+    use crate::orbit::Target;
+
+    let world = Preset::Planet
+        .world()
+        .multiplayer(60, 1000.0, 16)
+        .expect("a server world");
+    let ours = ShipRequest::from(world.default_ship());
+    let mut rig = Rig::new(world, 0.050, 0.0, 12);
+    rig.add(ours);
+    rig.join_all(&[ours]);
+    rig.run(1.0, &scripted);
+    let state = rig.clients[0].next_state().expect("playing");
+    let target = Target::at_current_altitude(rig.clients[0].world().expect("a world"), &state, 0)
+        .expect("a target");
+    rig.clients[0]
+        .engage(Objective::Orbit(target), &SOLUTIONS[0])
+        .expect("an orbit");
+    rig.run(20.0, &scripted);
+    rig.clients[0].disengage();
+    let thrusting = |_: usize, _: f64| Hands {
+        input: Input {
+            thrust: 1.0,
+            ..Input::default()
+        },
+        steering: Steering::Raw,
+    };
+    let (mut samples, mut silent) = (0, 0);
+    for step in 0..10_000 {
+        rig.step(&thrusting);
+        if step % 50 == 0 && step > 500 {
+            samples += 1;
+            if heard(&mut rig) < 0.99 {
+                silent += 1;
+            }
+        }
+    }
+    assert_eq!(silent, 0, "{silent} of {samples} frames heard no thrust");
+}
+
+#[test]
+fn a_late_frame_still_hears_the_thrust_of_the_tick_it_is_in() {
+    // A frame that comes after the next tick is due (it spent its time on a forecast, say) has
+    // run past the end of the own ship's flight, where there is no control: it heard nothing.
+    let world = vacuum();
+    let ours = ShipRequest::from(world.default_ship());
+    let mut rig = Rig::new(world, 0.050, 0.0, 8);
+    rig.add(ours);
+    rig.join_all(&[ours]);
+    let thrusting = |_: usize, _: f64| Hands {
+        input: Input {
+            thrust: 1.0,
+            ..Input::default()
+        },
+        steering: Steering::Raw,
+    };
+    rig.run(3.0, &thrusting);
+    for late in [0.0, 0.005, 0.015, 0.02, 0.03, 0.1] {
+        let now = rig.now + late;
+        let views = rig.clients[0].views(now);
+        let own = views.first().filter(|view| view.own).expect("the own ship");
+        assert!(
+            own.replay.thrust_fraction(own.t) > 0.99,
+            "{late} s late heard {}",
+            own.replay.thrust_fraction(own.t)
+        );
+    }
+}

@@ -103,7 +103,7 @@ impl ViewerApp {
     }
 
     /// What the pilot holds now, on the keyboard, the controller, and the pointer.
-    fn online_hands(&self, ui: &egui::Ui) -> Hands {
+    fn online_hands(&mut self, ui: &egui::Ui) -> Hands {
         let controller = self
             .gamepads
             .state()
@@ -113,6 +113,7 @@ impl ViewerApp {
             heading,
             cone: self.aim_cone.to_radians(),
         });
+        self.input_thrust = input.thrust;
         Hands {
             input,
             steering: self.steering,

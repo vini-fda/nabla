@@ -58,12 +58,11 @@ const DOT_TRAVEL: f32 = shape::WELL_RADIUS - 4.0;
 const PS_Y: f32 = 247.0;
 const PS_RADIUS: f32 = 8.0;
 
-/// The panel's width at most, in points, its margin round the drawing, the height of the heading
-/// above it (down to the rule under it), and the panel's distance from the canvas's bottom.
-const MAX_WIDTH: f32 = 340.0;
+/// The drawing's width at most, in points, its margin in the panel, and the height of the heading
+/// above it (down to the rule under it).
+const MAX_WIDTH: f32 = 420.0;
 const PADDING: f32 = 10.0;
 const HEADING: f32 = 26.0;
-const BOTTOM_MARGIN: f32 = 12.0;
 
 /// The wireframe's color: white. The light bars', which the touchpad lights in too when clicked.
 const LINE: Color32 = Color32::from_gray(235);
@@ -76,17 +75,12 @@ const GLOW_WIDTH: f32 = 5.0;
 /// The labels' text size, in points.
 const LABEL_SIZE: f32 = 10.0;
 
-/// The panel's rectangle at the bottom middle of `canvas`.
-pub fn panel_rect(canvas: Rect) -> Rect {
-    let width = MAX_WIDTH.min(canvas.width() - 2.0 * PADDING);
-    let height = width * VIEW.height() / VIEW.width() + HEADING + 2.0 * PADDING;
-    let width = width + 2.0 * PADDING;
-    Rect::from_min_size(
-        pos2(
-            canvas.center().x - width / 2.0,
-            canvas.bottom() - BOTTOM_MARGIN - height,
-        ),
-        vec2(width, height),
+/// The panel's size where `width` is available.
+pub fn panel_size(width: f32) -> Vec2 {
+    let drawing = MAX_WIDTH.min(width - 2.0 * PADDING);
+    vec2(
+        drawing + 2.0 * PADDING,
+        drawing * VIEW.height() / VIEW.width() + HEADING + 2.0 * PADDING,
     )
 }
 
@@ -533,17 +527,14 @@ mod tests {
 
     #[test]
     fn the_panel_keeps_the_drawing_in_proportion() {
-        let canvas = Rect::from_min_size(Pos2::ZERO, vec2(1000.0, 800.0));
-        let panel = panel_rect(canvas);
+        let panel = Rect::from_min_size(Pos2::ZERO, panel_size(1000.0));
         let inner = drawing_rect(panel);
         let ratio = inner.width() / inner.height();
         assert!(
             (ratio - VIEW.width() / VIEW.height()).abs() < 1e-3,
             "in proportion"
         );
-        assert!(canvas.contains_rect(panel), "inside the canvas");
-        let narrow = Rect::from_min_size(Pos2::ZERO, vec2(200.0, 800.0));
-        assert!(narrow.contains_rect(panel_rect(narrow)), "shrinks to fit");
+        assert!(panel_size(200.0).x <= 200.0, "shrinks to fit");
         let mirrored = side(pos2(VIEW.left(), 0.0), true).x;
         assert!(
             (mirrored - VIEW.right()).abs() < 1e-3,

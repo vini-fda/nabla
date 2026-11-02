@@ -206,7 +206,7 @@ fn rows() -> Vec<Row> {
     vec![
         row(
             vec![part(CREATE)],
-            "Show / hide the controller view".into(),
+            "Show / hide this window".into(),
             Input::Held(Button::Select),
             LINE,
             left(20.0, 265.0, 20.0, [265.0, 123.7]),
@@ -320,16 +320,26 @@ fn rows() -> Vec<Row> {
     ]
 }
 
-/// The guide, `width` wide, lit by `state`, or dim without a controller.
-pub fn ui(ui: &mut Ui, width: f32, state: Option<&State>) {
-    ui.label(state.map_or(
-        "No controller: connect one and press a button on it to see it light up here",
-        |pad| pad.name.as_str(),
-    ));
-    if width < MIN_WIDTH {
-        list_ui(ui, state);
+/// The guide, `width` wide, lit by `state`, or dim without a controller. With `guides` off, only
+/// the controller, without what each of its controls does.
+pub fn ui(ui: &mut Ui, width: f32, state: Option<&State>, guides: &mut bool) {
+    ui.checkbox(guides, "Guides")
+        .on_hover_text("What each control does. Off, only the controller, lit as you use it");
+    if !*guides {
+        ui.vertical_centered(|ui| {
+            let (panel, _) = ui.allocate_exact_size(view::panel_size(width), egui::Sense::hover());
+            view::paint(ui.painter(), panel, state);
+        });
     } else {
-        map_ui(ui, width, state);
+        ui.label(state.map_or(
+            "No controller: connect one and press a button on it to see it light up here",
+            |pad| pad.name.as_str(),
+        ));
+        if width < MIN_WIDTH {
+            list_ui(ui, state);
+        } else {
+            map_ui(ui, width, state);
+        }
     }
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;

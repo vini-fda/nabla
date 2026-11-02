@@ -11,7 +11,6 @@ use nabla_core::suite;
 use crate::camera::{Camera, Vec3};
 use crate::canvas_buttons::{self, Button};
 use crate::controller_guide;
-use crate::controller_view;
 use crate::formula::{self, Formula};
 use crate::game::{self, Aim, Game, Input, Objective, Steering};
 use crate::gamepad::{self, Gamepads};
@@ -306,8 +305,8 @@ pub struct ViewerApp {
     sound: Sound,
     /// Game controllers, read every frame.
     gamepads: Gamepads,
-    /// Show the controller's wireframe, lit by its state, under the flight.
-    show_controller: bool,
+    /// Show what each control does in the controller's tab of the User inputs panel.
+    show_guides: bool,
     cases: Vec<CaseEntry>,
     fit_pending: bool,
     /// Wide layout: show the left (controls) and right (plots or objective) side panels.
@@ -369,7 +368,7 @@ impl Default for ViewerApp {
             show_code: false,
             sound: Sound::default(),
             gamepads: Gamepads::default(),
-            show_controller: false,
+            show_guides: true,
             cases: all_cases(),
             fit_pending: true,
             show_controls: true,
@@ -524,7 +523,7 @@ impl ViewerApp {
     }
 
     /// The controller's objective/preview/engage/manual commands. Options pauses and Create
-    /// toggles the controller view.
+    /// shows or hides its guide.
     fn handle_controller_buttons(&mut self) {
         let Some(pad) = self.gamepads.state().cloned() else {
             return;
@@ -547,7 +546,15 @@ impl ViewerApp {
             self.toggle_pause();
         }
         if view {
-            self.show_controller = !self.show_controller;
+            self.toggle_controller_guide();
+        }
+    }
+
+    /// Shows or hides the User inputs window, opening on the controller's tab.
+    fn toggle_controller_guide(&mut self) {
+        self.show_help = !self.show_help;
+        if self.show_help {
+            self.help_tab = Some(HelpTab::Controller);
         }
     }
 
@@ -846,11 +853,6 @@ impl ViewerApp {
         }
         ui.checkbox(&mut self.show_collision_meshes, "Collision meshes")
             .on_hover_text("Orange outlines of the ship, planet and moon collision shapes");
-        ui.checkbox(&mut self.show_controller, "Controller view")
-            .on_hover_text(
-                "A wireframe of the game controller under the flight, lit as you use it. \
-                 The controller's Create button shows or hides it too",
-            );
         ui.add_enabled_ui(!self.debug_view(), |ui| {
             ui.checkbox(&mut self.show_plume, "Thruster plumes");
         });
@@ -893,7 +895,9 @@ impl ViewerApp {
         match tab {
             HelpTab::Device if k.touch() => Self::touch_inputs_ui(ui),
             HelpTab::Device => Self::keyboard_mouse_inputs_ui(ui, k),
-            HelpTab::Controller => controller_guide::ui(ui, width, self.gamepads.state()),
+            HelpTab::Controller => {
+                controller_guide::ui(ui, width, self.gamepads.state(), &mut self.show_guides);
+            }
         }
     }
 
@@ -1308,7 +1312,7 @@ impl ViewerApp {
                 Button::toggle(
                     icons::outline::SEAL_QUESTION,
                     &mut self.show_help,
-                    "Keyboard and mouse help",
+                    "User inputs: how to fly. The controller's Create button shows it too",
                 )
                 .color(palette::YELLOW),
             ],
@@ -1650,10 +1654,6 @@ impl ViewerApp {
             game.pads.paint(painter, rect);
         }
         self.notifications.paint(painter, rect);
-        if self.show_controller {
-            let panel = controller_view::panel_rect(rect);
-            controller_view::paint(painter, panel, self.gamepads.state());
-        }
     }
 
     /// Where the player points, from the ship in state `s`: a line to the `pointer`, which
@@ -2558,6 +2558,20 @@ fn time_plot(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn create_shows_the_controller_guide_whatever_tab_was_picked() {
+        let mut app = ViewerApp {
+            help_tab: Some(HelpTab::Device),
+            ..ViewerApp::default()
+        };
+        assert!(app.show_guides, "the guides are on by default");
+        app.toggle_controller_guide();
+        assert!(app.show_help);
+        assert_eq!(app.help_tab(), HelpTab::Controller);
+        app.toggle_controller_guide();
+        assert!(!app.show_help);
+    }
 
     const BAR: egui::Rect =
         egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(TITLE_BAR_WIDTH, 400.0));

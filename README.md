@@ -31,14 +31,13 @@ Pushing a version tag `vX.Y.Z` builds the native app and publishes a [GitHub Rel
    cargo bump minor  # or major, or patch
    ```
 
-2. On `main`, tag it and push the tag:
+2. After the merge, on `main`, run:
 
    ```sh
    cargo tag
-   git push origin v0.2.0
    ```
 
-   `cargo tag` only tags if the checkout is `main`, has no uncommitted changes and is level with `origin/main`, and if the version in `Cargo.toml` is newer than every existing tag. It then prints the push command.
+   It only tags if the checkout is `main`, has no uncommitted changes and is level with `origin/main`, and if the version in `Cargo.toml` is newer than every existing tag. It then asks whether to push the tag, which publishes the release.
 
 `.github/workflows/release.yml` first checks that the tag matches the workspace version and reruns CI. It then builds each target on a native runner and publishes the release with checksums and the notes from `.github/release-notes.md`.
 

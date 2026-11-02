@@ -1,4 +1,4 @@
-#import "@local/pele_typst:0.3.0": mermaid
+#import "@local/pele-rs:0.3.0": mermaid
 #import "@preview/codly:2.0.0" as codly
 
 // Code blocks, with line numbers that references can point to (@label:line).

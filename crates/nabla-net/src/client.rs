@@ -406,11 +406,18 @@ impl ClientMachine {
             return false;
         };
         let h = world.h();
-        // Where the client's tick is now, in ticks, a fraction included.
-        let tick_now = f64::from(play.k) - (play.next_issue - now).max(0.0) / h;
-        let ticks_ahead = tick_now - f64::from(snapshot.label - 1);
-        play.margin
-            .observe(f64::from(snapshot.margin_us) * 1e-6, ticks_ahead);
+        let margin = f64::from(snapshot.margin_us) * 1e-6;
+        if snapshot.label > play.k {
+            // The world has overtaken the client, so its tick says nothing of the path: only
+            // Advance, below, has been moving it.
+            play.margin.report(margin);
+        } else {
+            // Where the client's tick is now, in ticks, a fraction included, and past `k` in a
+            // frame that came after the tick was due.
+            let tick_now = f64::from(play.k) + (now - play.next_issue) / h;
+            let ticks_ahead = tick_now - f64::from(snapshot.label - 1);
+            play.margin.observe(margin, ticks_ahead);
+        }
         let old = play.base;
         play.base = Base {
             tick: snapshot.label,

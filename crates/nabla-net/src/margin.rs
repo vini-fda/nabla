@@ -73,13 +73,19 @@ impl MarginController {
         self.delay_ticks
     }
 
+    /// A report of the newest command's margin alone, from a snapshot that says nothing of the
+    /// path.
+    pub fn report(&mut self, margin: f64) {
+        self.error = margin - self.target;
+    }
+
     /// A report: the server saw the newest command's margin as `margin` seconds, in a snapshot
     /// that arrived when the client was `ticks_ahead` ticks past the one the snapshot is the
     /// world after.
     ///
     /// By the lemma on lead, `ticks_ahead * h = RTT + mu`, so the round trip in ticks follows.
     pub fn observe(&mut self, margin: f64, ticks_ahead: f64) {
-        self.error = margin - self.target;
+        self.report(margin);
         let round_trip = (ticks_ahead - margin / self.h).max(1.0);
         self.recent[self.next] = round_trip;
         self.next = (self.next + 1) % DELAY_WINDOW;

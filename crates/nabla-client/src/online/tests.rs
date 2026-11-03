@@ -727,3 +727,31 @@ fn a_prediction_is_corrected_only_for_a_command_the_server_held() {
         "{corrected} corrections for {held} ticks held"
     );
 }
+
+#[test]
+fn a_stall_past_the_catch_up_is_recovered_from_at_once() {
+    // The snapshots that came during a stall say nothing of the path. Taken for reports, they
+    // said the round trip was a single tick, so the client woke with too little lead, and its
+    // commands stayed late, too little to jump and too much to stretch away, for a second or two.
+    let world = vacuum();
+    let ours = ShipRequest::from(world.default_ship());
+    let mut rig = Rig::new(world, 0.050, 0.0, 33);
+    rig.add(ours);
+    rig.join_all(&[ours]);
+    rig.run(3.0, &scripted);
+    rig.stalled[0] = true;
+    for _ in 0..400 {
+        rig.step(&scripted);
+    }
+    rig.stalled[0] = false;
+    // All that came is there to read at once, as on a native client.
+    let came: Vec<Incoming> = rig.wires[0].stash.drain(..).collect();
+    rig.wires[0].inbox.borrow_mut().extend(came);
+    rig.run(0.5, &scripted);
+    let held = rig.server.held();
+    rig.run(2.0, &scripted);
+    let more = rig.server.held() - held;
+    let error = rig.clients[0].machine.margin_error().expect("playing");
+    assert_eq!(more, 0, "ticks held from 0.5 s to 2.5 s after waking");
+    assert!(error.abs() < 0.03, "margin error {error} s");
+}

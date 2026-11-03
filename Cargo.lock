@@ -2079,7 +2079,7 @@ dependencies = [
 
 [[package]]
 name = "nabla-client"
-version = "0.22.0"
+version = "0.23.0"
 dependencies = [
  "cpal",
  "eframe",
@@ -2108,14 +2108,14 @@ dependencies = [
 
 [[package]]
 name = "nabla-core"
-version = "0.22.0"
+version = "0.23.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "nabla-net"
-version = "0.22.0"
+version = "0.23.0"
 dependencies = [
  "nabla-core",
  "nabla-sim",
@@ -2127,7 +2127,7 @@ dependencies = [
 
 [[package]]
 name = "nabla-server"
-version = "0.22.0"
+version = "0.23.0"
 dependencies = [
  "env_logger",
  "log",
@@ -2140,7 +2140,7 @@ dependencies = [
 
 [[package]]
 name = "nabla-sim"
-version = "0.22.0"
+version = "0.23.0"
 dependencies = [
  "log",
  "nabla-core",
@@ -2152,7 +2152,7 @@ dependencies = [
 
 [[package]]
 name = "nabla-synth"
-version = "0.22.0"
+version = "0.23.0"
 
 [[package]]
 name = "naga"

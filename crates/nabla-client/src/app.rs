@@ -2154,6 +2154,9 @@ impl ViewerApp {
             ui.ctx().request_repaint();
         }
         self.refresh_orbit_prediction();
+        if self.orbit_check_running() {
+            ui.ctx().request_repaint();
+        }
         self.refresh_prediction();
 
         let compact = ui.available_width() < COMPACT_WIDTH;

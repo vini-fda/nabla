@@ -155,7 +155,7 @@ pub fn paint(
     bodies: &[CelestialBody],
     gamma: bool,
 ) -> egui::PaintCallback {
-    let matrix = clip_from_world(camera, rect, rect, depth);
+    let matrix = clip_from_world(camera, rect, depth);
     let mut uniforms = to_bytes(&matrix.into_iter().flatten().collect::<Vec<_>>());
     uniforms.extend(to_bytes(&[f32::from(u8::from(gamma)), 0.0, 0.0, 0.0]));
     egui_wgpu::Callback::new_paint_callback(

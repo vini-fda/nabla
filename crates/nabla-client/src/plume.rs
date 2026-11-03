@@ -200,18 +200,33 @@ impl Plume {
         }
     }
 
-    /// Paints the plumes at time `t`, from a ship of half length `half_length`, seen through
-    /// `camera` in `canvas`, with the ship's depth `depth`. Paint them after the ship, which
-    /// hides them where it is nearer.
-    pub fn paint(
+    /// Paints the plumes of `flights`, each a replay and the time in it, from ships of half
+    /// length `half_length`, seen through `camera` in `canvas`, with the ships' depth `depth`.
+    /// Call it once a frame, with every flight (see [`SpriteRenderer::paint_callback`]). Paint
+    /// them after the ships, which hide them where they are nearer.
+    pub fn paint<'a>(
         &self,
         camera: &Camera,
         canvas: egui::Rect,
-        replay: &Replay,
-        t: f64,
+        flights: impl IntoIterator<Item = (&'a Replay, f64)>,
         half_length: f32,
         depth: &DepthMap,
     ) -> Option<egui::PaintCallback> {
+        let batch = plumes(camera, canvas, flights, half_length, depth);
+        self.renderer.paint_callback(canvas, batch)
+    }
+}
+
+/// The sprites of the plumes of `flights`, as [`Plume::paint`] has them.
+fn plumes<'a>(
+    camera: &Camera,
+    canvas: egui::Rect,
+    flights: impl IntoIterator<Item = (&'a Replay, f64)>,
+    half_length: f32,
+    depth: &DepthMap,
+) -> SpriteBatch {
+    let mut batch = SpriteBatch::default();
+    for (replay, t) in flights {
         let view = View {
             camera,
             canvas,
@@ -220,11 +235,10 @@ impl Plume {
             l: half_length,
             depth,
         };
-        let mut batch = SpriteBatch::default();
         view.jets(&mut batch);
         view.nozzles(&mut batch);
-        self.renderer.paint_callback(canvas, batch)
     }
+    batch
 }
 
 /// What the plumes are drawn for: time `t` of `replay`, a ship of half length `l`, seen
@@ -592,6 +606,37 @@ fn random(i: u64) -> [f32; 7] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two flights make one batch that holds the plumes of both: of a batch each, a frame's
+    /// last would draw for both. Each flight's indices reach only its own vertices.
+    #[test]
+    fn a_batch_holds_the_plumes_of_every_flight() {
+        let solution = &nabla_core::solutions::SOLUTIONS[0];
+        let case = nabla_core::suite::standard()
+            .into_iter()
+            .find(|c| c.name == "rest_facing_goal")
+            .expect("case exists");
+        let replay = Replay::new(case.clone(), (solution.simulate)(&case));
+        let t = (0..replay.last_frame())
+            .map(|k| replay.time(k))
+            .find(|&t| replay.thrust_fraction(t) > 0.5)
+            .expect("the flight thrusts");
+        let canvas = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let camera = Camera {
+            scale: 40.0,
+            ..Camera::default()
+        };
+        let depth = DepthMap::for_camera(&camera, canvas, 100.0);
+        let one = plumes(&camera, canvas, [(&replay, t)], 1.0, &depth);
+        let two = plumes(&camera, canvas, [(&replay, t), (&replay, t)], 1.0, &depth);
+        assert!(!one.is_empty());
+        assert_eq!(two.vertex_count(), 2 * one.vertex_count());
+        assert_eq!(two.indices().len(), 2 * one.indices().len());
+        let base = one.vertex_count() as u32;
+        let second = &two.indices()[one.indices().len()..];
+        assert!(second.iter().all(|&i| i >= base));
+        assert!(second.iter().all(|&i| i < 2 * base));
+    }
 
     #[test]
     fn a_spinning_ship_sweeps_its_tail_sideways() {

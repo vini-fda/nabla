@@ -53,6 +53,16 @@ impl SpriteBatch {
     pub fn is_empty(&self) -> bool {
         self.indices.is_empty()
     }
+
+    #[cfg(test)]
+    pub fn vertex_count(&self) -> usize {
+        self.vertices.len()
+    }
+
+    #[cfg(test)]
+    pub fn indices(&self) -> &[u32] {
+        &self.indices
+    }
 }
 
 /// The sprites' GPU resources, kept in egui-wgpu's callback resources.
@@ -127,7 +137,9 @@ impl SpriteRenderer {
     }
 
     /// Paints `batch` into `canvas`, after (over) what is already painted there, the ship
-    /// included. Returns `None` when there is nothing to paint.
+    /// included. Returns `None` when there is nothing to paint. Call it once a frame, with
+    /// every sprite: egui-wgpu prepares every callback before it paints any, so of several,
+    /// each would draw what the last one uploaded.
     #[expect(
         clippy::unused_self,
         reason = "a renderer proves `new` has set up the GPU resources the callback draws with"

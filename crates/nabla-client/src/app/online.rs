@@ -650,44 +650,35 @@ impl ViewerApp {
         let Some((renderer, plume)) = &self.ship3d else {
             return;
         };
-        let depth_for = |view: &View| {
-            DepthMap::for_world(
-                renderer,
-                &self.camera,
-                rect,
-                world(view.state.x, view.state.y),
-                hull,
-                &bodies,
-            )
-        };
-        let own_depth = depth_for(&views[0]);
+        let ships: Vec<_> = views
+            .iter()
+            .map(|view| (world(view.state.x, view.state.y), view.state.theta as f32))
+            .collect();
+        let positions: Vec<_> = ships.iter().map(|&(position, _)| position).collect();
+        let depth = DepthMap::for_world(renderer, &self.camera, rect, &positions, hull, &bodies);
         painter.add(crate::planets::paint(
             &self.camera,
             rect,
-            &own_depth,
+            &depth,
             &bodies,
             renderer.gamma_output,
         ));
-        for view in views {
-            let depth = depth_for(view);
-            let position = world(view.state.x, view.state.y);
-            if let Some(callback) = ship3d::paint_callback(
-                renderer,
+        if let Some(callback) =
+            ship3d::paint_callback(renderer, &self.camera, rect, &ships, hull, &depth)
+        {
+            painter.add(callback);
+        }
+        // After the ships, whose depth they are tested against.
+        if self.show_plume
+            && let Some(callback) = plume.paint(
                 &self.camera,
                 rect,
-                position,
-                view.state.theta as f32,
+                views.iter().map(|view| (&view.replay, view.t)),
                 hull,
                 &depth,
-            ) {
-                painter.add(callback);
-            }
-            if self.show_plume
-                && let Some(callback) =
-                    plume.paint(&self.camera, rect, &view.replay, view.t, hull, &depth)
-            {
-                painter.add(callback);
-            }
+            )
+        {
+            painter.add(callback);
         }
     }
 }

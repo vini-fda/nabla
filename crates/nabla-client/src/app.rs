@@ -1581,7 +1581,7 @@ impl ViewerApp {
                     renderer,
                     &self.camera,
                     rect,
-                    position,
+                    &[position],
                     self.circumradius,
                     &self.game.world.bodies,
                 );
@@ -1596,8 +1596,7 @@ impl ViewerApp {
                     renderer,
                     &self.camera,
                     rect,
-                    position,
-                    state.theta as f32,
+                    &[(position, state.theta as f32)],
                     self.circumradius,
                     &depth,
                 ) {
@@ -1607,7 +1606,7 @@ impl ViewerApp {
                 if self.show_plume {
                     let t = replay.time(k) + offset;
                     if let Some(callback) =
-                        plume.paint(&self.camera, rect, replay, t, self.circumradius, &depth)
+                        plume.paint(&self.camera, rect, [(replay, t)], self.circumradius, &depth)
                     {
                         painter.add(callback);
                     }
@@ -2104,6 +2103,18 @@ impl eframe::App for ViewerApp {
                 self.screen,
                 self.policy.name
             );
+        }
+    }
+
+    /// Closing the window ends the connection, so the server frees the ship at once and not after
+    /// its idle timeout: eframe exits the process without dropping the app. The network's thread
+    /// ends with the process, so this waits for it to say goodbye.
+    fn on_exit(&mut self) {
+        if let Some(mut online) = self.online.take() {
+            online.leave();
+            drop(online);
+            #[cfg(not(target_arch = "wasm32"))]
+            std::thread::sleep(nabla_net::native::GOODBYE);
         }
     }
 }

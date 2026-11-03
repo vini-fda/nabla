@@ -31,6 +31,14 @@ App (Nabla):
       worker, which otherwise caches the app for offline use. Needs `trunk`
       (`cargo install --locked trunk`).
 
+  dev-server [--world <name|file>] [--port <port>] [--release] [-- <server flags>]
+      Build and run the multiplayer server for local play, on 127.0.0.1 (--port defaults to
+      4433, --world to planet-moon, one of vacuum, planet and planet-moon, or a world file).
+      It makes a self-signed certificate and prints the address to connect to, with the
+      certificate's hash, and the link that opens it in the web app of `web-dev`. Anything after
+      `--` goes to `nabla-server` as it is (`cargo xtask dev-server -- --help`).
+      `cargo dev-server` is this task.
+
 Repository:
   check
       The checks CI runs (.github/workflows/ci.yml) for this platform, plus the web build,
@@ -106,6 +114,7 @@ fn main() -> Result<ExitCode> {
         ("tag", []) => release::tag(&sh)?,
         ("bundle" | "run", _) => return app(&sh, &task, args),
         ("web-dev", args) => web_dev(&sh, args)?,
+        ("dev-server", args) => dev_server(&sh, args)?,
         ("help" | "--help" | "-h", _) => print_help(),
         ("check" | "bump" | "tag", _) => bail!("wrong arguments for `{task}`\n\n{HELP}"),
         _ => bail!("unknown task `{task}`\n\n{HELP}"),
@@ -145,7 +154,7 @@ fn app(sh: &Shell, task: &str, args: Vec<String>) -> Result<ExitCode> {
     if cfg!(target_os = "macos") {
         bin = bundle::refresh(sh, &bin)?;
     }
-    run(&bin)
+    run(&bin, task == "run")
 }
 
 /// The `web-dev` task: `trunk serve` for the web app, until interrupted.
@@ -170,10 +179,47 @@ fn web_dev(sh: &Shell, args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// The `dev-server` task: the multiplayer server on loopback, until interrupted.
+fn dev_server(sh: &Shell, args: &[String]) -> Result<()> {
+    let mut port = "4433".to_owned();
+    let mut world = "planet-moon".to_owned();
+    let mut release = None;
+    let mut rest: &[String] = &[];
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--port" => port = args.next().context("--port needs a number")?.clone(),
+            "--world" => {
+                world = args
+                    .next()
+                    .context("--world needs a name or a file")?
+                    .clone();
+            }
+            "--release" => release = Some("--release"),
+            "--" => {
+                rest = args.as_slice();
+                break;
+            }
+            _ => bail!("unexpected argument `{arg}`\n\n{HELP}"),
+        }
+    }
+    let bind = format!("127.0.0.1:{port}");
+    let cargo = cargo();
+    cmd!(
+        sh,
+        "{cargo} run {release...} -p nabla-server --bin nabla-server -- --bind {bind} --world {world} {rest...}"
+    )
+    .env("RUST_LOG", std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_owned()))
+    .run()?;
+    Ok(())
+}
+
 /// The checks of `.github/workflows/ci.yml` for this platform, plus the web build.
 fn check(sh: &Shell) -> Result<()> {
     let cargo = cargo();
-    let _rustflags = sh.push_env("RUSTFLAGS", "-D warnings");
+    // As in CI: the cfg that web-sys gates WebTransport behind, which a `RUSTFLAGS` variable
+    // would otherwise take away from .cargo/config.toml.
+    let _rustflags = sh.push_env("RUSTFLAGS", "-D warnings --cfg=web_sys_unstable_apis");
     let _rustdocflags = sh.push_env("RUSTDOCFLAGS", "-D warnings");
     cmd!(sh, "{cargo} fmt --all -- --check").run()?;
     cmd!(
@@ -186,7 +232,7 @@ fn check(sh: &Shell) -> Result<()> {
         "{cargo} clippy --locked --quiet --workspace --all-targets"
     )
     .run()?;
-    for package in ["nabla-client", "nabla-synth"] {
+    for package in ["nabla-client", "nabla-net", "nabla-sim", "nabla-synth"] {
         cmd!(
             sh,
             "{cargo} clippy --locked --quiet -p {package} --lib --target wasm32-unknown-unknown"
@@ -195,17 +241,24 @@ fn check(sh: &Shell) -> Result<()> {
     }
     // As in CI: release mode, with debug assertions and overflow checks on for this
     // workspace's crates.
-    let checks = ["nabla-core", "nabla-synth", "nabla-client"]
-        .iter()
-        .flat_map(|package| {
-            ["debug-assertions", "overflow-checks"].map(|setting| {
-                [
-                    "--config".to_owned(),
-                    format!("profile.release.package.{package}.{setting}=true"),
-                ]
-            })
+    let checks = [
+        "nabla-core",
+        "nabla-net",
+        "nabla-server",
+        "nabla-sim",
+        "nabla-synth",
+        "nabla-client",
+    ]
+    .iter()
+    .flat_map(|package| {
+        ["debug-assertions", "overflow-checks"].map(|setting| {
+            [
+                "--config".to_owned(),
+                format!("profile.release.package.{package}.{setting}=true"),
+            ]
         })
-        .flatten();
+    })
+    .flatten();
     cmd!(
         sh,
         "{cargo} test --locked --quiet --workspace --release {checks...}"
@@ -223,8 +276,13 @@ fn print_help() {
 
 /// Run `bin` in place of this process where the platform allows, so the app gets the
 /// terminal's signals (Ctrl+C) directly.
-fn run(bin: &Path) -> Result<ExitCode> {
+fn run(bin: &Path, dev_log: bool) -> Result<ExitCode> {
     let mut command = std::process::Command::new(bin);
+    if dev_log {
+        // Timestamps, sources and `debug` for this workspace's crates: see `dev_log` in the app.
+        // The user's own `RUST_LOG` still says what is logged.
+        command.env("NABLA_LOG_STYLE", "dev");
+    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt as _;

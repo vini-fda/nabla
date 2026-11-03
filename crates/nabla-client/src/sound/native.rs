@@ -4,7 +4,7 @@
 //! frame: when the frames stop (a minimized window), the callback goes quiet on its own.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering::Relaxed};
 
 use cpal::traits::{DeviceTrait as _, HostTrait as _, StreamTrait as _};
 use cpal::{FromSample, SampleFormat, SizedSample, StreamConfig};
@@ -15,6 +15,12 @@ use nabla_synth::{Controls, Synth};
 pub struct Output {
     shared: Arc<Shared>,
     _stream: cpal::Stream,
+}
+
+impl Drop for Output {
+    fn drop(&mut self) {
+        log::debug!("audio: stream dropped");
+    }
 }
 
 impl Output {
@@ -32,6 +38,27 @@ impl Output {
     pub fn publish(&self, controls: &Controls) {
         self.shared.publish(controls);
     }
+
+    /// What the audio callback did since the last call, on one line for the log: how often it
+    /// ran and how many frames it rendered, the loudest sample, and whether it went quiet for
+    /// want of heartbeats from the app.
+    pub fn status(&self) -> String {
+        let callbacks = self.shared.callbacks.swap(0, Relaxed);
+        let frames = self.shared.frames.swap(0, Relaxed);
+        let peak = f32::from_bits(self.shared.peak.swap(0, Relaxed));
+        let quiet = self.shared.quiet.load(Relaxed);
+        let per_callback = if callbacks == 0 {
+            0
+        } else {
+            frames / u64::from(callbacks)
+        };
+        format!(
+            "callbacks {callbacks}, frames {frames} ({per_callback} a callback), peak {peak:.3}, \
+             quiet {quiet}, rate {} Hz, {} channels",
+            self.shared.rate.load(Relaxed),
+            self.shared.channels.load(Relaxed)
+        )
+    }
 }
 
 /// The audio callback's inputs, written by the app every frame.
@@ -43,6 +70,17 @@ struct Shared {
     gains: [AtomicU32; 3],
     /// Bumped every frame.
     heartbeat: AtomicU32,
+    /// What the callback did since the status was last read, for the log: the callbacks, the
+    /// frames they rendered, and the loudest sample (`f32` bits, which order like the
+    /// non-negative floats they are).
+    callbacks: AtomicU32,
+    frames: AtomicU64,
+    peak: AtomicU32,
+    /// The callback has gone quiet for want of heartbeats.
+    quiet: AtomicBool,
+    /// The stream's format, for the log.
+    rate: AtomicU32,
+    channels: AtomicU32,
 }
 
 impl Shared {
@@ -79,6 +117,17 @@ fn open(shared: Arc<Shared>) -> Result<cpal::Stream, String> {
     let config = device.default_output_config().map_err(|e| e.to_string())?;
     let format = config.sample_format();
     let config = StreamConfig::from(config);
+    log::debug!(
+        "audio: device {}, {format}, {} Hz, {} channels, buffer {:?}",
+        device
+            .description()
+            .map_or_else(|e| format!("(unnamed: {e})"), |d| d.to_string()),
+        config.sample_rate,
+        config.channels,
+        config.buffer_size
+    );
+    shared.rate.store(config.sample_rate, Relaxed);
+    shared.channels.store(u32::from(config.channels), Relaxed);
     match format {
         SampleFormat::F32 => play::<f32>(&device, &config, shared),
         SampleFormat::I16 => play::<i16>(&device, &config, shared),
@@ -111,22 +160,32 @@ fn play<T: SizedSample + FromSample<f32>>(
                     heartbeat = beat;
                     quiet_frames = 0.0;
                 }
-                if quiet_frames > QUIET_SECONDS * rate {
+                let quiet = quiet_frames > QUIET_SECONDS * rate;
+                if quiet {
                     controls.thrust = 0.0;
                     controls.torque = 0.0;
                 }
                 synth.set(controls);
                 buffer.resize(data.len(), 0.0);
                 synth.render(&mut buffer, channels);
+                // The log reads these on the app's thread: nothing here allocates or blocks.
+                let peak = buffer.iter().fold(0.0_f32, |peak, s| peak.max(s.abs()));
+                shared.callbacks.fetch_add(1, Relaxed);
+                shared
+                    .frames
+                    .fetch_add((data.len() / channels.max(1)) as u64, Relaxed);
+                shared.peak.fetch_max(peak.to_bits(), Relaxed);
+                shared.quiet.store(quiet, Relaxed);
                 for (out, &sample) in data.iter_mut().zip(&buffer) {
                     *out = T::from_sample(sample);
                 }
             },
-            |e| log::warn!("Audio output: {e}"),
+            |e| log::warn!("audio: output stream error: {e}"),
             None,
         )
         .map_err(|e| e.to_string())?;
     stream.play().map_err(|e| e.to_string())?;
+    log::debug!("audio: stream playing");
     Ok(stream)
 }
 

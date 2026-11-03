@@ -14,7 +14,7 @@ pub use gilrs::Button;
 use gilrs::{Axis, Event, EventType, GamepadId, Gilrs};
 
 use crate::game::Input;
-use crate::span::span;
+use nabla_sim::span;
 
 /// How often to look for a controller while none is connected. While one is, every frame: its
 /// events don't wake egui up the way the mouse's and the keyboard's do.

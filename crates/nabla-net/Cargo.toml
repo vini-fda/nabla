@@ -1,0 +1,22 @@
+[package]
+name = "nabla-net"
+version.workspace = true
+edition.workspace = true
+description = "The multiplayer protocol as sans-IO state machines, and a seeded simulated network to test them on."
+publish = false
+
+[dependencies]
+nabla-core.workspace = true
+nabla-sim.workspace = true
+postcard = { version = "1.1", default-features = false, features = ["use-std"] }
+serde = { version = "1.0", features = ["derive"] }
+tokio = { version = "1", default-features = false, features = ["macros", "rt", "sync", "time"], optional = true }
+wtransport = { version = "0.7", default-features = false, features = ["quinn", "ring"], optional = true }
+
+[features]
+# `tokio` and `wtransport` glue ([`native`]): a client's connection on a thread of its own. Off
+# for the web, which has `web_sys::WebTransport` instead.
+native = ["dep:tokio", "dep:wtransport"]
+
+[lints]
+workspace = true

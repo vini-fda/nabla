@@ -9,7 +9,7 @@
 use log::Level;
 use web_time::Instant;
 
-/// A costly operation under way: logs its end when dropped. See [`span`].
+/// A costly operation under way: logs its end when dropped. See [`span!`](crate::span!).
 #[must_use = "the span ends when dropped"]
 pub struct Span {
     level: Level,
@@ -19,7 +19,7 @@ pub struct Span {
 }
 
 impl Span {
-    /// Logs the start of the operation called `label`. Use [`span`] instead.
+    /// Logs the start of the operation called `label`. Use [`span!`](crate::span!) instead.
     pub fn start(level: Level, target: &'static str, label: String) -> Self {
         log::log!(target: target, level, "{label}: start");
         Self {
@@ -38,13 +38,16 @@ impl Drop for Span {
     }
 }
 
-/// Logs the start of an operation at `level`, in the caller's module, and its end when the guard
+/// Logs the start and the end of an operation, with how long it took.
+///
+/// The start is logged at `level`, in the caller's module, and the end when the guard
 /// this returns is dropped, with how long it took. Described as with `format!`. Costs nothing
 /// when `level` is off, not even the description:
 ///
 /// ```ignore
 /// let _span = span!(Level::Debug, "orbit capture check, body {body}");
 /// ```
+#[macro_export]
 macro_rules! span {
     ($level:expr, $($description:tt)+) => {
         log::log_enabled!($level).then(|| {
@@ -52,7 +55,6 @@ macro_rules! span {
         })
     };
 }
-pub(crate) use span;
 
 #[cfg(test)]
 mod tests {

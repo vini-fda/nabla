@@ -8,6 +8,11 @@
 //! only posts it the controls, so slow frames cannot starve the audio. See
 //! `docs/audio_worklet.typ`.
 //!
+//! Everything it logs begins with `audio:`, so that `RUST_LOG=nabla_client::sound=debug` and a
+//! `grep audio:` show what the sound is doing: changes at `debug` (sound on or off, the output
+//! opened or closed, a thruster starting or stopping, the knobs), a status line every two
+//! seconds from the backend, and at `trace` the controls published every frame.
+//!
 //! The audio output is opened the first time there is something to play, which in a browser
 //! is after the page has been interacted with, as autoplay rules require. The app publishes
 //! the controls every frame; when the frames stop for a second (a hidden tab, a minimized
@@ -31,6 +36,21 @@ use crate::theme::palette;
 /// Default knob positions: master, ion thruster, reaction control thrusters.
 const DEFAULT_VOLUMES: [f32; 3] = [0.7, 0.8, 0.25];
 
+/// How often the backend's status is logged, in seconds of the UI's time.
+const STATUS_PERIOD: f64 = 2.0;
+
+/// What was last logged, so that only changes are.
+#[derive(Default)]
+struct Logged {
+    wanted: bool,
+    thrusting: bool,
+    torquing: bool,
+    volumes: [f32; 3],
+    /// UI time of the last status line.
+    status_at: f64,
+    source: String,
+}
+
 /// Sound settings, and the audio output once opened.
 pub struct Sound {
     enabled: bool,
@@ -42,6 +62,7 @@ pub struct Sound {
     output: Option<Output>,
     /// Why the output could not be opened; not retried until sound is turned back on.
     error: Option<String>,
+    logged: Logged,
 }
 
 impl Default for Sound {
@@ -53,18 +74,30 @@ impl Default for Sound {
             test_rcs: false,
             output: None,
             error: None,
+            logged: Logged::default(),
         }
     }
 }
 
 impl Sound {
+    /// Say where the levels of this frame come from, as a few words: logged when they change,
+    /// so that a silent thruster can be told from a silent sound.
+    pub fn note_source(&mut self, source: &str) {
+        if self.logged.source != source {
+            log::debug!("audio: levels from {source}");
+            self.logged.source = source.to_owned();
+        }
+    }
+
     /// Call once per frame, after the UI: `levels` is the thrust and torque (as fractions of
     /// their maxima) while the replay plays, `None` while it doesn't.
     pub fn update(&mut self, ctx: &egui::Context, levels: Option<(f32, f32)>) {
         let test_ion = std::mem::take(&mut self.test_ion);
         let test_rcs = std::mem::take(&mut self.test_rcs);
         if !self.enabled {
-            self.output = None;
+            if self.output.take().is_some() {
+                log::debug!("audio: sound off, output closed");
+            }
             return;
         }
         let (mut thrust, mut torque) = levels.unwrap_or_default();
@@ -79,9 +112,20 @@ impl Sound {
             ctx.request_repaint();
         }
         let wanted = levels.is_some() || test_ion || test_rcs;
+        if wanted != self.logged.wanted {
+            log::debug!(
+                "audio: {} (levels {levels:?}, test ion {test_ion}, test rcs {test_rcs})",
+                if wanted { "playing" } else { "nothing to play" }
+            );
+            self.logged.wanted = wanted;
+        }
         if wanted && self.output.is_none() && self.error.is_none() {
+            log::debug!("audio: opening the output");
             match Output::open() {
-                Ok(output) => self.output = Some(output),
+                Ok(output) => {
+                    log::debug!("audio: output opened");
+                    self.output = Some(output);
+                }
                 Err(e) => self.fail(e),
             }
         }
@@ -92,18 +136,59 @@ impl Sound {
         };
         // Knob positions to gains: squaring is close to how loudness is heard.
         let [master, ion, rcs] = self.volumes.map(|v| v * v);
-        output.publish(&Controls {
+        let controls = Controls {
             thrust,
             torque,
             ion_gain: ion,
             rcs_gain: rcs,
             master_gain: master,
-        });
+        };
+        output.publish(&controls);
+        log::trace!(
+            "audio: publish thrust {thrust:.3} torque {torque:.3} gains master {master:.3} ion {ion:.3} rcs {rcs:.3}"
+        );
+        let time = ctx.input(|i| i.time);
+        self.log_changes(thrust, torque, time);
+    }
+
+    /// Logs what changed since the last frame, and the backend's status every
+    /// [`STATUS_PERIOD`] seconds.
+    fn log_changes(&mut self, thrust: f32, torque: f32, time: f64) {
+        let logged = &mut self.logged;
+        if (thrust > 0.0) != logged.thrusting {
+            logged.thrusting = thrust > 0.0;
+            log::debug!(
+                "audio: ion thruster {} (thrust {thrust:.3})",
+                if logged.thrusting { "on" } else { "off" }
+            );
+        }
+        if (torque != 0.0) != logged.torquing {
+            logged.torquing = torque != 0.0;
+            log::debug!(
+                "audio: rcs thrusters {} (torque {torque:.3})",
+                if logged.torquing { "on" } else { "off" }
+            );
+        }
+        if self.volumes != logged.volumes {
+            logged.volumes = self.volumes;
+            let [master, ion, rcs] = self.volumes;
+            log::debug!("audio: knobs master {master:.2} ion {ion:.2} rcs {rcs:.2}");
+        }
+        if time - logged.status_at >= STATUS_PERIOD {
+            logged.status_at = time;
+            if let Some(output) = &self.output {
+                log::debug!(
+                    "audio: status {}; published thrust {thrust:.3} torque {torque:.3}, levels from {}",
+                    output.status(),
+                    logged.source
+                );
+            }
+        }
     }
 
     /// Closes the output, and shows why until sound is turned back on.
     fn fail(&mut self, e: String) {
-        log::warn!("No sound: {e}");
+        log::warn!("audio: no sound: {e}");
         self.error = Some(e);
         self.output = None;
     }
@@ -131,6 +216,7 @@ impl Sound {
             })
         });
         if gesture {
+            log::debug!("audio: page interaction, resuming the context");
             output.resume();
         }
     }
@@ -140,6 +226,10 @@ impl Sound {
         ui.heading("Sound");
         if ui.checkbox(&mut self.enabled, "Thruster sounds").changed() {
             self.error = None;
+            log::debug!(
+                "audio: thruster sounds {}",
+                if self.enabled { "enabled" } else { "disabled" }
+            );
         }
         ui.add_enabled_ui(self.enabled, |ui| {
             ui.horizontal(|ui| {

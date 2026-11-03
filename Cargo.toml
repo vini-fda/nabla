@@ -8,6 +8,9 @@ edition = "2024"
 
 [workspace.dependencies]
 nabla-core = { path = "crates/nabla-core" }
+nabla-net = { path = "crates/nabla-net" }
+nabla-server = { path = "crates/nabla-server" }
+nabla-sim = { path = "crates/nabla-sim" }
 nabla-synth = { path = "crates/nabla-synth" }
 
 # ----------------------------------------------------------------------------------------
@@ -233,6 +236,17 @@ missing_crate_level_docs = "warn"
 [profile.dev.package."*"]
 opt-level = 2
 
+# The simulation and the protocol are tested over millions of ticks, so they are optimized in
+# debug builds too, with their debug assertions and overflow checks still on.
+[profile.dev.package.nabla-net]
+opt-level = 3
+
+[profile.dev.package.nabla-server]
+opt-level = 3
+
+[profile.dev.package.nabla-sim]
+opt-level = 3
+
 [profile.release]
 opt-level = 2  # fast and small wasm
 strip = true
@@ -256,6 +270,15 @@ codegen-units = 16
 codegen-units = 256
 
 [profile.fast.package.nabla-core]
+codegen-units = 256
+
+[profile.fast.package.nabla-net]
+codegen-units = 256
+
+[profile.fast.package.nabla-server]
+codegen-units = 256
+
+[profile.fast.package.nabla-sim]
 codegen-units = 256
 
 [profile.fast.package.nabla-synth]

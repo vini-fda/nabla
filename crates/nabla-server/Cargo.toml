@@ -1,0 +1,18 @@
+[package]
+name = "nabla-server"
+version.workspace = true
+edition.workspace = true
+description = "The multiplayer server: WebTransport and the owner task around nabla-net's ServerMachine, and the bots and the impaired network it is tested with."
+publish = false
+
+[dependencies]
+env_logger = { version = "0.11.11", default-features = false, features = ["auto-color"] }
+log = "0.4.35"
+nabla-core.workspace = true
+nabla-net = { workspace = true, features = ["native"] }
+nabla-sim.workspace = true
+tokio = { version = "1", default-features = false, features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+wtransport = { version = "0.7", default-features = false, features = ["quinn", "ring", "self-signed"] }
+
+[lints]
+workspace = true

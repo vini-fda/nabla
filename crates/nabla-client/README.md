@@ -6,7 +6,7 @@ Vacuum flight uses the same exact sampled-data model the solutions are scored on
 
 ## Worlds and saves
 
-Choose **Pure vacuum**, **Planet**, or **Planet + moon** (the default) on the title screen, or switch from the **World** dropdown in flight, which starts the flight over. Each preset is an embedded TOML file in [`assets/worlds`](assets/worlds). The existing starting-condition presets and custom ship controls work inside the selected world.
+Choose **Pure vacuum**, **Planet**, or **Planet + moon** (the default) on the title screen, or switch from the **World** dropdown in flight, which starts the flight over. Each preset is an embedded TOML file in [`assets/worlds`](../nabla-sim/assets/worlds). The existing starting-condition presets and custom ship controls work inside the selected world.
 
 **Save world...** on the title screen saves the setup; in flight Settings it saves the player's current position, velocity, heading and spin. **Load world...** opens a TOML file and returns to the title screen; press Play to resume from that state. Native builds use file dialogs; the browser uploads and downloads the same portable format. Restart restores the selected world's starting state. Saves include ship parameters, size, goal and tolerances, but not replay history or UI/autopilot settings.
 
@@ -157,6 +157,21 @@ Natively, the app logs to stderr, by default its warnings and what happens in a 
 RUST_LOG=nabla_client=debug cargo nabla                 # also the occasional costly operations
 RUST_LOG=nabla_client=trace cargo nabla                 # also those of every frame and sample
 RUST_LOG=warn,nabla_client::game=trace cargo nabla      # one module only
+```
+
+`cargo nabla` logs in a development format: UTC timestamps, the thread (if it is not the main one) and the source line, and `debug` for this workspace's crates, as in
+
+```text
+2026-11-02T20:56:46.472Z INFO  nabla_client::app::online crates/nabla-client/src/app/online.rs:67: Connecting to https://127.0.0.1:4433
+```
+
+Set `RUST_LOG` as above to say otherwise; with it unset, the filter is `info` for everything and `debug` for `nabla-*`. Any other way of starting the app (`cargo run -p nabla-client`, a release build) keeps the lean format, unless `NABLA_LOG_STYLE=dev` is in the environment.
+
+The sound logs under `nabla_client::sound`, every line beginning with `audio:`: changes at `debug` (sound on or off, the output opened, a thruster starting or stopping, the knobs, the output device and its format), a status line from the backend every two seconds (natively how many times the audio callback ran, the frames it rendered, its peak level and whether it went quiet; in a browser the context's state and whether the processor has loaded), and the controls published every frame at `trace`:
+
+```sh
+cargo nabla 2>&1 | grep audio:                          # what the sound is doing
+RUST_LOG=nabla_client::sound=trace cargo nabla          # also every frame's controls
 ```
 
 On the web, the page's address says it, as in `?log=debug`, and the log is in the browser's console.

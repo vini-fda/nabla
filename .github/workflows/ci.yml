@@ -15,7 +15,9 @@ env:
   CARGO_TERM_COLOR: always
   # Every cargo command uses the committed Cargo.lock as is, and fails if it is out of date.
   CARGO_FLAGS: --locked
-  RUSTFLAGS: -D warnings
+  # web-sys gates WebTransport behind the cfg, which .cargo/config.toml sets for wasm32 and
+  # this variable would replace.
+  RUSTFLAGS: -D warnings --cfg=web_sys_unstable_apis
   RUSTDOCFLAGS: -D warnings
 
 # A new push to a pull request cancels its still-running checks.
@@ -144,6 +146,12 @@ jobs:
           cargo test $CARGO_FLAGS --workspace --release --target ${{ matrix.target }}
           --config 'profile.release.package.nabla-core.debug-assertions=true'
           --config 'profile.release.package.nabla-core.overflow-checks=true'
+          --config 'profile.release.package.nabla-net.debug-assertions=true'
+          --config 'profile.release.package.nabla-net.overflow-checks=true'
+          --config 'profile.release.package.nabla-server.debug-assertions=true'
+          --config 'profile.release.package.nabla-server.overflow-checks=true'
+          --config 'profile.release.package.nabla-sim.debug-assertions=true'
+          --config 'profile.release.package.nabla-sim.overflow-checks=true'
           --config 'profile.release.package.nabla-synth.debug-assertions=true'
           --config 'profile.release.package.nabla-synth.overflow-checks=true'
           --config 'profile.release.package.nabla-client.debug-assertions=true'
@@ -167,6 +175,8 @@ jobs:
       - name: Clippy (wasm32)
         run: |
           cargo clippy $CARGO_FLAGS -p nabla-client --lib --target wasm32-unknown-unknown
+          cargo clippy $CARGO_FLAGS -p nabla-net --lib --target wasm32-unknown-unknown
+          cargo clippy $CARGO_FLAGS -p nabla-sim --lib --target wasm32-unknown-unknown
           cargo clippy $CARGO_FLAGS -p nabla-synth --lib --target wasm32-unknown-unknown
 
       - name: Install trunk

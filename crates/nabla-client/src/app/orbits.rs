@@ -8,9 +8,10 @@ use crate::formula::{self, Formula};
 use crate::game::Objective;
 use crate::gamepad::{Button, State};
 use crate::keys;
-use crate::orbit::{self, Phase, Prediction, Target};
-use crate::span::span;
+use crate::orbit::{self, Phase, Pilot, Prediction, Target};
 use crate::theme::icons::outline;
+use nabla_core::State as State2;
+use nabla_sim::span;
 
 #[derive(Default)]
 pub(super) struct Controls {
@@ -29,15 +30,110 @@ pub(super) struct Forecast {
 }
 
 impl ViewerApp {
+    /// The flight on a server, while that is the screen.
+    fn online_flight(&self) -> Option<&crate::online::Online> {
+        self.online
+            .as_ref()
+            .filter(|_| self.screen == super::Screen::Online)
+    }
+
+    /// What the orbit controls and the forecast work on is the flight now showing: a single-player
+    /// flight's [`Game`](crate::game::Game), or a flight on a server.
+    pub(super) fn flight_world(&self) -> &crate::world::World {
+        self.online_flight()
+            .and_then(crate::online::Online::world)
+            .unwrap_or(&self.game.world)
+    }
+
+    pub(super) fn flight_state(&self) -> State2 {
+        self.online_flight()
+            .and_then(crate::online::Online::next_state)
+            .unwrap_or_else(|| self.game.state())
+    }
+
+    pub(super) fn flight_next_state(&self) -> State2 {
+        self.flight_state()
+    }
+
+    pub(super) fn flight_time(&self) -> f64 {
+        self.online_flight()
+            .map_or_else(|| self.game.time(), crate::online::Online::time)
+    }
+
+    /// The time the forecast starts at: of the next sample to be flown.
+    pub(super) fn flight_next_time(&self) -> f64 {
+        self.online_flight().map_or_else(
+            || self.game.replay.trajectory.controls.len() as f64 * self.game.replay.h(),
+            crate::online::Online::time,
+        )
+    }
+
+    pub(super) fn flight_h(&self) -> f64 {
+        self.online_flight()
+            .and_then(crate::online::Online::h)
+            .unwrap_or_else(|| self.game.replay.h())
+    }
+
+    pub(super) fn flight_objective(&self) -> Objective {
+        self.online_flight()
+            .map_or_else(|| self.game.objective(), crate::online::Online::objective)
+    }
+
+    pub(super) fn flight_orbit_pilot(&self) -> Option<&Pilot> {
+        match self.online_flight() {
+            Some(online) => online.orbit_pilot(),
+            None => self.game.orbit_pilot(),
+        }
+    }
+
+    pub(super) fn flight_forecast(&self) -> Vec<[f64; 2]> {
+        self.online_flight()
+            .map_or_else(|| self.game.prediction(), crate::online::Online::forecast)
+    }
+
+    fn flight_select_objective(&mut self, objective: Objective) -> Result<(), String> {
+        if self.screen == super::Screen::Online
+            && let Some(online) = &mut self.online
+        {
+            return online.select_objective(objective);
+        }
+        self.game.select_objective(objective)
+    }
+
+    fn flight_engage(&mut self, objective: Objective) -> Result<Option<Prediction>, String> {
+        let policy = self.policy;
+        if self.screen == super::Screen::Online
+            && let Some(online) = &mut self.online
+        {
+            return online.engage(objective, policy);
+        }
+        self.game.engage(objective, policy)
+    }
+
+    fn flight_disengage(&mut self) {
+        if self.screen == super::Screen::Online
+            && let Some(online) = &mut self.online
+        {
+            online.disengage();
+        } else {
+            self.game.disengage();
+        }
+    }
+
     pub(super) fn assisted(&self) -> bool {
+        if self.screen == super::Screen::Online {
+            return self
+                .online
+                .as_ref()
+                .is_some_and(crate::online::Online::assisted);
+        }
         self.game.assisted()
     }
 
     pub(super) fn reset_orbit_controls(&mut self) {
-        let state = self.game.state();
+        let state = self.flight_state();
         let nearest = self
-            .game
-            .world
+            .flight_world()
             .bodies
             .iter()
             .enumerate()
@@ -51,7 +147,8 @@ impl ViewerApp {
             })
             .map(|(i, _)| i);
         self.orbit_controls = Controls {
-            target: nearest.and_then(|i| Target::at_current_altitude(&self.game.world, &state, i)),
+            target: nearest
+                .and_then(|i| Target::at_current_altitude(self.flight_world(), &state, i)),
             ..Controls::default()
         };
         let objective = self
@@ -62,7 +159,7 @@ impl ViewerApp {
     }
 
     pub(super) fn choose_objective(&mut self, objective: Objective) {
-        match self.game.select_objective(objective) {
+        match self.flight_select_objective(objective) {
             Ok(()) => {
                 self.autopilot_fault = None;
                 self.aiming = None;
@@ -82,25 +179,25 @@ impl ViewerApp {
 
     fn select_orbit_body(&mut self, body: usize) {
         self.orbit_controls.target =
-            Target::at_current_altitude(&self.game.world, &self.game.state(), body);
+            Target::at_current_altitude(self.flight_world(), &self.flight_state(), body);
         self.invalidate_orbit_preview();
     }
 
     fn adjust_altitude(&mut self, amount: f64, fine: bool) {
+        let lowest = Target::min_altitude(self.flight_world());
         if let Some(target) = &mut self.orbit_controls.target {
             let step = if fine {
                 0.1
             } else {
                 (target.altitude * 0.1).max(1.0)
             };
-            target.altitude = (target.altitude + amount * step)
-                .clamp(Target::min_altitude(&self.game.world), orbit::MAX_ALTITUDE);
+            target.altitude = (target.altitude + amount * step).clamp(lowest, orbit::MAX_ALTITUDE);
             self.invalidate_orbit_preview();
         }
     }
 
     pub(super) fn engage_objective(&mut self) {
-        let objective = match self.game.objective() {
+        let objective = match self.flight_objective() {
             Objective::ReachB => Objective::ReachB,
             Objective::Orbit(_) => {
                 let Some(target) = self.orbit_controls.target else {
@@ -109,13 +206,13 @@ impl ViewerApp {
                 Objective::Orbit(target)
             }
         };
-        match self.game.engage(objective, self.policy) {
+        match self.flight_engage(objective) {
             Ok(prediction) => {
                 self.autopilot_fault = None;
                 self.aiming = None;
                 self.orbit_controls.prediction = prediction;
                 self.orbit_controls.error = None;
-                self.orbit_controls.checked_at = Some(self.game.time());
+                self.orbit_controls.checked_at = Some(self.flight_time());
                 self.prediction = Forecast::default();
                 self.notifications.post(
                     format!("Autopilot engaged: {}", objective.label()),
@@ -126,13 +223,13 @@ impl ViewerApp {
                 self.notifications.post(&error, palette::YELLOW);
                 self.orbit_controls.error = Some(error);
                 self.orbit_controls.prediction = None;
-                self.orbit_controls.checked_at = Some(self.game.time());
+                self.orbit_controls.checked_at = Some(self.flight_time());
             }
         }
     }
 
     pub(super) fn manual_flight(&mut self) {
-        self.game.disengage();
+        self.flight_disengage();
         self.autopilot_fault = None;
         self.notifications.post("Manual flight", palette::WHITE);
         self.invalidate_orbit_preview();
@@ -145,30 +242,30 @@ impl ViewerApp {
             self.manual_flight();
             return true; // Cancel wins over a simultaneous engage.
         }
-        let objective = self.game.objective();
+        let objective = self.flight_objective();
         if pad.just_pressed(Button::DPadLeft) {
             self.choose_objective(Objective::ReachB);
         } else if pad.just_pressed(Button::DPadRight)
-            && self.game.objective() == Objective::ReachB
+            && self.flight_objective() == Objective::ReachB
             && let Some(target) = self.orbit_controls.target
         {
             self.choose_objective(Objective::Orbit(target));
         }
-        if self.game.objective() != objective {
+        if self.flight_objective() != objective {
             self.right_view = RightView::Objective;
             self.notifications.post(
-                format!("Objective: {}", self.game.objective().label()),
+                format!("Objective: {}", self.flight_objective().label()),
                 palette::WHITE,
             );
         }
-        if self.game.objective() == Objective::ReachB {
+        if self.flight_objective() == Objective::ReachB {
             return false;
         }
         let Some(target) = self.orbit_controls.target else {
             return false;
         };
         if pad.just_pressed(Button::RightThumb) {
-            self.select_orbit_body((target.body + 1) % self.game.world.bodies.len());
+            self.select_orbit_body((target.body + 1) % self.flight_world().bodies.len());
         }
         let delta = i32::from(pad.just_pressed(Button::DPadUp))
             - i32::from(pad.just_pressed(Button::DPadDown));
@@ -182,20 +279,22 @@ impl ViewerApp {
     }
 
     pub(super) fn refresh_orbit_prediction(&mut self) {
-        if self.game.objective() == Objective::ReachB {
+        if self.flight_objective() == Objective::ReachB {
             return;
         }
         let Some(target) = self.orbit_controls.target else {
             return;
         };
         if self.orbit_controls.checked_at.is_some_and(|time| {
-            self.game.time() - time < 1.0
-                || self.game.orbit_pilot().is_some_and(|p| p.target == target)
+            self.flight_time() - time < 1.0
+                || self
+                    .flight_orbit_pilot()
+                    .is_some_and(|p| p.target == target)
         }) {
             return;
         }
-        self.orbit_controls.checked_at = Some(self.game.time());
-        match orbit::predict(&self.game.world, self.game.state(), target) {
+        self.orbit_controls.checked_at = Some(self.flight_time());
+        match orbit::predict(self.flight_world(), self.flight_state(), target) {
             Ok(prediction) => {
                 self.orbit_controls.prediction = Some(prediction);
                 self.orbit_controls.error = None;
@@ -211,7 +310,7 @@ impl ViewerApp {
     pub(super) fn objective_ui(&mut self, ui: &mut egui::Ui) {
         ui.heading("Objective");
         egui::ScrollArea::vertical().show(ui, |ui| {
-            let mut objective = self.game.objective();
+            let mut objective = self.flight_objective();
             egui::ComboBox::from_id_salt("flight-objective")
                 .selected_text(objective.label())
                 .show_ui(ui, |ui| {
@@ -223,10 +322,10 @@ impl ViewerApp {
                         }
                     }
                 });
-            if objective != self.game.objective() {
+            if objective != self.flight_objective() {
                 self.choose_objective(objective);
             }
-            match self.game.objective() {
+            match self.flight_objective() {
                 Objective::ReachB => {
                     ui.label("Reach B and stop.");
                     controls_grid(ui, |ui| {
@@ -261,9 +360,9 @@ impl ViewerApp {
         icon_row(ui, outline::PLANET, "Target", None, |ui| {
             egui::ComboBox::from_id_salt("orbit-body")
                 .width(100.0)
-                .selected_text(&self.game.world.bodies[body].name)
+                .selected_text(&self.flight_world().bodies[body].name)
                 .show_ui(ui, |ui| {
-                    for (i, body) in self.game.world.bodies.iter().enumerate() {
+                    for (i, body) in self.flight_world().bodies.iter().enumerate() {
                         ui.selectable_value(&mut target.body, i, &body.name);
                     }
                 });
@@ -271,7 +370,7 @@ impl ViewerApp {
         formula_row(ui, &formula::ALTITUDE, "Altitude", |ui| {
             ui.add(
                 egui::DragValue::new(&mut target.altitude)
-                    .range(Target::min_altitude(&self.game.world)..=orbit::MAX_ALTITUDE)
+                    .range(Target::min_altitude(self.flight_world())..=orbit::MAX_ALTITUDE)
                     .speed(0.1)
                     .max_decimals(1)
                     .suffix(" m"),
@@ -319,10 +418,10 @@ impl ViewerApp {
         } else if engage {
             self.engage_objective();
         }
-        if let Some(pilot) = self.game.orbit_pilot() {
+        if let Some(pilot) = self.flight_orbit_pilot() {
             group_heading(ui, "Active orbit", palette::GREEN, false);
             icon_row(ui, outline::PLANET, "Target", None, |ui| {
-                ui.label(&self.game.world.bodies[pilot.target.body].name);
+                ui.label(&self.flight_world().bodies[pilot.target.body].name);
             });
             formula_row(ui, &formula::ALTITUDE, "Altitude", |ui| {
                 ui.label(format!("{:.1} m", pilot.target.altitude));
@@ -359,12 +458,12 @@ impl ViewerApp {
     }
 
     pub(super) fn draw_orbits(&self, painter: &egui::Painter, rect: egui::Rect) {
-        if self.game.objective() == Objective::ReachB {
+        if self.flight_objective() == Objective::ReachB {
             return;
         }
         let draw = |target: Target, color, dashed| {
-            let body = &self.game.world.bodies[target.body];
-            let radius = target.radius(&self.game.world) as f32;
+            let body = &self.flight_world().bodies[target.body];
+            let radius = target.radius(self.flight_world()) as f32;
             let center = egui::Vec2::from(body.position);
             for i in 0..128 {
                 if dashed && i % 4 >= 2 {
@@ -379,7 +478,7 @@ impl ViewerApp {
                 }
             }
         };
-        if let Some(pilot) = self.game.orbit_pilot() {
+        if let Some(pilot) = self.flight_orbit_pilot() {
             draw(pilot.target, palette::GREEN, false);
         }
         if let Some(target) = self.orbit_controls.target {
@@ -395,28 +494,28 @@ impl ViewerApp {
         if self
             .prediction
             .checked_at
-            .is_some_and(|t| self.game.time() - t < 0.25)
+            .is_some_and(|t| self.flight_time() - t < 0.25)
         {
             return;
         }
         let _span = span!(Level::Trace, "forecast");
         let path = if self.assisted() {
-            self.game.prediction()
+            self.flight_forecast()
         } else {
-            match self.game.objective() {
+            match self.flight_objective() {
                 Objective::ReachB => Vec::new(),
                 Objective::Orbit(_) => self.orbit_controls.target.map_or_else(Vec::new, |target| {
                     orbit::forecast(
-                        &self.game.world,
-                        self.game.next_state(),
+                        self.flight_world(),
+                        self.flight_next_state(),
                         orbit::Pilot::new(target),
                     )
                 }),
             }
         };
         self.prediction = Forecast {
-            checked_at: Some(self.game.time()),
-            starts_at: self.game.replay.trajectory.controls.len() as f64 * self.game.replay.h(),
+            checked_at: Some(self.flight_time()),
+            starts_at: self.flight_next_time(),
             path,
         };
     }
@@ -426,10 +525,10 @@ impl ViewerApp {
             return;
         }
         // Drop elapsed forecast samples so the red line always starts at the visible ship.
-        let first = ((self.game.time() - self.prediction.starts_at) / self.game.replay.h())
+        let first = ((self.flight_time() - self.prediction.starts_at) / self.flight_h())
             .max(0.0)
             .ceil() as usize;
-        let state = self.game.state();
+        let state = self.flight_state();
         let points = std::iter::once([state.x, state.y])
             .chain(self.prediction.path.iter().skip(first).copied())
             .map(|p| Vec3::plane(world(p[0], p[1])));

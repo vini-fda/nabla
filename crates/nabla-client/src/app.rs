@@ -2105,6 +2105,14 @@ impl eframe::App for ViewerApp {
             );
         }
     }
+
+    /// Closing the window ends the connection, so the server frees the ship at once and not after
+    /// its idle timeout: eframe exits the process without dropping the app.
+    fn on_exit(&mut self) {
+        if let Some(mut online) = self.online.take() {
+            online.leave();
+        }
+    }
 }
 
 impl ViewerApp {

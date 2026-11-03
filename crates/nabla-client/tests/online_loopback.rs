@@ -194,3 +194,57 @@ fn an_autopilot_lands_through_a_real_server_while_another_pilot_flies_by_hand() 
         }
     }
 }
+
+/// A client that goes away says so: the server frees its ship at once, and not after the
+/// connection's idle timeout.
+#[test]
+fn a_client_that_is_dropped_frees_its_ship_at_once() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("a runtime");
+    let world = Preset::Vacuum
+        .world()
+        .multiplayer(60, 1000.0, 16)
+        .expect("a world");
+    let ship = ShipRequest::from(world.default_ship());
+    let (address, metrics) = runtime.block_on(async {
+        let server = Server::bind(Settings {
+            bind: "127.0.0.1:0".parse().expect("an address"),
+            world,
+            config: Config::default(),
+            identity: Identity::self_signed(["localhost", "127.0.0.1"]).expect("a certificate"),
+        })
+        .expect("a server");
+        let address = server.address("127.0.0.1").expect("an address");
+        let metrics = server.metrics();
+        tokio::spawn(server.serve());
+        (address, metrics)
+    });
+    let pilots = || metrics.lock().expect("the metrics").pilots;
+
+    let mut client = Online::new(net::connect(&address).expect("a link"), ship);
+    let started = Instant::now();
+    let mut joined = false;
+    while pilots() == 0 {
+        assert!(started.elapsed() < Duration::from_secs(5), "the ship came");
+        client.frame(hands(0, started.elapsed().as_secs_f64()));
+        if !joined && client.stage() == Stage::Lobby {
+            client.join(ship);
+            joined = true;
+        }
+        std::thread::sleep(Duration::from_millis(4));
+    }
+    drop(client);
+
+    let dropped = Instant::now();
+    while pilots() > 0 {
+        assert!(
+            dropped.elapsed() < Duration::from_secs(2),
+            "the ship was still held after {:?}",
+            dropped.elapsed()
+        );
+        std::thread::sleep(Duration::from_millis(4));
+    }
+}

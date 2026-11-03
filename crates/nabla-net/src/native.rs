@@ -27,6 +27,10 @@ use crate::wire::MAX_STREAM_FRAME;
 pub const KEEP_ALIVE: Duration = Duration::from_secs(4);
 pub const IDLE_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// How long the thread of [`Link::spawn`] lasts past the link, for its task to say goodbye. A
+/// process that ends sooner takes the goodbye with it.
+pub const GOODBYE: Duration = Duration::from_millis(200);
+
 /// How many datagrams QUIC queues to send, per connection. It evicts the oldest past that. A
 /// full second of snapshots, which its default holds (1 MiB), would be a second of delay in each:
 /// the newest supersedes the rest, so only a few are worth keeping.
@@ -97,9 +101,12 @@ impl Link {
         std::thread::Builder::new()
             .name("nabla-net".to_owned())
             .spawn(move || {
-                // Until the link is dropped, and then a moment, for its task to say goodbye.
-                runtime.block_on(stopped).ok();
-                runtime.block_on(tokio::time::sleep(Duration::from_millis(200)));
+                // Until the link is dropped, and then a moment, for its task to say goodbye. Dropping
+                // the runtime sooner would end that task.
+                runtime.block_on(async {
+                    stopped.await.ok();
+                    tokio::time::sleep(GOODBYE).await;
+                });
             })?;
         Ok(link)
     }

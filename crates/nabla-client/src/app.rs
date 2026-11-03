@@ -2107,10 +2107,14 @@ impl eframe::App for ViewerApp {
     }
 
     /// Closing the window ends the connection, so the server frees the ship at once and not after
-    /// its idle timeout: eframe exits the process without dropping the app.
+    /// its idle timeout: eframe exits the process without dropping the app. The network's thread
+    /// ends with the process, so this waits for it to say goodbye.
     fn on_exit(&mut self) {
         if let Some(mut online) = self.online.take() {
             online.leave();
+            drop(online);
+            #[cfg(not(target_arch = "wasm32"))]
+            std::thread::sleep(nabla_net::native::GOODBYE);
         }
     }
 }

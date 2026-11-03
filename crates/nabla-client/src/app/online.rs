@@ -293,7 +293,10 @@ impl ViewerApp {
         );
         ui.add_space(8.0);
         if ui
-            .add(egui::Button::new("Take this ship").fill(palette::GREEN))
+            .add(
+                egui::Button::new(egui::RichText::new("Take this ship").color(palette::BLACK))
+                    .fill(palette::GREEN),
+            )
             .clicked()
         {
             self.rejoin_online();

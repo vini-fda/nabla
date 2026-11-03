@@ -267,7 +267,10 @@ impl ViewerApp {
                 .font(egui::TextStyle::Monospace),
         );
         let connect = ui
-            .add(egui::Button::new("Connect").fill(palette::GREEN))
+            .add(
+                egui::Button::new(egui::RichText::new("Connect").color(palette::BLACK))
+                    .fill(palette::GREEN),
+            )
             .clicked()
             || (address.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
         if let Some(why) = &self.online_error {

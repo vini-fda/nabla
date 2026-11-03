@@ -1,5 +1,7 @@
 //! Orbit commands: preview edits never change an engaged target until confirmed.
 
+use std::time::Duration;
+
 use log::Level;
 
 use super::{RightView, Vec3, ViewerApp, input_row, palette, world};
@@ -8,18 +10,24 @@ use crate::formula::{self, Formula};
 use crate::game::Objective;
 use crate::gamepad::{Button, State};
 use crate::keys;
-use crate::orbit::{self, Phase, Pilot, Prediction, Target};
+use crate::orbit::{self, Check, Phase, Pilot, Prediction, Target};
 use crate::theme::icons::outline;
 use nabla_core::State as State2;
 use nabla_sim::span;
+
+/// How long a frame gives the preview's capture check. At once, the check makes a frame late
+/// enough to lose commands to the server (`docs/multiplayer.typ`, "Autopilots").
+const CHECK_BUDGET: Duration = Duration::from_millis(2);
 
 #[derive(Default)]
 pub(super) struct Controls {
     target: Option<Target>,
     prediction: Option<Prediction>,
     error: Option<String>,
-    /// Simulated time at the last prediction; edits invalidate it even while paused.
+    /// Simulated time at the last prediction's start; edits invalidate it even while paused.
     checked_at: Option<f64>,
+    /// The check under way, which leaves the last one's verdict showing until it has its own.
+    check: Option<Check>,
 }
 
 #[derive(Default)]
@@ -174,6 +182,7 @@ impl ViewerApp {
         self.orbit_controls.prediction = None;
         self.orbit_controls.error = None;
         self.orbit_controls.checked_at = None;
+        self.orbit_controls.check = None;
         self.prediction = Forecast::default();
     }
 
@@ -206,6 +215,7 @@ impl ViewerApp {
                 Objective::Orbit(target)
             }
         };
+        self.orbit_controls.check = None;
         match self.flight_engage(objective) {
             Ok(prediction) => {
                 self.autopilot_fault = None;
@@ -278,32 +288,59 @@ impl ViewerApp {
         true
     }
 
+    /// Start a capture check of the selected orbit when one is due, and give the one under way
+    /// this frame's share of time.
     pub(super) fn refresh_orbit_prediction(&mut self) {
-        if self.flight_objective() == Objective::ReachB {
-            return;
-        }
-        let Some(target) = self.orbit_controls.target else {
+        let target = self
+            .orbit_controls
+            .target
+            .filter(|_| self.flight_objective() != Objective::ReachB);
+        let Some(target) = target else {
+            self.orbit_controls.check = None;
             return;
         };
-        if self.orbit_controls.checked_at.is_some_and(|time| {
-            self.flight_time() - time < 1.0
-                || self
-                    .flight_orbit_pilot()
-                    .is_some_and(|p| p.target == target)
-        }) {
-            return;
+        if self.orbit_controls.check.is_none() {
+            if self.orbit_controls.checked_at.is_some_and(|time| {
+                self.flight_time() - time < 1.0
+                    || self
+                        .flight_orbit_pilot()
+                        .is_some_and(|p| p.target == target)
+            }) {
+                return;
+            }
+            self.orbit_controls.checked_at = Some(self.flight_time());
+            match Check::new(self.flight_world(), self.flight_state(), target) {
+                Ok(check) => self.orbit_controls.check = Some(check),
+                Err(error) => {
+                    self.orbit_controls.prediction = None;
+                    self.orbit_controls.error = Some(error);
+                    return;
+                }
+            }
         }
-        self.orbit_controls.checked_at = Some(self.flight_time());
-        match orbit::predict(self.flight_world(), self.flight_state(), target) {
-            Ok(prediction) => {
+        let verdict = self
+            .orbit_controls
+            .check
+            .as_mut()
+            .and_then(|check| check.run_for(CHECK_BUDGET));
+        match verdict {
+            Some(Ok(prediction)) => {
+                self.orbit_controls.check = None;
                 self.orbit_controls.prediction = Some(prediction);
                 self.orbit_controls.error = None;
             }
-            Err(error) => {
+            Some(Err(error)) => {
+                self.orbit_controls.check = None;
                 self.orbit_controls.prediction = None;
                 self.orbit_controls.error = Some(error);
             }
+            None => {}
         }
+    }
+
+    /// Whether a capture check needs more frames, which a paused flight would not otherwise draw.
+    pub(super) fn orbit_check_running(&self) -> bool {
+        self.orbit_controls.check.is_some()
     }
 
     /// The flight's objective and, for an orbit, its target, preview and engagement.
@@ -699,6 +736,79 @@ mod tests {
             },
             ..State::default()
         })
+    }
+
+    /// Frames until the capture check under way has its verdict.
+    fn finish_check(app: &mut ViewerApp) {
+        while app.orbit_check_running() {
+            app.refresh_orbit_prediction();
+        }
+    }
+
+    #[test]
+    fn the_preview_checks_a_capture_over_several_frames() {
+        let mut app = planet_app();
+        let target = app.orbit_controls.target.expect("preview");
+        let whole = orbit::predict(&app.game.world, app.game.state(), target).expect("a capture");
+
+        // 6000 steps can't fit in one frame's share, however fast the machine.
+        app.refresh_orbit_prediction();
+        assert!(app.orbit_check_running());
+        assert!(app.orbit_controls.prediction.is_none() && app.orbit_controls.error.is_none());
+        finish_check(&mut app);
+        let first = app.orbit_controls.prediction.as_ref().expect("a verdict");
+        assert_eq!(first.capture_seconds, whole.capture_seconds);
+
+        // The next check, a second on, leaves that verdict showing while it runs.
+        app.refresh_orbit_prediction();
+        assert!(!app.orbit_check_running(), "not due yet");
+        for _ in 0..11 {
+            app.game.advance(0.1, Input::default(), Steering::Raw);
+        }
+        app.refresh_orbit_prediction();
+        assert!(app.orbit_check_running());
+        assert!(app.orbit_controls.prediction.is_some());
+        finish_check(&mut app);
+
+        // An edit abandons the check for the old target, and its verdict with it.
+        for _ in 0..11 {
+            app.game.advance(0.1, Input::default(), Steering::Raw);
+        }
+        app.refresh_orbit_prediction();
+        assert!(app.orbit_check_running());
+        press(&mut app, &[Button::DPadUp], false);
+        assert!(!app.orbit_check_running());
+        assert!(app.orbit_controls.prediction.is_none());
+        app.refresh_orbit_prediction();
+        assert!(app.orbit_check_running(), "a new one, for the new target");
+
+        // So does engaging, which checks for itself. Its verdict is the one left showing.
+        press(&mut app, &[Button::West], false);
+        assert!(app.assisted());
+        assert!(!app.orbit_check_running());
+        app.refresh_orbit_prediction();
+        assert!(!app.orbit_check_running(), "the assist flies this target");
+        assert!(app.orbit_controls.prediction.is_some());
+
+        // And choosing B.
+        app.manual_flight();
+        app.refresh_orbit_prediction();
+        assert!(app.orbit_check_running());
+        app.choose_objective(Objective::ReachB);
+        assert!(!app.orbit_check_running());
+    }
+
+    #[test]
+    fn the_preview_refuses_a_target_at_once() {
+        let mut app = planet_app();
+        app.orbit_controls
+            .target
+            .as_mut()
+            .expect("preview")
+            .altitude = f64::NAN;
+        app.refresh_orbit_prediction();
+        assert!(!app.orbit_check_running());
+        assert!(app.orbit_controls.error.is_some());
     }
 
     #[test]

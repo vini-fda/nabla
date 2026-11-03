@@ -1,8 +1,11 @@
 //! Circular-orbit capture with bounded thrust/attitude feedback and a finite prediction.
 //! This is a practical flight assist, not a global feasibility or stability certificate.
 
+use std::time::Duration;
+
 use log::Level;
 use nabla_core::{Control, Params, State};
+use web_time::Instant;
 
 use crate::physics::{Physics, gravity_acceleration};
 use crate::world::World;
@@ -10,6 +13,8 @@ use nabla_sim::span;
 use nabla_sim::steering::{hold_torque, wrap};
 
 pub const MAX_ALTITUDE: f64 = 100_000.0;
+/// How many steps of a [`Check`] run between looks at the clock: well under a millisecond.
+const STEPS_PER_CLOCK_READ: usize = 32;
 const CLEARANCE: f64 = 0.5;
 const HOLD_SECONDS: f64 = 2.0;
 
@@ -271,7 +276,98 @@ pub fn clear(world: &World, s: &State) -> bool {
         })
 }
 
-/// Bound both the duration and work. Reject unsafe substeps and captures that do not settle.
+/// A capture check that runs a little at a time: at once it takes longer than a tick, and a frame
+/// that late costs a flight on a server its commands. How it is cut up changes nothing but when
+/// the verdict comes.
+pub struct Check {
+    world: World,
+    params: Params,
+    physics: Physics,
+    pilot: Pilot,
+    state: State,
+    captured: Option<f64>,
+    step: usize,
+    steps: usize,
+}
+
+impl Check {
+    /// Bound both the duration and work.
+    ///
+    /// # Errors
+    /// If the target is not valid here, or `state` is too close to a body.
+    pub fn new(world: &World, state: State, target: Target) -> Result<Self, String> {
+        target.validate(world)?;
+        if !clear(world, &state) {
+            return Err("Too close to a body to capture an orbit".to_owned());
+        }
+        let mut world = world.clone();
+        world.players[0].state = state;
+        let params = world.players[0].task.params;
+        let physics = Physics::new(&world);
+        Ok(Self {
+            world,
+            params,
+            physics,
+            pilot: Pilot::new(target),
+            state,
+            captured: None,
+            step: 0,
+            steps: ((120.0 / params.h).ceil() as usize).min(6000),
+        })
+    }
+
+    /// Run up to `steps` more steps, and say the verdict once there is one. Reject unsafe substeps
+    /// and captures that do not settle.
+    pub fn advance(&mut self, steps: usize) -> Option<Result<Prediction, String>> {
+        let end = self.step.saturating_add(steps).min(self.steps);
+        while self.step < end {
+            let u = self.pilot.control(&self.world, &self.state, &self.params);
+            if !u.is_admissible(&self.params) {
+                return Some(Err("Orbit controls exceed ship limits".to_owned()));
+            }
+            let samples = self.physics.step(self.params.h, u);
+            if samples.iter().any(|s| !clear(&self.world, s)) {
+                return Some(Err(
+                    "No safe capture found. Try another altitude or fly clear".to_owned(),
+                ));
+            }
+            self.state = *samples.last().expect("physics samples");
+            self.step += 1;
+            if self.pilot.phase == Phase::Holding {
+                self.captured
+                    .get_or_insert(self.step as f64 * self.params.h);
+            }
+        }
+        (self.step == self.steps).then(|| self.verdict())
+    }
+
+    /// Run for about `budget`, and at least a few steps, so that a check always ends. Says the
+    /// verdict once there is one.
+    pub fn run_for(&mut self, budget: Duration) -> Option<Result<Prediction, String>> {
+        let _span = span!(Level::Trace, "orbit capture check, a slice");
+        let started = Instant::now();
+        loop {
+            let verdict = self.advance(STEPS_PER_CLOCK_READ);
+            if verdict.is_some() || started.elapsed() >= budget {
+                return verdict;
+            }
+        }
+    }
+
+    fn verdict(&self) -> Result<Prediction, String> {
+        if self.pilot.phase != Phase::Holding {
+            return Err(
+                "No settled capture found in the prediction. Adjust altitude or approach"
+                    .to_owned(),
+            );
+        }
+        Ok(Prediction {
+            capture_seconds: self.captured.expect("holding capture"),
+        })
+    }
+}
+
+/// A whole [`Check`] at once, for when the answer is needed now.
 pub fn predict(world: &World, state: State, target: Target) -> Result<Prediction, String> {
     let _span = span!(
         Level::Debug,
@@ -279,40 +375,8 @@ pub fn predict(world: &World, state: State, target: Target) -> Result<Prediction
         target.body,
         target.altitude
     );
-    target.validate(world)?;
-    if !clear(world, &state) {
-        return Err("Too close to a body to capture an orbit".to_owned());
-    }
-    let mut save = world.clone();
-    save.players[0].state = state;
-    let params = save.players[0].task.params;
-    let mut physics = Physics::new(&save);
-    let mut pilot = Pilot::new(target);
-    let mut state = state;
-    let mut captured = None;
-    let steps = ((120.0 / params.h).ceil() as usize).min(6000);
-    for k in 0..steps {
-        let u = pilot.control(world, &state, &params);
-        if !u.is_admissible(&params) {
-            return Err("Orbit controls exceed ship limits".to_owned());
-        }
-        let samples = physics.step(params.h, u);
-        if samples.iter().any(|s| !clear(world, s)) {
-            return Err("No safe capture found. Try another altitude or fly clear".to_owned());
-        }
-        state = *samples.last().expect("physics samples");
-        if pilot.phase == Phase::Holding {
-            captured.get_or_insert((k as f64 + 1.0) * params.h);
-        }
-    }
-    if pilot.phase != Phase::Holding {
-        return Err(
-            "No settled capture found in the prediction. Adjust altitude or approach".to_owned(),
-        );
-    }
-    Ok(Prediction {
-        capture_seconds: captured.expect("holding capture"),
-    })
+    let mut check = Check::new(world, state, target)?;
+    check.advance(check.steps).expect("the last step")
 }
 
 #[cfg(test)]
@@ -424,6 +488,71 @@ mod tests {
             predict(&world, incoming, target).is_err(),
             "cannot brake before collision"
         );
+    }
+
+    /// The capture time's bits, or the refusal, of a check run in slices of `slice` steps.
+    fn sliced(world: &World, state: State, target: Target, slice: usize) -> Result<u64, String> {
+        let mut check = Check::new(world, state, target)?;
+        loop {
+            if let Some(verdict) = check.advance(slice) {
+                return verdict.map(|p| p.capture_seconds.to_bits());
+            }
+        }
+    }
+
+    #[test]
+    fn a_check_says_the_same_however_it_is_cut_up() {
+        let planet = Preset::Planet.world();
+        let start = planet.players[0].state;
+        let capture = Target::at_current_altitude(&planet, &start, 0).expect("planet");
+        let incoming = State {
+            x: -9.0,
+            y: -12.0,
+            vx: 100.0,
+            ..State::default()
+        };
+        let moon = Preset::PlanetAndMoon.world();
+        let moon_start = moon.players[0].state;
+        let around_moon = Target {
+            body: 0,
+            altitude: 34.0,
+            ..capture
+        };
+        let cases = [
+            (&planet, start, capture),
+            (&planet, incoming, capture),
+            (&moon, moon_start, around_moon),
+        ];
+        let mut outcomes = [0, 0];
+        for (world, state, target) in cases {
+            let whole = predict(world, state, target).map(|p| p.capture_seconds.to_bits());
+            outcomes[usize::from(whole.is_err())] += 1;
+            for slice in [1, 7, STEPS_PER_CLOCK_READ, 1000, usize::MAX] {
+                assert_eq!(
+                    sliced(world, state, target, slice),
+                    whole,
+                    "{target:?} in slices of {slice}"
+                );
+            }
+        }
+        assert_eq!(outcomes, [2, 1], "captures, and a refusal partway through");
+    }
+
+    #[test]
+    fn a_check_ends_however_short_its_slices() {
+        let world = Preset::Planet.world();
+        let start = world.players[0].state;
+        let target = Target::at_current_altitude(&world, &start, 0).expect("planet");
+        let mut check = Check::new(&world, start, target).expect("a target");
+        assert!(check.advance(0).is_none(), "no steps, and no verdict yet");
+        assert_eq!(check.step, 0);
+        assert!(check.run_for(Duration::ZERO).is_none());
+        assert_eq!(check.step, STEPS_PER_CLOCK_READ, "a slice with no time");
+        let mut slices = 1;
+        while check.run_for(Duration::ZERO).is_none() {
+            slices += 1;
+        }
+        assert_eq!(slices + 1, check.steps.div_ceil(STEPS_PER_CLOCK_READ));
     }
 
     #[test]

@@ -755,3 +755,85 @@ fn a_stall_past_the_catch_up_is_recovered_from_at_once() {
     assert_eq!(more, 0, "ticks held from 0.5 s to 2.5 s after waking");
     assert!(error.abs() < 0.03, "margin error {error} s");
 }
+
+/// How many commands the server held, and how many ticks went without one, in 25 s of frames at
+/// 60 Hz, where once a second `slow` frames in a row each come `gap` seconds after the last.
+fn lost_to_slow_frames(owd: f64, offset: f64, gap: f64, slow: u32) -> (u64, usize) {
+    let hands = |_: usize, _: f64| Hands {
+        input: Input {
+            thrust: 1.0,
+            ..Input::default()
+        },
+        steering: Steering::Raw,
+    };
+    let frames = |rig: &mut Rig, seconds: f64, gap: f64, slow: u32| {
+        let until = rig.now + seconds;
+        let mut next = rig.now;
+        let mut count = 0;
+        while rig.now < until {
+            let frame = rig.now + 0.0005 >= next;
+            rig.stalled[0] = !frame;
+            if frame {
+                let brought: Vec<_> = rig.wires[0].stash.drain(..).collect();
+                rig.wires[0].inbox.borrow_mut().extend(brought);
+            }
+            rig.step(&hands);
+            if frame {
+                count += 1;
+                next += if (1..=slow).contains(&(count % 60)) {
+                    gap
+                } else {
+                    1.0 / 60.0
+                };
+            }
+        }
+        rig.stalled[0] = false;
+    };
+    let world = vacuum();
+    let ours = ShipRequest::from(world.default_ship());
+    let mut rig = Rig::new(world, owd, 0.0, 7);
+    rig.add(ours);
+    rig.join_all(&[ours]);
+    rig.run(4.0 + offset, &hands);
+    frames(&mut rig, 3.0, 1.0 / 60.0, 0);
+    let held = rig.server.held();
+    let from = rig.clients[0].machine.tick().expect("playing");
+    frames(&mut rig, 25.0, gap, slow);
+    let to = rig.clients[0].machine.tick().expect("playing");
+    let skipped = rig.clients[0]
+        .trail
+        .range(from..to)
+        .filter(|(_, step)| step.control.is_none())
+        .count();
+    (rig.server.held() - held, skipped)
+}
+
+#[test]
+fn slicing_a_capture_check_all_but_stops_the_loss_of_commands() {
+    // The sums of `lost_to_slow_frames` over paths from 1 to 50 ms each way, and over where tick
+    // starts happen to sit in the frame, which decides whether a late frame misses a tick.
+    let lost = |gap: f64, slow: u32| {
+        let (mut held, mut skipped) = (0, 0);
+        for owd in [
+            0.001, 0.002, 0.003, 0.005, 0.007, 0.010, 0.015, 0.025, 0.040, 0.050,
+        ] {
+            for offset in [0.0, 0.0031, 0.0067, 0.0113] {
+                let (h, s) = lost_to_slow_frames(owd, offset, gap, slow);
+                held += h;
+                skipped += s;
+            }
+        }
+        (held, skipped)
+    };
+    // Slices that fit in what the frame has spare leave the frames on time. Those that don't make
+    // every frame of the check late by `CHECK_BUDGET`, for the 13 frames it takes.
+    let (held, skipped) = lost(1.0 / 60.0 + 0.002, 13);
+    // A whole check at once: one frame that misses the display's next chance to show.
+    let (whole_held, whole_skipped) = lost(0.0334, 1);
+    assert_eq!(skipped, 0, "slices made a snapshot overtake the client");
+    assert!(whole_skipped > 0, "a whole check does skip commands");
+    assert!(
+        held * 50 < whole_held,
+        "held {held} in slices, against {whole_held} at once"
+    );
+}

@@ -1581,7 +1581,7 @@ impl ViewerApp {
                     renderer,
                     &self.camera,
                     rect,
-                    position,
+                    &[position],
                     self.circumradius,
                     &self.game.world.bodies,
                 );
@@ -1596,8 +1596,7 @@ impl ViewerApp {
                     renderer,
                     &self.camera,
                     rect,
-                    position,
-                    state.theta as f32,
+                    &[(position, state.theta as f32)],
                     self.circumradius,
                     &depth,
                 ) {
@@ -1607,7 +1606,7 @@ impl ViewerApp {
                 if self.show_plume {
                     let t = replay.time(k) + offset;
                     if let Some(callback) =
-                        plume.paint(&self.camera, rect, replay, t, self.circumradius, &depth)
+                        plume.paint(&self.camera, rect, [(replay, t)], self.circumradius, &depth)
                     {
                         painter.add(callback);
                     }

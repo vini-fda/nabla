@@ -3,9 +3,6 @@
 // the viewer (in the default top-down view, the world's own axes). See ship3d.rs.
 
 struct Uniforms {
-    clip_from_model: mat4x4<f32>,
-    // Rotation part only (the model is scaled uniformly), for normals.
-    view_from_model: mat4x4<f32>,
     // x: 1 to gamma-encode the output (the target is not sRGB), 0 to write linear color.
     output: vec4<f32>,
 }
@@ -27,10 +24,26 @@ fn vs_main(
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) uv: vec2<f32>,
+    // One ship: its clip-from-model matrix, by columns.
+    @location(3) clip_from_model_0: vec4<f32>,
+    @location(4) clip_from_model_1: vec4<f32>,
+    @location(5) clip_from_model_2: vec4<f32>,
+    @location(6) clip_from_model_3: vec4<f32>,
+    // Its view-from-model rotation (the model is scaled uniformly), for normals, by columns.
+    @location(7) view_from_model_0: vec3<f32>,
+    @location(8) view_from_model_1: vec3<f32>,
+    @location(9) view_from_model_2: vec3<f32>,
 ) -> VertexOut {
+    let clip_from_model = mat4x4<f32>(
+        clip_from_model_0,
+        clip_from_model_1,
+        clip_from_model_2,
+        clip_from_model_3,
+    );
+    let view_from_model = mat3x3<f32>(view_from_model_0, view_from_model_1, view_from_model_2);
     var out: VertexOut;
-    out.position = u.clip_from_model * vec4<f32>(position, 1.0);
-    out.normal = (u.view_from_model * vec4<f32>(normal, 0.0)).xyz;
+    out.position = clip_from_model * vec4<f32>(position, 1.0);
+    out.normal = view_from_model * normal;
     out.uv = uv;
     return out;
 }

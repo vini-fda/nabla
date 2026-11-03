@@ -127,14 +127,23 @@ impl ShipModel {
 struct ShipResources {
     pipeline: wgpu::RenderPipeline,
     bind_group: wgpu::BindGroup,
-    uniforms: wgpu::Buffer,
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
     index_count: u32,
+    /// One [`Instance`] per ship. Grown as needed.
+    instances: wgpu::Buffer,
 }
 
-/// Size of the uniform block in `ship3d.wgsl`: two 4x4 matrices and a vec4.
-const UNIFORMS_SIZE: u64 = (16 + 16 + 4) * 4;
+/// Size of the uniform block in `ship3d.wgsl`: a vec4.
+const UNIFORMS_SIZE: u64 = 4 * 4;
+
+/// What one ship draws with: its clip-from-model matrix (column-major), then the rotation
+/// part of its view-from-model matrix (column-major 3x3), for normals. The model is scaled
+/// uniformly.
+type Instance = [f32; 16 + 9];
+
+/// Bytes per ship in the instance buffer.
+const INSTANCE_STRIDE: u64 = size_of::<Instance>() as u64;
 
 /// Draws the model; its GPU resources live in the egui renderer's callback resources.
 pub struct ShipRenderer {
@@ -178,12 +187,13 @@ impl ShipRenderer {
         );
         let index_bytes: Vec<u8> = model.indices.iter().flat_map(|i| i.to_ne_bytes()).collect();
         let indices = buffer("ship3d indices", &index_bytes, wgpu::BufferUsages::INDEX);
-        let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("ship3d uniforms"),
-            size: UNIFORMS_SIZE,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let gamma_output = !render_state.target_format.is_srgb();
+        let output = [f32::from(u8::from(gamma_output)), 0.0, 0.0, 0.0];
+        let uniforms = buffer(
+            "ship3d uniforms",
+            &to_bytes(&output),
+            wgpu::BufferUsages::UNIFORM,
+        );
 
         let base_color = upload_texture(
             device,
@@ -236,15 +246,15 @@ impl ShipRenderer {
             .insert(ShipResources {
                 pipeline,
                 bind_group,
-                uniforms,
                 vertices,
                 indices,
                 index_count: model.indices.len() as u32,
+                instances: instance_buffer(device, INSTANCE_STRIDE),
             });
         Self {
             half_length: model.half_length,
             radius: model.radius / model.half_length,
-            gamma_output: !render_state.target_format.is_srgb(),
+            gamma_output,
         }
     }
 }
@@ -306,13 +316,23 @@ fn create_pipeline(
             module: &shader,
             entry_point: Some("vs_main"),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
-            buffers: &[Some(wgpu::VertexBufferLayout {
-                array_stride: VERTEX_STRIDE,
-                step_mode: wgpu::VertexStepMode::Vertex,
-                attributes: &wgpu::vertex_attr_array![
-                    0 => Float32x3, 1 => Float32x3, 2 => Float32x2
-                ],
-            })],
+            buffers: &[
+                Some(wgpu::VertexBufferLayout {
+                    array_stride: VERTEX_STRIDE,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &wgpu::vertex_attr_array![
+                        0 => Float32x3, 1 => Float32x3, 2 => Float32x2
+                    ],
+                }),
+                Some(wgpu::VertexBufferLayout {
+                    array_stride: INSTANCE_STRIDE,
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &wgpu::vertex_attr_array![
+                        3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4,
+                        7 => Float32x3, 8 => Float32x3, 9 => Float32x3
+                    ],
+                }),
+            ],
         },
         // The model is double-sided.
         primitive: wgpu::PrimitiveState::default(),
@@ -339,22 +359,38 @@ fn create_pipeline(
     (pipeline, bind_group_layout)
 }
 
-/// One frame's drawing of the ship: the uniforms to upload before drawing.
+fn instance_buffer(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("ship3d instances"),
+        size,
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
+/// One frame's drawing of the ships: their instances to upload before drawing. A frame has
+/// one of these, for egui-wgpu prepares every callback before it paints any: of several, each
+/// would draw what the last one uploaded.
 struct ShipCallback {
-    uniforms: Vec<u8>,
+    instances: Vec<u8>,
+    count: u32,
 }
 
 impl CallbackTrait for ShipCallback {
     fn prepare(
         &self,
-        _device: &wgpu::Device,
+        device: &wgpu::Device,
         queue: &wgpu::Queue,
         _screen_descriptor: &ScreenDescriptor,
         _egui_encoder: &mut wgpu::CommandEncoder,
         resources: &mut CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
-        if let Some(ship) = resources.get::<ShipResources>() {
-            queue.write_buffer(&ship.uniforms, 0, &self.uniforms);
+        if let Some(ship) = resources.get_mut::<ShipResources>() {
+            let size = self.instances.len() as u64;
+            if ship.instances.size() < size {
+                ship.instances = instance_buffer(device, size.next_power_of_two());
+            }
+            queue.write_buffer(&ship.instances, 0, &self.instances);
         }
         Vec::new()
     }
@@ -371,22 +407,24 @@ impl CallbackTrait for ShipCallback {
         render_pass.set_pipeline(&ship.pipeline);
         render_pass.set_bind_group(0, &ship.bind_group, &[]);
         render_pass.set_vertex_buffer(0, ship.vertices.slice(..));
+        render_pass.set_vertex_buffer(1, ship.instances.slice(..));
         render_pass.set_index_buffer(ship.indices.slice(..), wgpu::IndexFormat::Uint32);
-        render_pass.draw_indexed(0..ship.index_count, 0, 0..1);
+        render_pass.draw_indexed(0..ship.index_count, 0, 0..self.count);
     }
 }
 
 /// How the 3D view's depth buffer maps distance toward the viewer, so whatever is drawn
-/// depth tested against the ship (see [`crate::sprites`]) agrees with it: from 0 (nearest)
-/// at the ship's reach in front of its center to 1 (farthest) at its reach behind it. In
-/// orthographic, depth is linear in distance (0.5 at the ship's center); in perspective, it
-/// is the usual `far / (far - near) * (1 - near / distance)` of the distance from the eye.
+/// depth tested against the ships (see [`crate::sprites`]) agrees with them: from 0 (nearest)
+/// at its reach in front of its center to 1 (farthest) at its reach behind it. In
+/// orthographic, depth is linear in distance (0.5 at the center); in perspective, it is the
+/// usual `far / (far - near) * (1 - near / distance)` of the distance from the eye. A frame
+/// has one, for depths from different maps do not compare.
 #[derive(Clone, Copy)]
 pub struct DepthMap {
     toward_viewer: Vec3,
-    /// Distance toward the viewer of the ship's center.
+    /// Distance toward the viewer of the center.
     origin: f32,
-    /// Distance from the ship's center to its farthest point.
+    /// Distance from the center to the farthest point drawn.
     reach: f32,
     /// In perspective: the eye's distance toward the viewer, and the near and far planes'
     /// distances from the eye.
@@ -394,33 +432,53 @@ pub struct DepthMap {
 }
 
 impl DepthMap {
-    /// Shared clipping planes for the ship, spheres and plumes.
+    /// Shared clipping planes for the ships at `ships`, spheres and plumes, centered on the
+    /// first ship in view, or else on the first ship. Ships out of view are not drawn, and so
+    /// need no room: a far one would only widen the range, and in perspective bring the near
+    /// plane through the ships in view.
     pub fn for_world(
         renderer: &ShipRenderer,
         camera: &Camera,
         canvas: egui::Rect,
-        position: egui::Vec2,
+        ships: &[egui::Vec2],
         half_length: f32,
         bodies: &[crate::world::CelestialBody],
     ) -> Self {
-        let reach = bodies
+        let ship_reach = half_length * renderer.radius;
+        let mut in_view = ships
             .iter()
-            .fold(half_length * renderer.radius, |reach, body| {
-                reach.max(
-                    (egui::vec2(body.position[0], body.position[1]) - position).length()
-                        + body.radius,
-                )
+            .copied()
+            .filter(|&ship| in_view(camera, canvas, ship, ship_reach));
+        let center = in_view
+            .next()
+            .or_else(|| ships.first().copied())
+            .unwrap_or_default();
+        let spheres = bodies
+            .iter()
+            .map(|body| (egui::vec2(body.position[0], body.position[1]), body.radius));
+        let reach = in_view
+            .map(|ship| (ship, ship_reach))
+            .chain(spheres)
+            .fold(ship_reach, |reach, (position, radius)| {
+                reach.max((position - center).length() + radius)
             });
-        Self::with_reach(camera, canvas, position, reach)
+        Self::with_reach(camera, canvas, center, reach)
     }
-    /// For a ship at `position` that reaches `reach` from its center.
+    /// Centered on the camera's view, to a distance of `reach` from it, for a test.
+    #[cfg(test)]
+    pub(crate) fn for_camera(camera: &Camera, canvas: egui::Rect, reach: f32) -> Self {
+        let center = egui::vec2(camera.center.x, camera.center.y);
+        Self::with_reach(camera, canvas, center, reach)
+    }
+
+    /// For drawing centered on `position`, to a distance of `reach` from it.
     fn with_reach(camera: &Camera, canvas: egui::Rect, position: egui::Vec2, reach: f32) -> Self {
         let toward_viewer = camera.orbit.toward_viewer();
         let origin = Vec3::plane(position).dot(toward_viewer);
         let perspective = camera.eye_distance(canvas).map(|d| {
             let eye = camera.center.dot(toward_viewer) + d;
             let distance = eye - origin;
-            // Not behind the eye, if the eye is inside the ship's reach.
+            // Not behind the eye, if the eye is inside the reach.
             let near = (distance - reach).max(0.01 * reach);
             (eye, near, (distance + reach).max(2.0 * near))
         });
@@ -433,7 +491,7 @@ impl DepthMap {
     }
 
     /// Depth of world point `p` moved `nearer` world units toward the viewer, clamped to
-    /// 0 to 1: anything nearer than the whole ship is in front of it, anything farther,
+    /// 0 to 1: anything nearer than everything drawn is in front of it, anything farther,
     /// behind it.
     pub fn depth(&self, p: Vec3, nearer: f32) -> f32 {
         let z = p.dot(self.toward_viewer) + nearer;
@@ -479,24 +537,11 @@ impl Affine {
     }
 }
 
-/// Paints the ship (the model, scaled so the nose is `half_length` world units from its
-/// center) at `position`, heading `theta` radians counterclockwise from +x, into the canvas
-/// `canvas` seen through `camera`. Returns `None` when the ship is outside the canvas.
-pub fn paint_callback(
-    renderer: &ShipRenderer,
-    camera: &Camera,
-    canvas: egui::Rect,
-    position: egui::Vec2,
-    theta: f32,
-    half_length: f32,
-    depth: &DepthMap,
-) -> Option<egui::PaintCallback> {
-    let reach = half_length * renderer.radius;
+/// Whether a ship at `position` that fits in a sphere of radius `reach` could show in the
+/// canvas `canvas` seen through `camera`.
+fn in_view(camera: &Camera, canvas: egui::Rect, position: egui::Vec2, reach: f32) -> bool {
     let k = camera.scale;
-    let eye_distance = camera.eye_distance(canvas);
-
-    // Only the ship's surroundings are drawn into: the model fits in a sphere of radius
-    // `reach`, which projects within a circle around its center's projection.
+    // The sphere projects within a circle around its center's projection.
     let around = |radius: f32| {
         let center = camera.world_to_screen(position, canvas)?;
         Some(egui::Rect::from_center_size(
@@ -504,86 +549,121 @@ pub fn paint_callback(
             egui::Vec2::splat(2.0 * radius),
         ))
     };
-    let rect = match (eye_distance, depth.perspective) {
-        (Some(d), Some((eye, _, _))) => {
-            let distance = eye - depth.origin;
+    let bounds = match camera.eye_distance(canvas) {
+        Some(d) => {
+            let toward_viewer = camera.orbit.toward_viewer();
+            let eye = camera.center.dot(toward_viewer) + d;
+            let distance = eye - Vec3::plane(position).dot(toward_viewer);
             if distance + reach <= 0.0 {
-                return None;
+                return false;
             }
-            if distance - reach > 0.0 {
-                // At most the scale of the sphere's nearest point, and spread from the
-                // center of the screen by the difference.
-                let view = camera.view(Vec3::plane(position));
-                let off_axis = view.x.hypot(view.y);
-                let largest = k * d / (distance - reach);
-                around(largest * reach * (1.0 + off_axis / distance) * 1.02)?
-            } else {
+            if distance - reach <= 0.0 {
                 // The eye is inside the sphere.
-                canvas
+                return true;
             }
+            // At most the scale of the sphere's nearest point, and spread from the center of
+            // the screen by the difference.
+            let view = camera.view(Vec3::plane(position));
+            let off_axis = view.x.hypot(view.y);
+            let largest = k * d / (distance - reach);
+            around(largest * reach * (1.0 + off_axis / distance) * 1.02)
         }
-        _ => around(reach * k * 1.02)?,
-    }
-    .intersect(canvas);
-    if !rect.is_positive() {
+        None => around(reach * k * 1.02),
+    };
+    bounds.is_some_and(|bounds| bounds.intersect(canvas).is_positive())
+}
+
+/// Paints the ships (the model, scaled so the nose is `half_length` world units from its
+/// center), each at a position, heading its angle in radians counterclockwise from +x, into
+/// the canvas `canvas` seen through `camera`. Call it once a frame, with every ship (see
+/// [`ShipCallback`]). Returns `None` when no ship is in the canvas.
+pub fn paint_callback(
+    renderer: &ShipRenderer,
+    camera: &Camera,
+    canvas: egui::Rect,
+    ships: &[(egui::Vec2, f32)],
+    half_length: f32,
+    depth: &DepthMap,
+) -> Option<egui::PaintCallback> {
+    let instances = instances(renderer, camera, canvas, ships, half_length, depth);
+    if instances.is_empty() {
         return None;
     }
-
-    let scale = half_length / renderer.half_length;
-    let r = rotation(theta);
-    let [right, up, toward_viewer] = camera.orbit.basis();
-
-    let clip_from_world = clip_from_world(camera, canvas, rect, depth);
-    // Column `i` of the world-to-view rotation.
-    let column = |i: usize| {
-        let [r, u, v] = [right, up, toward_viewer].map(|axis| axis.to_array()[i]);
-        [r, u, v, 0.0]
-    };
-    let world_from_model = [
-        [scale * r[0], scale * r[1], scale * r[2], 0.0],
-        [scale * r[3], scale * r[4], scale * r[5], 0.0],
-        [scale * r[6], scale * r[7], scale * r[8], 0.0],
-        [position.x, position.y, 0.0, 1.0],
-    ];
-    // Normals go to view space (right, up, toward the viewer), where the lights are.
-    let view_from_world = [column(0), column(1), column(2), [0.0, 0.0, 0.0, 1.0]];
-    let rotation4 = [
-        [r[0], r[1], r[2], 0.0],
-        [r[3], r[4], r[5], 0.0],
-        [r[6], r[7], r[8], 0.0],
-        [0.0, 0.0, 0.0, 1.0],
-    ];
-    let output = [f32::from(u8::from(renderer.gamma_output)), 0.0, 0.0, 0.0];
-
-    let mut uniforms = to_bytes(&mul4(&clip_from_world, &world_from_model));
-    uniforms.extend(to_bytes(&mul4(&view_from_world, &rotation4)));
-    uniforms.extend(to_bytes(&output));
     Some(egui_wgpu::Callback::new_paint_callback(
-        rect,
-        ShipCallback { uniforms },
+        canvas,
+        ShipCallback {
+            count: instances.len() as u32,
+            instances: to_bytes(instances.as_flattened()),
+        },
     ))
 }
 
-/// The matrix (column-major) from world points to clip coordinates for drawing into `rect`
-/// of the canvas `canvas` seen through `camera`, with depth by `depth`.
+/// What the ships in the canvas draw with.
+fn instances(
+    renderer: &ShipRenderer,
+    camera: &Camera,
+    canvas: egui::Rect,
+    ships: &[(egui::Vec2, f32)],
+    half_length: f32,
+    depth: &DepthMap,
+) -> Vec<Instance> {
+    let reach = half_length * renderer.radius;
+    let scale = half_length / renderer.half_length;
+    let clip_from_world = clip_from_world(camera, canvas, depth);
+    let [right, up, toward_viewer] = camera.orbit.basis();
+    // Column `i` of the world-to-view rotation.
+    let column = |i: usize| {
+        let [r, u, v] = [right, up, toward_viewer].map(|axis| axis.to_array()[i]);
+        [r, u, v]
+    };
+    let view_from_world = [column(0), column(1), column(2)];
+    ships
+        .iter()
+        .filter(|(position, _)| in_view(camera, canvas, *position, reach))
+        .map(|&(position, theta)| {
+            let r = rotation(theta);
+            let world_from_model = [
+                [scale * r[0], scale * r[1], scale * r[2], 0.0],
+                [scale * r[3], scale * r[4], scale * r[5], 0.0],
+                [scale * r[6], scale * r[7], scale * r[8], 0.0],
+                [position.x, position.y, 0.0, 1.0],
+            ];
+            let clip_from_model = mul4(&clip_from_world, &world_from_model);
+            // Normals go to view space (right, up, toward the viewer), where the lights are.
+            let view_from_model: [f32; 9] = std::array::from_fn(|i| {
+                let (col, row) = (i / 3, i % 3);
+                (0..3)
+                    .map(|j| view_from_world[j][row] * r[col * 3 + j])
+                    .sum()
+            });
+            std::array::from_fn(|i| {
+                if i < 16 {
+                    clip_from_model[i]
+                } else {
+                    view_from_model[i - 16]
+                }
+            })
+        })
+        .collect()
+}
+
+/// The matrix (column-major) from world points to clip coordinates for drawing into the
+/// canvas `canvas` seen through `camera`, with depth by `depth`.
 pub(crate) fn clip_from_world(
     camera: &Camera,
     canvas: egui::Rect,
-    rect: egui::Rect,
     depth: &DepthMap,
 ) -> [[f32; 4]; 4] {
     let [right, up, toward_viewer] = camera.orbit.basis();
     let (k, reach) = (camera.scale, depth.reach);
     let eye_distance = camera.eye_distance(canvas);
     // Clip coordinates of world point p, as affine functions of it: across and up the
-    // screen through the camera, then into `rect`; toward the viewer into depth by `depth`.
+    // screen through the camera; toward the viewer into depth by `depth`.
     let along = |axis: Vec3| Affine {
         w: axis,
         k: -camera.center.dot(axis),
     };
     let (x, y) = (along(right), along(up));
-    // From the canvas's center to `rect`'s.
-    let shift = canvas.center() - rect.center();
     let [clip_x, clip_y, clip_z, clip_w] = match (eye_distance, depth.perspective) {
         (Some(d), Some((eye, near, far))) => {
             // Distance from the eye: the clip w, which divides the others.
@@ -592,13 +672,8 @@ pub(crate) fn clip_from_world(
                 k: eye,
             };
             [
-                distance
-                    .at(shift.x)
-                    .plus(x.at(k * d))
-                    .at(2.0 / rect.width()),
-                y.at(k * d)
-                    .plus(distance.at(-shift.y))
-                    .at(2.0 / rect.height()),
+                x.at(k * d).at(2.0 / canvas.width()),
+                y.at(k * d).at(2.0 / canvas.height()),
                 distance
                     .plus(Affine::constant(-near))
                     .at(far / (far - near)),
@@ -606,12 +681,8 @@ pub(crate) fn clip_from_world(
             ]
         }
         _ => [
-            x.at(k)
-                .plus(Affine::constant(shift.x))
-                .at(2.0 / rect.width()),
-            y.at(k)
-                .plus(Affine::constant(-shift.y))
-                .at(2.0 / rect.height()),
+            x.at(k).at(2.0 / canvas.width()),
+            y.at(k).at(2.0 / canvas.height()),
             Affine {
                 w: toward_viewer,
                 k: -depth.origin,
@@ -779,11 +850,141 @@ mod tests {
         }
     }
 
+    /// Where normalized device coordinates fall in `canvas`, the viewport.
+    fn screen_of(canvas: egui::Rect, ndc: [f32; 3]) -> egui::Pos2 {
+        egui::pos2(
+            canvas.left() + f32::midpoint(ndc[0], 1.0) * canvas.width(),
+            canvas.top() + f32::midpoint(1.0, -ndc[1]) * canvas.height(),
+        )
+    }
+
+    /// A renderer's sizes, without a GPU: the model's half length is 1, its reach `radius`.
+    fn renderer(radius: f32) -> ShipRenderer {
+        ShipRenderer {
+            half_length: 1.0,
+            radius,
+            gamma_output: false,
+        }
+    }
+
+    /// Where an instance puts model point `p`, on the screen.
+    fn placed(instance: &Instance, canvas: egui::Rect, p: [f32; 3]) -> egui::Pos2 {
+        let clip: [f32; 4] = std::array::from_fn(|row| {
+            (0..3).map(|i| instance[i * 4 + row] * p[i]).sum::<f32>() + instance[3 * 4 + row]
+        });
+        screen_of(
+            canvas,
+            [clip[0] / clip[3], clip[1] / clip[3], clip[2] / clip[3]],
+        )
+    }
+
+    /// Every ship is drawn with its own place and heading, and undistorted: the first
+    /// multiplayer client drew all of them with the last one's, stretched when that one
+    /// straddled the edge of the canvas.
+    #[test]
+    fn each_ship_is_drawn_where_and_as_it_is() {
+        let canvas = egui::Rect::from_min_size(egui::pos2(30.0, 40.0), egui::vec2(900.0, 600.0));
+        // The second ship straddles the canvas's bottom edge.
+        let ships = [
+            (egui::vec2(1.0, 2.0), 0.3),
+            (egui::vec2(1.0, 2.0 - 300.0 / 40.0), 2.1),
+        ];
+        let renderer = renderer(1.2);
+        let camera = Camera {
+            center: Vec3::plane(ships[0].0),
+            scale: 40.0,
+            ..Camera::default()
+        };
+        let positions = ships.map(|(position, _)| position);
+        let depth = DepthMap::for_world(&renderer, &camera, canvas, &positions, 1.0, &[]);
+        let instances = instances(&renderer, &camera, canvas, &ships, 1.0, &depth);
+        assert_eq!(instances.len(), 2);
+        for (instance, (position, theta)) in instances.iter().zip(ships) {
+            let center = placed(instance, canvas, [0.0; 3]);
+            let expected = camera
+                .world_to_screen(position, canvas)
+                .expect("orthographic");
+            assert!(
+                center.distance(expected) < 1e-2,
+                "{center:?} != {expected:?}"
+            );
+            // The nose, along +y in the model, 40 pixels from the center along the heading,
+            // and up the screen for a heading up the world.
+            let nose = placed(instance, canvas, [0.0, 1.0, 0.0]) - center;
+            let along = 40.0 * egui::vec2(theta.cos(), -theta.sin());
+            assert!((nose - along).length() < 1e-2, "{nose:?} != {along:?}");
+            // Square pixels: the side is as long as the nose, and across it.
+            let side = placed(instance, canvas, [1.0, 0.0, 0.0]) - center;
+            assert!((side.length() - 40.0).abs() < 1e-2, "{side:?}");
+            assert!(side.dot(nose).abs() < 1e-1, "{side:?} {nose:?}");
+        }
+    }
+
+    #[test]
+    fn ships_out_of_the_canvas_are_not_drawn() {
+        let canvas = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let renderer = renderer(1.2);
+        let ships = [(egui::vec2(0.0, 0.0), 0.0), (egui::vec2(500.0, 0.0), 0.0)];
+        for perspective in [false, true] {
+            let camera = Camera {
+                scale: 40.0,
+                perspective,
+                ..Camera::default()
+            };
+            let depth = DepthMap::with_reach(&camera, canvas, ships[0].0, 1.2);
+            let drawn = instances(&renderer, &camera, canvas, &ships, 1.0, &depth);
+            assert_eq!(drawn.len(), 1, "perspective {perspective}");
+        }
+    }
+
+    /// One depth map for the frame: it holds every ship in view, whichever is first, and is
+    /// not widened by those out of view.
+    #[test]
+    fn the_depth_map_holds_the_ships_in_view() {
+        let canvas = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let renderer = renderer(1.2);
+        let (a, b, far) = (
+            egui::vec2(0.0, 0.0),
+            egui::vec2(3.0, 0.0),
+            egui::vec2(900.0, 0.0),
+        );
+        for perspective in [false, true] {
+            let camera = Camera {
+                scale: 40.0,
+                perspective,
+                orbit: crate::camera::Orbit {
+                    azimuth: 0.7,
+                    elevation: 0.5,
+                },
+                ..Camera::default()
+            };
+            let map = DepthMap::for_world(&renderer, &camera, canvas, &[a, b, far], 1.0, &[]);
+            assert!((map.reach - 4.2).abs() < 1e-4, "reach {}", map.reach);
+            let toward_viewer = camera.orbit.toward_viewer();
+            let mut last = None;
+            for ship in [a, b] {
+                let center = map.depth(Vec3::plane(ship), 0.0);
+                for nearer in [1.2, -1.2] {
+                    let depth = map.depth(Vec3::plane(ship), nearer);
+                    assert!(0.0 < depth && depth < 1.0, "{perspective}: depth {depth}");
+                }
+                // Across the ships, nearer along the view is a lesser depth.
+                if let Some((position, depth)) = last {
+                    let toward = (Vec3::plane(ship) - Vec3::plane(position)).dot(toward_viewer);
+                    assert!((center - depth) * toward < 0.0, "{perspective}");
+                }
+                last = Some((ship, center));
+            }
+            // The first ship out of view makes way for the first in it.
+            let map = DepthMap::for_world(&renderer, &camera, canvas, &[far, a], 1.0, &[]);
+            assert!((map.reach - 1.2).abs() < 1e-4, "reach {}", map.reach);
+        }
+    }
+
     #[test]
     fn clip_matrix_agrees_with_the_camera_and_depth_map() {
         use crate::camera::Orbit;
         let canvas = egui::Rect::from_min_size(egui::pos2(30.0, 40.0), egui::vec2(900.0, 600.0));
-        let rect = egui::Rect::from_min_size(egui::pos2(300.0, 200.0), egui::vec2(160.0, 120.0));
         let position = egui::vec2(1.5, -0.5);
         for perspective in [false, true] {
             let camera = Camera {
@@ -796,7 +997,7 @@ mod tests {
                 perspective,
             };
             let depth = DepthMap::with_reach(&camera, canvas, position, 1.1);
-            let m = clip_from_world(&camera, canvas, rect, &depth);
+            let m = clip_from_world(&camera, canvas, &depth);
             for offset in [
                 Vec3::ZERO,
                 Vec3::new(0.8, 0.3, -0.4),
@@ -807,10 +1008,7 @@ mod tests {
                     (0..3).map(|i| m[i][row] * p.to_array()[i]).sum::<f32>() + m[3][row]
                 });
                 let ndc = [clip[0] / clip[3], clip[1] / clip[3], clip[2] / clip[3]];
-                let screen = egui::pos2(
-                    rect.left() + f32::midpoint(ndc[0], 1.0) * rect.width(),
-                    rect.top() + f32::midpoint(1.0, -ndc[1]) * rect.height(),
-                );
+                let screen = screen_of(canvas, ndc);
                 let expected = camera.project(p, canvas).expect("in front of the eye");
                 assert!(
                     screen.distance(expected) < 1e-2,

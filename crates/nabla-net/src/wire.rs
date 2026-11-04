@@ -317,7 +317,7 @@ mod tests {
             "two words",
             "under_score",
             "dash-ed",
-            "caf\u{e9}",
+            "jos\u{e9}",
             "\u{0}",
         ] {
             assert_eq!(Username::parse(bad), Err(InvalidUsername), "{bad:?}");
@@ -327,7 +327,7 @@ mod tests {
     #[test]
     fn a_name_that_breaks_the_rule_does_not_decode() {
         // What a client outside this codebase could send: the same bytes as a valid name's.
-        for bad in ["", "Miriam", "under_score", "caf\u{e9}"] {
+        for bad in ["", "Miriam", "under_score", "jos\u{e9}"] {
             let bytes = encode(&bad.to_owned());
             assert_eq!(
                 decode::<Username>(&bytes, 100),

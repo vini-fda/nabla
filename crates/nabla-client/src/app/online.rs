@@ -837,7 +837,7 @@ mod tests {
     fn the_username_field_keeps_only_what_can_be_part_of_a_name() {
         assert_eq!(username_text("Miriam"), "miriam");
         assert_eq!(username_text("start2ep_lrewind 2"), "start2eplrewind2");
-        assert_eq!(username_text("caf\u{e9}-7"), "caf7");
+        assert_eq!(username_text("jos\u{e9}-7"), "jos7");
         assert_eq!(username_text(""), "");
         let long = "A".repeat(MAX_USERNAME + 5);
         let kept = username_text(&long);

@@ -8,7 +8,7 @@ use std::ops::RangeInclusive;
 
 use nabla_net::client::Stage;
 use nabla_net::link::Address;
-use nabla_net::wire::Username;
+use nabla_net::wire::{MAX_USERNAME, RosterEntry, Username};
 
 use super::{
     Aim, GridStyle, Input, ViewerApp, canvas_buttons, draw_grid, fit_camera, icons, keys, palette,
@@ -51,6 +51,63 @@ pub(super) fn server_from_page() -> Option<(String, bool)> {
 const FIRST_VIEW_HALF_SIZE: f64 = 25.0;
 /// The arena's edge.
 const ARENA_COLOR: egui::Color32 = palette::RED;
+/// A name tag, in points: its height, and the status dot's radius and left margin, with the gap
+/// after the dot and the margin after the name.
+const TAG_HEIGHT: f32 = 22.0;
+const TAG_DOT_RADIUS: f32 = 3.5;
+const TAG_DOT_MARGIN: f32 = 7.0;
+const TAG_GAP: f32 = 6.0;
+const TAG_NAME_MARGIN: f32 = 9.0;
+const TAG_FONT_SIZE: f32 = 12.0;
+
+/// What the username field holds for `typed`: as much of it as can be part of a name.
+fn username_text(typed: &str) -> String {
+    typed
+        .chars()
+        .map(|c| c.to_ascii_lowercase())
+        .filter(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        .take(MAX_USERNAME)
+        .collect()
+}
+
+/// A pilot's name in a pill with its top left at `corner`, moved as little as it takes to stay
+/// inside `canvas`, with the status dot to its left.
+fn paint_name_tag(
+    painter: &egui::Painter,
+    canvas: egui::Rect,
+    corner: egui::Pos2,
+    pilot: &RosterEntry,
+) {
+    let (text, dot) = if pilot.active {
+        (palette::WHITE, palette::GREEN)
+    } else {
+        (palette::OVERLAY1, palette::OVERLAY0)
+    };
+    let galley = painter.layout_no_wrap(
+        pilot.username.as_str().to_owned(),
+        egui::FontId::monospace(TAG_FONT_SIZE),
+        text,
+    );
+    let name_left = TAG_DOT_MARGIN + 2.0 * TAG_DOT_RADIUS + TAG_GAP;
+    let size = egui::vec2(name_left + galley.size().x + TAG_NAME_MARGIN, TAG_HEIGHT);
+    let room = (canvas.max - size).max(canvas.min);
+    let tag = egui::Rect::from_min_size(corner.clamp(canvas.min, room).round(), size);
+    painter.rect(
+        tag,
+        TAG_HEIGHT / 2.0,
+        palette::BLACK,
+        egui::Stroke::new(1.0, palette::BORDER),
+        egui::StrokeKind::Inside,
+    );
+    let middle = tag.center().y;
+    painter.circle_filled(
+        egui::pos2(tag.left() + TAG_DOT_MARGIN + TAG_DOT_RADIUS, middle),
+        TAG_DOT_RADIUS,
+        dot,
+    );
+    let name = egui::pos2(tag.left() + name_left, middle - galley.size().y / 2.0);
+    painter.galley(name, galley, text);
+}
 
 impl ViewerApp {
     /// Connect to the server in the address field, and show the online screen.
@@ -118,6 +175,9 @@ impl ViewerApp {
         Hands {
             input,
             steering: self.steering,
+            // A hidden browser tab runs no frames, so it may never say this. It stops sending
+            // commands instead, which the server takes the same way.
+            away: !ui.input(|i| i.focused),
         }
     }
 
@@ -257,6 +317,47 @@ impl ViewerApp {
             ));
         }
         ui.add_space(8.0);
+        ui.strong("Username");
+        // Editing the name takes the refusal away, as it is about the name refused.
+        let taken = online
+            .refused_name()
+            .is_some_and(|name| name.as_str() == self.username);
+        let field = ui.scope(|ui| {
+            if taken {
+                let visuals = ui.visuals_mut();
+                let stroke = egui::Stroke::new(1.0, palette::RED);
+                visuals.selection.stroke = stroke;
+                visuals.widgets.inactive.bg_stroke = stroke;
+                visuals.widgets.hovered.bg_stroke = stroke;
+                visuals.widgets.active.bg_stroke = stroke;
+            }
+            ui.add(
+                egui::TextEdit::singleline(&mut self.username)
+                    .hint_text("lowercase letters and numbers")
+                    .char_limit(MAX_USERNAME)
+                    .desired_width(f32::INFINITY)
+                    .font(egui::TextStyle::Monospace),
+            )
+        });
+        if field.inner.changed() {
+            self.username = username_text(&self.username);
+        }
+        let hint = if taken {
+            egui::RichText::new(format!(
+                "Another pilot is flying as {}. Pick another name.",
+                self.username
+            ))
+            .color(palette::RED)
+        } else {
+            egui::RichText::new(format!(
+                "Up to {MAX_USERNAME} lowercase letters and numbers."
+            ))
+            .color(palette::OVERLAY1)
+        };
+        ui.label(hint.small());
+        let named = Username::parse(&self.username).is_ok();
+        let entered = field.inner.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        ui.add_space(8.0);
         ui.strong("Your ship");
         let request = &mut self.join_request;
         egui::Grid::new("ship_request")
@@ -293,13 +394,16 @@ impl ViewerApp {
             .color(palette::OVERLAY1),
         );
         ui.add_space(8.0);
-        if ui
-            .add(
-                egui::Button::new(egui::RichText::new("Take this ship").color(palette::BLACK))
-                    .fill(palette::GREEN),
-            )
-            .clicked()
-        {
+        let (fill, text) = if named {
+            (palette::GREEN, palette::BLACK)
+        } else {
+            (palette::SURFACE1, palette::OVERLAY1)
+        };
+        let take = ui.add_enabled(
+            named,
+            egui::Button::new(egui::RichText::new("Take this ship").color(text)).fill(fill),
+        );
+        if take.clicked() || (named && entered) {
             self.rejoin_online();
         }
     }
@@ -522,6 +626,7 @@ impl ViewerApp {
             self.draw_goal(&painter, rect, &own.replay, &own.state);
             self.draw_goal_marker(&painter, rect, rect, &own.replay, &own.state);
         }
+        self.draw_name_tags(&painter, rect, corner, views);
         if self.show_gizmo {
             self.gizmo.paint(ui, &painter, corner, &self.camera);
         }
@@ -531,6 +636,41 @@ impl ViewerApp {
             .collect();
         if self.show_help {
             self.help_window(ui.ctx(), rect);
+        }
+    }
+
+    /// Each pilot's name and status beside their ship, the own ship's over the others. A ship
+    /// outside `shown`, the part of the canvas `rect` that no panel covers, has no tag, nor does
+    /// one the roster has not yet told of.
+    fn draw_name_tags(
+        &self,
+        painter: &egui::Painter,
+        rect: egui::Rect,
+        shown: egui::Rect,
+        views: &[View],
+    ) {
+        let Some(online) = &self.online else { return };
+        let Some(hull) = online.world().map(|world| world.hull_radius()) else {
+            return;
+        };
+        for view in views.iter().rev() {
+            let center = world(view.state.x, view.state.y);
+            let (Some(pilot), Some(ship)) = (
+                online.pilot(view.ship),
+                self.camera.world_to_screen(center, rect),
+            ) else {
+                continue;
+            };
+            // The hull's size on the screen, the same at any zoom and from any side.
+            let reach = [egui::vec2(hull, 0.0), egui::vec2(0.0, hull)]
+                .into_iter()
+                .filter_map(|edge| self.camera.world_to_screen(center + edge, rect))
+                .map(|edge| edge.distance(ship))
+                .fold(0.0, f32::max);
+            if shown.expand(reach).contains(ship) {
+                let corner = ship + egui::vec2(0.8 * reach + 6.0, 0.8 * reach + 2.0);
+                paint_name_tag(painter, shown, corner, pilot);
+            }
         }
     }
 
@@ -686,5 +826,22 @@ impl ViewerApp {
         {
             painter.add(callback);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_username_field_keeps_only_what_can_be_part_of_a_name() {
+        assert_eq!(username_text("Miriam"), "miriam");
+        assert_eq!(username_text("start2ep_lrewind 2"), "start2eplrewind2");
+        assert_eq!(username_text("caf\u{e9}-7"), "caf7");
+        assert_eq!(username_text(""), "");
+        let long = "A".repeat(MAX_USERNAME + 5);
+        let kept = username_text(&long);
+        assert_eq!(kept, "a".repeat(MAX_USERNAME));
+        assert!(Username::parse(&kept).is_ok());
     }
 }

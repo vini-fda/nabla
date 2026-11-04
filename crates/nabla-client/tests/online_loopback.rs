@@ -33,6 +33,7 @@ fn hands(who: usize, seconds: f64) -> Hands {
         } else {
             Steering::Sas
         },
+        ..Hands::default()
     }
 }
 

@@ -233,6 +233,11 @@ pub struct ClientMachine {
     /// Join under this name as soon as the first lobby arrives. A client that has left waits to
     /// be told.
     auto_join: Option<Username>,
+    /// The name last asked for, and the one the server last refused as taken.
+    asked: Option<Username>,
+    refused: Option<Username>,
+    /// Whether the pilot has left this app for another, as last told by the screen.
+    away: bool,
     phase: Phase,
     world: Option<World>,
     lobby: Option<LobbyInfo>,
@@ -256,6 +261,9 @@ impl ClientMachine {
             request,
             build: build.to_owned(),
             auto_join: None,
+            asked: None,
+            refused: None,
+            away: false,
             phase: Phase::Start,
             world: None,
             lobby: None,
@@ -281,10 +289,31 @@ impl ClientMachine {
         }
         self.request = request;
         self.phase = Phase::Joining { sent: now };
+        self.asked = Some(username.clone());
+        self.refused = None;
         vec![Kind::Stream(encode(&ClientStream::Join {
             request,
             username,
         }))]
+    }
+
+    /// The pilot has left this app for another, or come back. The server hears of it only while
+    /// there is a ship to show it for: on a change, and when a ship comes, if the pilot is away.
+    pub fn set_away(&mut self, away: bool) -> Vec<Kind> {
+        if self.away == away {
+            return Vec::new();
+        }
+        self.away = away;
+        if self.is_playing() {
+            vec![Kind::Stream(encode(&ClientStream::Away(away)))]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// The name the server last refused because a ship is flying under it.
+    pub fn refused_name(&self) -> Option<&Username> {
+        self.refused.as_ref()
     }
 
     /// Give the ship up, and go back to the lobby, where this client stays until it joins again.
@@ -333,8 +362,21 @@ impl ClientMachine {
             ServerStream::Welcome(welcome) => {
                 self.auto_join = None;
                 self.welcome(&welcome, now);
+                if self.away && self.is_playing() {
+                    return vec![Kind::Stream(encode(&ClientStream::Away(true)))];
+                }
             }
-            ServerStream::NameTaken => {}
+            ServerStream::NameTaken => {
+                if matches!(self.phase, Phase::Joining { .. }) {
+                    // A client with no screen to pick another name on has nothing left to do.
+                    self.phase = if self.auto_join.take().is_some() {
+                        Phase::Rejected("the name is taken".to_owned())
+                    } else {
+                        self.refused = self.asked.clone();
+                        Phase::Lobby
+                    };
+                }
+            }
             ServerStream::Full => {
                 if matches!(self.phase, Phase::Joining { .. }) {
                     self.phase = Phase::Full;
@@ -659,5 +701,139 @@ impl ClientMachine {
             previous = play.cmds.get(&s).copied().unwrap_or(previous);
         }
         Some(previous)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use nabla_sim::world::Preset;
+
+    use super::*;
+    use crate::wire::{Lobby, Welcome};
+
+    fn world() -> World {
+        Preset::Vacuum
+            .world()
+            .multiplayer(60, 1000.0, 4)
+            .expect("a valid world")
+    }
+
+    fn name(text: &str) -> Username {
+        Username::parse(text).expect("a valid name")
+    }
+
+    fn request() -> ShipRequest {
+        ShipRequest::from(world().default_ship())
+    }
+
+    /// Say hello, and hear the lobby: what the client answers.
+    fn through_the_lobby(client: &mut ClientMachine) -> Vec<Kind> {
+        client.start();
+        let lobby = ServerStream::Lobby(Lobby {
+            world: world().to_toml().expect("a world in TOML"),
+            pilots: Vec::new(),
+            max_pilots: 4,
+        });
+        client.on_stream(&encode(&lobby), 0.0)
+    }
+
+    fn waiting() -> ClientMachine {
+        let mut client = ClientMachine::waiting_in_the_lobby(Config::default(), request(), "test");
+        assert!(through_the_lobby(&mut client).is_empty());
+        client
+    }
+
+    fn welcome() -> Vec<u8> {
+        let world = world();
+        encode(&ServerStream::Welcome(Welcome {
+            ship: ShipId(0),
+            params: world.default_ship(),
+            tick: 0,
+            ships: vec![ShipRecord {
+                ship: ShipId(0),
+                state: world.spawn(0).state,
+                hold: None,
+                thrust: 0.0,
+                torque: 0.0,
+            }],
+        }))
+    }
+
+    fn says(message: &ClientStream) -> Vec<Kind> {
+        vec![Kind::Stream(encode(message))]
+    }
+
+    #[test]
+    fn a_taken_name_leaves_the_client_in_the_lobby_to_pick_another() {
+        let mut client = waiting();
+        client.join(request(), name("miriam"), 1.0);
+        assert_eq!(client.stage(), Stage::Joining);
+        assert!(
+            client
+                .on_stream(&encode(&ServerStream::NameTaken), 1.1)
+                .is_empty()
+        );
+        assert_eq!(client.stage(), Stage::Lobby);
+        assert_eq!(client.refused_name(), Some(&name("miriam")));
+        assert_eq!(
+            client.join(request(), name("juan"), 2.0),
+            says(&ClientStream::Join {
+                request: request(),
+                username: name("juan"),
+            })
+        );
+        assert_eq!(client.stage(), Stage::Joining);
+        assert_eq!(client.refused_name(), None, "asking again clears it");
+    }
+
+    #[test]
+    fn a_client_that_joins_by_itself_stops_at_a_taken_name() {
+        let mut client = ClientMachine::new(Config::default(), request(), name("bot1"), "test");
+        assert_eq!(
+            through_the_lobby(&mut client),
+            says(&ClientStream::Join {
+                request: request(),
+                username: name("bot1"),
+            })
+        );
+        client.on_stream(&encode(&ServerStream::NameTaken), 0.1);
+        assert_eq!(client.stage(), Stage::Rejected);
+        assert_eq!(client.refusal(), Some("the name is taken"));
+    }
+
+    #[test]
+    fn a_taken_name_out_of_turn_changes_nothing() {
+        let mut client = waiting();
+        client.on_stream(&encode(&ServerStream::NameTaken), 0.1);
+        assert_eq!(client.stage(), Stage::Lobby);
+        assert_eq!(client.refused_name(), None);
+        client.join(request(), name("miriam"), 1.0);
+        client.on_stream(&welcome(), 1.1);
+        client.on_stream(&encode(&ServerStream::NameTaken), 1.2);
+        assert_eq!(client.stage(), Stage::Playing);
+        assert_eq!(client.refused_name(), None);
+    }
+
+    #[test]
+    fn the_server_hears_of_an_absence_only_on_a_change_and_with_a_ship() {
+        let mut client = waiting();
+        assert!(client.set_away(true).is_empty(), "no ship to show it for");
+        client.join(request(), name("miriam"), 1.0);
+        assert_eq!(
+            client.on_stream(&welcome(), 1.1),
+            says(&ClientStream::Away(true)),
+            "away since before the ship came"
+        );
+        assert!(client.set_away(true).is_empty(), "no change");
+        assert_eq!(client.set_away(false), says(&ClientStream::Away(false)));
+        assert!(client.set_away(false).is_empty(), "no change");
+        assert_eq!(client.set_away(true), says(&ClientStream::Away(true)));
+    }
+
+    #[test]
+    fn a_pilot_at_the_controls_says_nothing_when_the_ship_comes() {
+        let mut client = waiting();
+        client.join(request(), name("miriam"), 1.0);
+        assert!(client.on_stream(&welcome(), 1.1).is_empty());
     }
 }

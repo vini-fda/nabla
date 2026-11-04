@@ -226,6 +226,7 @@ fn scripted(who: usize, now: f64) -> Hands {
         } else {
             Steering::Sas
         },
+        ..Hands::default()
     }
 }
 
@@ -578,6 +579,7 @@ fn a_frame_that_runs_long_does_not_silence_the_thrust_after_it() {
                 ..Input::default()
             },
             steering: Steering::Raw,
+            ..Hands::default()
         }
     };
     rig.run(3.0, &thrust(1.0));
@@ -643,6 +645,7 @@ fn thrust_is_heard_again_when_the_orbit_assist_hands_the_ship_back() {
             ..Input::default()
         },
         steering: Steering::Raw,
+        ..Hands::default()
     };
     let (mut samples, mut silent) = (0, 0);
     for step in 0..10_000 {
@@ -672,6 +675,7 @@ fn a_late_frame_still_hears_the_thrust_of_the_tick_it_is_in() {
             ..Input::default()
         },
         steering: Steering::Raw,
+        ..Hands::default()
     };
     rig.run(3.0, &thrusting);
     for late in [0.0, 0.005, 0.015, 0.02, 0.03, 0.1] {
@@ -785,6 +789,7 @@ fn lost_to_slow_frames(owd: f64, offset: f64, gap: f64, slow: u32) -> (u64, usiz
             ..Input::default()
         },
         steering: Steering::Raw,
+        ..Hands::default()
     };
     let frames = |rig: &mut Rig, seconds: f64, gap: f64, slow: u32| {
         let until = rig.now + seconds;

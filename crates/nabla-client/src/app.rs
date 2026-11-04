@@ -386,7 +386,7 @@ impl Default for ViewerApp {
             server_address: online::DEFAULT_SERVER.to_owned(),
             online_error: None,
             join_request: world_default_request(),
-            username: "pilot".to_owned(),
+            username: String::new(),
             online_fit: false,
             input_thrust: 0.0,
             online_ready: false,

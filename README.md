@@ -16,7 +16,7 @@ See [`TASK.md`](TASK.md) for the rules and the interface a solution implements.
 **Web app:** https://vini-fda.github.io/nabla/ lets you fly the ship on every test case, with the keyboard, touch or a game controller, with plots of the state and controls. An autopilot can fly it instead with any of the solutions, whose source it shows. The same app runs natively ([`crates/nabla-client/`](crates/nabla-client)).
 
 ```sh
-cargo test --workspace --release         # model, app and every solution
+cargo test --workspace --profile ci      # model, app and every solution
 cargo run --release -p nabla-client             # the app, natively
 ```
 

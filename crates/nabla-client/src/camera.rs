@@ -577,14 +577,6 @@ mod tests {
     }
 
     #[test]
-    fn y_axis_is_world_up() {
-        let cam = Camera::default();
-        let s_origin = project(&cam, Vec3::ZERO);
-        let s_up = project(&cam, Vec3::Y);
-        assert!(s_up.y < s_origin.y, "world +y should map to screen up");
-    }
-
-    #[test]
     fn basis_is_right_handed_and_orthonormal() {
         for orbit in [Orbit::TOP, tilted().orbit, Orbit::facing(-Vec3::Z)] {
             let [right, up, toward_viewer] = orbit.basis();

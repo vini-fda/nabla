@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*", "xtask"]
 
 [workspace.package]
-version = "0.24.0"
+version = "0.25.0"
 edition = "2024"
 
 [workspace.dependencies]
@@ -252,6 +252,23 @@ opt-level = 2  # fast and small wasm
 strip = true
 lto = true
 codegen-units = 1
+
+# For the tests, in CI and `cargo xtask check`. Optimized as release is, but without its
+# whole-program LTO and single codegen unit, which every test binary would pay for at its link:
+# a workspace rebuild takes about 10 s instead of about 80 s, and the tests run as fast. Debug
+# assertions and overflow checks are on for this workspace's crates, so arithmetic bugs that
+# release builds would hide still fail the tests. The dependencies build without them.
+[profile.ci]
+inherits = "release"
+strip = false
+debug-assertions = true
+overflow-checks = true
+lto = false
+codegen-units = 16
+
+[profile.ci.package."*"]
+debug-assertions = false
+overflow-checks = false
 
 # For iterating on the app: `cargo nabla` (alias in .cargo/config.toml), or
 # `cargo run --profile fast -p nabla-client` for the bare binary. As optimized as release, but without its

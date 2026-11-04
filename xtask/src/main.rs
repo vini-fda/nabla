@@ -239,31 +239,8 @@ fn check(sh: &Shell) -> Result<()> {
         )
         .run()?;
     }
-    // As in CI: release mode, with debug assertions and overflow checks on for this
-    // workspace's crates.
-    let checks = [
-        "nabla-core",
-        "nabla-net",
-        "nabla-server",
-        "nabla-sim",
-        "nabla-synth",
-        "nabla-client",
-    ]
-    .iter()
-    .flat_map(|package| {
-        ["debug-assertions", "overflow-checks"].map(|setting| {
-            [
-                "--config".to_owned(),
-                format!("profile.release.package.{package}.{setting}=true"),
-            ]
-        })
-    })
-    .flatten();
-    cmd!(
-        sh,
-        "{cargo} test --locked --quiet --workspace --release {checks...}"
-    )
-    .run()?;
+    // The profile of CI. CI runs the tests with cargo-nextest, which this leaves optional.
+    cmd!(sh, "{cargo} test --locked --quiet --workspace --profile ci").run()?;
     let _app = sh.push_dir("crates/nabla-client");
     cmd!(sh, "trunk build --release").run()?;
     Ok(())

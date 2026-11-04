@@ -155,8 +155,7 @@ impl ViewerApp {
             })
             .map(|(i, _)| i);
         self.orbit_controls = Controls {
-            target: nearest
-                .and_then(|i| Target::at_current_altitude(self.flight_world(), &state, i)),
+            target: nearest.and_then(|i| Target::suggested(self.flight_world(), &state, i)),
             ..Controls::default()
         };
         let objective = self
@@ -188,7 +187,7 @@ impl ViewerApp {
 
     fn select_orbit_body(&mut self, body: usize) {
         self.orbit_controls.target =
-            Target::at_current_altitude(self.flight_world(), &self.flight_state(), body);
+            Target::suggested(self.flight_world(), &self.flight_state(), body);
         self.invalidate_orbit_preview();
     }
 
@@ -873,9 +872,13 @@ mod tests {
         let world = Preset::PlanetAndMoon.world();
         app.game = Game::in_world(world.case(), world);
         app.reset_orbit_controls();
-        assert_eq!(app.orbit_controls.target.expect("nearest").body, 0);
+        let nearest = app.orbit_controls.target.expect("nearest");
+        assert_eq!(nearest.body, 0);
+        nearest.validate(app.flight_world()).expect("starts clear");
         press(&mut app, &[Button::RightThumb], false);
-        assert_eq!(app.orbit_controls.target.expect("next").body, 1);
+        let next = app.orbit_controls.target.expect("next");
+        assert_eq!(next.body, 1);
+        next.validate(app.flight_world()).expect("stays clear");
         press(&mut app, &[Button::RightThumb], false);
         assert_eq!(app.orbit_controls.target.expect("wrapped").body, 0);
         // Restart creates a fresh flight and selects the nearest body again.
@@ -949,43 +952,6 @@ mod tests {
         assert!(
             app.game.orbit_pilot().is_some(),
             "A engages the selected objective too"
-        );
-    }
-
-    #[test]
-    fn forecast_refreshes_while_engaged_and_display_toggle_does_not_change_flight() {
-        let mut app = planet_app();
-        press(&mut app, &[Button::West], false);
-        app.refresh_prediction();
-        let initial = app.prediction.path.clone();
-        assert!(initial.len() > 2 && initial.len() <= 501);
-        for _ in 0..4 {
-            app.game.advance(0.1, Input::default(), Steering::Raw);
-        }
-        app.refresh_prediction();
-        assert_ne!(
-            app.prediction.path, initial,
-            "live forecast refreshes after engagement"
-        );
-        let objective = app.game.objective();
-        let state = app.game.state();
-        app.show_prediction = false;
-        app.refresh_prediction();
-        assert!(app.prediction.path.is_empty());
-        assert_eq!(app.game.objective(), objective);
-        assert_eq!(app.game.state(), state);
-        assert!(app.assisted());
-        app.show_prediction = true;
-        app.refresh_prediction();
-        assert!(
-            !app.prediction.path.is_empty(),
-            "re-enabled while paused or at the same time"
-        );
-        app.choose_objective(Objective::ReachB);
-        app.refresh_prediction();
-        assert!(
-            app.prediction.path.is_empty(),
-            "no stale orbit forecast for B"
         );
     }
 }

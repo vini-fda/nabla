@@ -1,6 +1,7 @@
 //! Circular-orbit capture with bounded thrust/attitude feedback and a finite prediction.
 //! This is a practical flight assist, not a global feasibility or stability certificate.
 
+use std::ops::RangeInclusive;
 use std::time::Duration;
 
 use log::Level;
@@ -8,7 +9,7 @@ use nabla_core::{Control, Params, State};
 use web_time::Instant;
 
 use crate::physics::{Physics, gravity_acceleration};
-use crate::world::World;
+use crate::world::{CelestialBody, World};
 use nabla_sim::span;
 use nabla_sim::steering::{hold_torque, wrap};
 
@@ -17,6 +18,18 @@ pub const MAX_ALTITUDE: f64 = 100_000.0;
 const STEPS_PER_CLOCK_READ: usize = 32;
 const CLEARANCE: f64 = 0.5;
 const HOLD_SECONDS: f64 = 2.0;
+/// How far above another body's keep-out band a suggested orbit sits. A ring that only just
+/// clears the band passes the geometry check, but the other body's pull and the overshoot of
+/// the capture can still carry the ship into it.
+const SUGGESTED_MARGIN: f64 = 3.0;
+
+/// The orbit radii around `source` at which a ship would touch `other`.
+fn keep_out(world: &World, source: &CelestialBody, other: &CelestialBody) -> RangeInclusive<f64> {
+    let distance = (f64::from(other.position[0]) - f64::from(source.position[0]))
+        .hypot(f64::from(other.position[1]) - f64::from(source.position[1]));
+    let reach = f64::from(other.radius + world.players[0].radius) + CLEARANCE;
+    distance - reach..=distance + reach
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Target {
@@ -37,6 +50,31 @@ impl Target {
                 .clamp(Self::min_altitude(world), MAX_ALTITUDE),
             clockwise: x * state.vy - y * state.vx < 0.0,
         })
+    }
+
+    /// The target to offer first: the current altitude, or if that ring would run into another
+    /// body, the lowest ring above it that stays clear of them all.
+    pub fn suggested(world: &World, state: &State, body: usize) -> Option<Self> {
+        let mut target = Self::at_current_altitude(world, state, body)?;
+        let source = &world.bodies[body];
+        let mut bands: Vec<_> = world
+            .bodies
+            .iter()
+            .enumerate()
+            .filter(|&(i, _)| i != body)
+            .map(|(_, other)| keep_out(world, source, other))
+            .collect();
+        // In order of their lower edges, one climb past each is enough even where they overlap.
+        bands.sort_by(|a, b| a.start().total_cmp(b.start()));
+        let surface = f64::from(source.radius);
+        for band in bands {
+            let above = band.end() - surface + SUGGESTED_MARGIN;
+            if (band.start() - surface..above).contains(&target.altitude) {
+                target.altitude = above;
+            }
+        }
+        target.altitude = target.altitude.min(MAX_ALTITUDE);
+        Some(target)
     }
 
     pub fn min_altitude(world: &World) -> f64 {
@@ -90,12 +128,7 @@ impl Target {
         let radius = self.radius(world);
         let center = source.position.map(f64::from);
         for (i, other) in world.bodies.iter().enumerate() {
-            let distance = (f64::from(other.position[0]) - center[0])
-                .hypot(f64::from(other.position[1]) - center[1]);
-            if i != self.body
-                && (distance - radius).abs()
-                    <= f64::from(other.radius + world.players[0].radius) + CLEARANCE
-            {
+            if i != self.body && keep_out(world, source, other).contains(&radius) {
                 return Err(format!("Orbit crosses {}. Change altitude", other.name));
             }
         }
@@ -413,6 +446,74 @@ mod tests {
             held > 7500,
             "maintains orbit: {held} holding samples; state {s:?}"
         );
+    }
+
+    #[test]
+    fn suggests_a_ring_clear_of_the_other_bodies_that_can_be_captured() {
+        let world = Preset::PlanetAndMoon.world();
+        let start = world.players[0].state;
+        let around = |body| Target::suggested(&world, &start, body).expect("a body");
+        // The ship starts where a ring around the planet would run through the moon.
+        let current = Target::at_current_altitude(&world, &start, 0).expect("planet");
+        assert!(current.validate(&world).is_err(), "crosses the moon");
+        assert!((around(0).altitude - 20.0).abs() < 1e-9, "{:?}", around(0));
+        assert_eq!(around(0).clockwise, current.clockwise, "keeps direction");
+        for body in [0, 1] {
+            predict(&world, start, around(body)).expect("a capture from the start");
+        }
+        assert_eq!(Target::suggested(&world, &start, 99), None, "unknown body");
+    }
+
+    #[test]
+    fn a_suggestion_keeps_a_clear_altitude_and_climbs_only_when_it_must() {
+        let world = Preset::PlanetAndMoon.world();
+        let at = |x: f64, y: f64, body| {
+            let state = State {
+                x,
+                y,
+                ..State::default()
+            };
+            let current = Target::at_current_altitude(&world, &state, body).expect("a body");
+            let suggested = Target::suggested(&world, &state, body).expect("a body");
+            (current.altitude, suggested.altitude)
+        };
+        // Altitudes around the planet, centered at (0, -12): the moon rules out 9 to 17.
+        for clear in [5.0, 25.0] {
+            let (current, suggested) = at(0.0, 7.0 + clear - 12.0, 0);
+            assert!((current - clear).abs() < 1e-9);
+            assert_eq!(suggested, current, "nothing in the way at {clear}");
+        }
+        for blocked in [10.0, 17.5] {
+            let (_, suggested) = at(0.0, 7.0 + blocked - 12.0, 0);
+            assert!((suggested - 20.0).abs() < 1e-9, "from {blocked}");
+        }
+    }
+
+    #[test]
+    fn a_suggestion_climbs_past_bands_that_overlap_and_stays_in_range() {
+        let mut world = Preset::PlanetAndMoon.world();
+        let start = State {
+            x: 0.0,
+            y: 8.0,
+            ..State::default()
+        };
+        // Listed out of order, with the second moon's band reaching well past the first's.
+        let mut outer = world.bodies[1].clone();
+        outer.position = [0.0, 12.0];
+        world.bodies.insert(1, outer);
+        let target = Target::suggested(&world, &start, 0).expect("planet");
+        target.validate(&world).expect("clear of both moons");
+        assert!((target.altitude - 24.0).abs() < 1e-9, "{target:?}");
+        // A band straddling the top of the range: the climb stops at the limit.
+        world.bodies[1].position = [0.0, 99_995.0];
+        world.bodies[2].position = [0.0, 99_995.0];
+        let high = State {
+            x: 0.0,
+            y: 99_993.0,
+            ..start
+        };
+        let capped = Target::suggested(&world, &high, 0).expect("planet");
+        assert!((capped.altitude - MAX_ALTITUDE).abs() < 1e-9, "{capped:?}");
     }
 
     #[test]

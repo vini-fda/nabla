@@ -82,23 +82,19 @@ A self-signed certificate lasts 14 days, and each start makes a new one, so rest
 
 ## Releasing
 
-Pushing a version tag `vX.Y.Z` builds the native app and the server, and publishes a [GitHub Release](https://github.com/vini-fda/nabla/releases). The app's builds are for macOS on Apple silicon (an app bundle), Linux x86-64 and Windows 64-bit, and the server's for the same macOS and Linux. Pushes to `main` only run CI and deploy the web app; they never release.
+Merging a version bump into `main` publishes a [GitHub Release](https://github.com/vini-fda/nabla/releases) with builds of the native app and the server. The app's builds are for macOS on Apple silicon (an app bundle), Linux x86-64 and Windows 64-bit, and the server's for the same macOS and Linux. Merges without a bump only run CI and deploy the web app.
 
-1. Bump the workspace `version` in `Cargo.toml` (`[workspace.package]`, shared by every crate) and `Cargo.lock`, then commit and get the commit onto `main`:
+To release, bump the workspace `version` in `Cargo.toml` (`[workspace.package]`, shared by every crate) and `Cargo.lock`, in the pull request or one of its own, and commit it:
 
-   ```sh
-   cargo bump minor  # or major, or patch
-   ```
+```sh
+cargo bump minor  # or major, or patch
+```
 
-2. After the merge, on `main`, run:
+After the merge, `.github/workflows/tag.yml` creates the tag `vX.Y.Z` if that version is newer than every existing tag, then starts `.github/workflows/release.yml` on it. The release first checks that the tag matches the workspace version and reruns CI. It then builds each target on a native runner and publishes the release with checksums and the notes from `.github/release-notes.md`.
 
-   ```sh
-   cargo tag
-   ```
+These tags are made in Actions, so they aren't GPG-signed. If the workflow can't tag a version, `cargo tag` does the same by hand: on `main`, it also checks that the checkout has no uncommitted changes and is level with `origin/main`, and asks before pushing the tag.
 
-   It only tags if the checkout is `main`, has no uncommitted changes and is level with `origin/main`, and if the version in `Cargo.toml` is newer than every existing tag. It then asks whether to push the tag, which publishes the release.
-
-`.github/workflows/release.yml` first checks that the tag matches the workspace version and reruns CI. It then builds each target on a native runner and publishes the release with checksums and the notes from `.github/release-notes.md`.
+If a release fails after its tag exists, rerun its failed jobs. If it never started, start it with `gh workflow run release.yml --ref vX.Y.Z`. A failure that needs a code fix takes a new bump, since the tag is on the broken commit.
 
 ### Signing the macOS app
 

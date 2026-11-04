@@ -1,0 +1,49 @@
+name: Tag release
+
+# Merging a version bump publishes it: this tags the new version and starts release.yml on the
+# tag. A push that changes Cargo.toml but not the version does nothing. See README.md.
+on:
+  push:
+    branches: [main]
+    paths: [Cargo.toml]
+
+permissions:
+  contents: write # push the tag
+  actions: write # start release.yml
+
+jobs:
+  tag:
+    name: Tag a new version
+    runs-on: ubuntu-latest
+    steps:
+      # The tags, to compare the version with.
+      - uses: actions/checkout@v7
+        with:
+          fetch-tags: true
+
+      - name: Install the toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+
+      # The Linux linker of .cargo/config.toml, which builds xtask.
+      - uses: rui314/setup-mold@v1
+        with:
+          make-default: false
+
+      # An annotated tag needs a tagger.
+      - name: Git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      # A tag pushed with GITHUB_TOKEN triggers no workflows, unlike a dispatch, so this starts
+      # the release itself. If the dispatch fails, start it by hand: running this job again finds
+      # the version tagged and does nothing.
+      - name: Tag and start the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="$(cargo xtask tag --ci)"
+          if [ -n "$tag" ]; then
+            gh workflow run release.yml --ref "$tag"
+            echo "::notice::Tagged $tag and started its release"
+          fi

@@ -46,10 +46,12 @@ Repository:
   bump <major|minor|patch>
       Increase the workspace version in Cargo.toml and Cargo.lock, without committing.
       `cargo bump` is this task.
-  tag
+  tag [--ci]
       Check that this is `main`, clean and level with origin, and that the version in
       Cargo.toml is new; then create its tag `vX.Y.Z` and ask whether to push it, which
       publishes the release. `cargo tag` is this task.
+      --ci is for .github/workflows/tag.yml: it doesn't ask or need `main` to be level with
+      origin, prints only the tag it pushed, and does nothing if the version is already tagged.
 ";
 
 /// The options shared by every task: which build of the app to use.
@@ -111,7 +113,8 @@ fn main() -> Result<ExitCode> {
     match (task.as_str(), args.as_slice()) {
         ("check", []) => check(&sh)?,
         ("bump", [part]) => release::bump(&sh, part)?,
-        ("tag", []) => release::tag(&sh)?,
+        ("tag", []) => release::tag(&sh, false)?,
+        ("tag", [flag]) if flag == "--ci" => release::tag(&sh, true)?,
         ("bundle" | "run", _) => return app(&sh, &task, args),
         ("web-dev", args) => web_dev(&sh, args)?,
         ("dev-server", args) => dev_server(&sh, args)?,

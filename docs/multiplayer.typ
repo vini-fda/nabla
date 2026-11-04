@@ -691,10 +691,11 @@ special case of A1, so all of @safety would hold on one.
     ([Message], [Channel], [Contents]),
     [`Hello`], [stream, up], [Protocol and build version.],
     [`Lobby`], [stream, down], [The world (validated TOML, with its tick rate and arena), $Pset$, the default ship, the pilots present, and $N_max$.],
-    [`Join`], [stream, up], [The parameters the pilot asks for.],
-    [`Welcome`], [stream, down], [The pilot's ship $i$, its granted parameters, a tick $T_0$, all ships' states at $T_0$. Or `Full`, if there is no room.],
+    [`Join`], [stream, up], [The parameters the pilot asks for, and the name to fly under.],
+    [`Welcome`], [stream, down], [The pilot's ship $i$, its granted parameters, a tick $T_0$, all ships' states at $T_0$. Or `Full`, if there is no room, or `NameTaken`, if a ship is flying under that name.],
     [`Leave`], [stream, up], [The ship goes. The connection stays, back in the lobby.],
-    [`Roster`], [stream, down], [Ship $j$ exists for ticks in $[T_"since", T_"until")$, with its parameters and radius.],
+    [`Roster`], [stream, down], [Ship $j$ exists for ticks in $[T_"since", T_"until")$, with its parameters and radius, its pilot's name, and whether they are active. Sent again when that changes.],
+    [`Away`], [stream, up], [The pilot has left the app for another, or come back.],
     [`Commands`], [datagram, up], [A stamp $k$ and the commands stamped $k, k - 1, ..., k - K + 1$: the $K$ most recent.],
     [`Snapshot`], [datagram, down], [A label $T$, the client's margin $mu$, and for each ship in it, $(j, s_j, eta_j, u_j)$.],
   ),
@@ -727,11 +728,23 @@ $Tick$ has no precondition. That is the most important fact about it.
 
 == The lobby
 
-A connection either has a ship or does not, and one without is in the lobby. `Hello` gets `Lobby` back, and the client shows its lobby screen: the world, the pilots present, and the title screen's rows for the four parameters, bounded by $Pset$ instead of by a constant. `Join` carries the request $r$, arrives on a stream, and takes effect between ticks:
+A connection either has a ship or does not, and one without is in the lobby. `Hello` gets `Lobby` back, and the client shows its lobby screen: the world, the pilots present, and the title screen's rows for the four parameters, bounded by $Pset$ instead of by a constant. `Join` carries the request $r$ and a name (@presence), arrives on a stream, and takes effect between ticks:
 
 #action($Join(i, r)$, conj[$i in.not dom x$ #h(0.3em) and #h(0.3em) $|dom x| < N_max$][$x' = x union {i |-> "spawn"(i)}$][$P' = P union {i |-> Grant(r)}$][$Log' = Log compose ⟨Join(i, "spawn"(i), Grant(r))⟩$][$"buf"[i]$, $"last"[i]$ and $"miss"[i]$ start empty, neutral and $0$][#unch($T$)])
 
-A `Join` past $N_max$ changes nothing and is answered with `Full`. The function $"spawn"$ picks a place inside the arena, clear of the bodies, and in Phase B clear of other ships. $Leave(i)$ is as in the ideal, and happens on `Leave`, when the connection closes, or when a ship has been silent for $T_"idle"$, so that a forgotten tab does not hold one of the sixteen places for good.
+A `Join` past $N_max$ changes nothing and is answered with `Full`, and one for a name a ship in the world is flying under changes nothing and is answered with `NameTaken`. The function $"spawn"$ picks a place inside the arena, clear of the bodies, and in Phase B clear of other ships. $Leave(i)$ is as in the ideal, and happens on `Leave`, when the connection closes, or when a ship has been silent for $T_"idle"$, so that a forgotten tab does not hold one of the sixteen places for good.
+
+== Names and presence <presence>
+
+A pilot flies under a name of $1$ to $32$ lowercase ASCII letters and digits. A name is what a pilot wants to be called and not who they are: the connection stays the only identity (assumption A2), and there are no accounts. A value of the wire type is valid by construction, so a name that breaks the rule is not a message, and closes the connection as other nonsense does. Two ships in the world never share a name, and a name is free again as soon as its ship leaves.
+
+Beside the name, a screen shows whether the pilot is active. The server keeps two more things for ship $i$: $"away"[i]$, as the last `Away` said, and $"input"[i]$, the last tick that applied a delivered command other than its own $neutral$, which starts at the tick the ship joined.
+
+#action($"Active"(i)$, conj[$not "away"[i]$][$"miss"[i] < N_d$][$(T - "input"[i]) h <= T_"input"$])
+
+At the end of a tick, a ship whose $"Active"$ differs from its roster entry gets that entry sent again, which a client takes as it takes any entry. So a pilot flipping `Away` as fast as they can costs at most one message per tick. An autopilot's commands are not neutral, so a ship under one stays active while it flies. A hidden browser tab runs no frames and may never send `Away`, but it stops sending commands too, so $"miss"[i]$ reaches $N_d$ within a second, and the ship is shown as inactive long before $T_"idle"$ takes it away.
+
+None of this is part of the machine. $"away"$ and $"input"$ are not read by $Chosen$ or by any action on $x$, $P$ or $Log$, so every theorem here holds as stated, and a client that lies with `Away` lies only about how its own name is shown. For the same reason the module of @tla does not mention them.
 
 == The client
 
@@ -1292,6 +1305,7 @@ The protocol's constants start at the values below. All are to be tuned at M7.
     [$K$], [$5$], [@loss.],
     [$N_d$], [$60$ ticks], [One second of silence before a ship goes neutral. Must exceed the longest stall worth riding out.],
     [$T_"idle"$], [$60$ s], [Silence before a ship leaves and frees its place.],
+    [$T_"input"$], [$30$ s], [How long without input before a pilot is shown as inactive (@presence).],
     [$N_b$], [$60$ ticks], [Must exceed $mu^* slash h$ with room for a jump. Bounds memory per ship.],
     [$q$], [$1$, then $6$], [@prop-hermite. Remote ships only. Start at $1$ to keep M5 simple.],
     [$mu^*$], [$17$ ms], [One tick, until the client has delay statistics of its own.],

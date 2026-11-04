@@ -56,10 +56,12 @@ With the macOS firewall on, allow incoming connections if it asks.
 
 Send everyone the whole address, `#sha256=...` included. Then:
 
-- **In the app:** choose Online on the title screen, paste the address, press Connect, and press Take this ship in the lobby.
+- **In the app:** choose Online on the title screen, paste the address, press Connect, pick a username in the lobby, and press Take this ship.
 - **In a browser:** do the same in the [web app](https://vini-fda.github.io/nabla/). It needs WebTransport, which Chrome, Edge and Firefox have, and Safari from 26.4. If the browser asks to access devices on your local network, allow it.
 
 Use the web app at that address and not a copy served from the host. Browsers only offer WebTransport on `https://` pages and on `localhost`, so a page opened from `http://192.168.1.50` cannot connect.
+
+A username is 1 to 32 lowercase letters and digits, and no two pilots flying at once can share one. Each ship shows its pilot's name beside it, with a dot that is green while they are flying and gray when the app has lost focus, the connection has gone quiet, or they have touched nothing for 30 seconds.
 
 The world comes from the server, so pilots need nothing but the address. Up to 16 can fly at once (`--max-pilots` lowers that), and a ship that goes silent for a minute leaves and frees its place.
 

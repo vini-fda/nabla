@@ -239,6 +239,77 @@ fn stronger_ship() -> ShipRequest {
     }
 }
 
+/// The name `pilot` sees on `ship`'s tag, and whether its dot is green.
+fn tag_of(pilot: &Online, ship: ShipId) -> (String, bool) {
+    let entry = pilot.pilot(ship).expect("the roster has told of it");
+    (entry.username.to_string(), entry.active)
+}
+
+#[test]
+fn each_pilot_sees_every_name_and_who_has_gone_away() {
+    let world = vacuum();
+    let ours = ShipRequest::from(world.default_ship());
+    let mut rig = Rig::new(world, 0.050, 0.0, 1);
+    rig.add(ours);
+    rig.add(ours);
+    rig.join_all(&[ours, ours]);
+    rig.run(1.0, &scripted);
+    let (a, b) = (
+        rig.clients[0].ship().expect("flying"),
+        rig.clients[1].ship().expect("flying"),
+    );
+    for client in &rig.clients {
+        assert_eq!(tag_of(client, a), ("pilot0".to_owned(), true));
+        assert_eq!(tag_of(client, b), ("pilot1".to_owned(), true));
+    }
+    // Pilot 1 tabs away, and every screen shows it, their own included.
+    let tabbed_away = |who: usize, now: f64| Hands {
+        away: who == 1,
+        ..scripted(who, now)
+    };
+    rig.run(0.5, &tabbed_away);
+    for client in &rig.clients {
+        assert_eq!(tag_of(client, a), ("pilot0".to_owned(), true));
+        assert_eq!(tag_of(client, b), ("pilot1".to_owned(), false));
+    }
+    // And comes back.
+    rig.run(0.5, &scripted);
+    for client in &rig.clients {
+        assert_eq!(tag_of(client, b), ("pilot1".to_owned(), true));
+    }
+}
+
+#[test]
+fn a_taken_name_sends_the_pilot_back_to_pick_another() {
+    let world = vacuum();
+    let ours = ShipRequest::from(world.default_ship());
+    let mut rig = Rig::new(world, 0.050, 0.0, 1);
+    rig.add(ours);
+    rig.add(ours);
+    rig.join_all(&[ours]);
+    rig.run(1.0, &scripted);
+    assert_eq!(rig.clients[1].stage(), Stage::Lobby);
+    let taken = Username::parse("pilot0").expect("a valid name");
+    let now = rig.now;
+    rig.clients[1].join_at(now, ours, taken.clone());
+    rig.run(0.5, &scripted);
+    assert_eq!(rig.clients[1].stage(), Stage::Lobby);
+    assert_eq!(rig.clients[1].refused_name(), Some(&taken));
+    let free = Username::parse("miriam").expect("a valid name");
+    let now = rig.now;
+    rig.clients[1].join_at(now, ours, free);
+    rig.run(0.5, &scripted);
+    assert_eq!(rig.clients[1].stage(), Stage::Playing);
+    assert_eq!(rig.clients[1].refused_name(), None);
+    // Once its ship has gone, the name is anyone's.
+    rig.clients[0].leave();
+    rig.run(0.5, &scripted);
+    let now = rig.now;
+    rig.clients[0].join_at(now, ours, taken);
+    rig.run(0.5, &scripted);
+    assert_eq!(rig.clients[0].stage(), Stage::Playing);
+}
+
 #[test]
 fn two_pilots_with_different_ships_fly_in_one_world_at_100_ms_with_no_corrections() {
     let world = vacuum();

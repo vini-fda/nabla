@@ -295,6 +295,11 @@ impl Online {
         self.machine.refused_name()
     }
 
+    /// The ship this client flies.
+    pub fn ship(&self) -> Option<ShipId> {
+        self.machine.ship()
+    }
+
     /// Who flies `ship`, and whether they are active, once the roster has said.
     pub fn pilot(&self, ship: ShipId) -> Option<&RosterEntry> {
         self.machine.roster().get(&ship)

@@ -39,7 +39,7 @@ in the web app of `cargo xtask web-dev`: http://localhost:8080/?server=...&conne
 
 Then:
 
-- **Native app:** `cargo nabla`, then Online on the title screen, paste the address, Connect, and take a ship in the lobby. Open the app again, or run `cargo run -p nabla-server --bin nabla-bot -- --server '<address>'` for a headless pilot, to have company.
+- **Native app:** `cargo nabla`, then Online on the title screen, paste the address, Connect, and pick a username and take a ship in the lobby. Open the app again, or run `cargo run -p nabla-server --bin nabla-bot -- --server '<address>'` for a headless pilot, to have company.
 - **Web app:** `cargo xtask web-dev`, then open the link the server logged. The page's `?server=` is the address, percent-encoded, and `&connect` connects at once. Browsers need WebTransport, which Chrome, Edge and Firefox have, and Safari from 26.4; only Chromium has been tried so far.
 - **Soak test:** `cargo run --release -p nabla-server --bin nabla-soak` flies sixteen bots through a lossy, delaying proxy for ten minutes, and fails if the expectations of `docs/multiplayer.typ`, M4, are not met (`--help` there lists the flags).
 

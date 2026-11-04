@@ -254,3 +254,68 @@ fn a_client_that_is_dropped_frees_its_ship_at_once() {
         std::thread::sleep(Duration::from_millis(4));
     }
 }
+
+/// Names, a refusal and an absence, as they cross a real connection.
+#[test]
+fn names_and_absences_reach_the_other_pilot_over_a_real_connection() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("a runtime");
+    let world = Preset::Vacuum
+        .world()
+        .multiplayer(60, 1000.0, 16)
+        .expect("a world");
+    let ship = ShipRequest::from(world.default_ship());
+    let address = runtime.block_on(async {
+        let server = Server::bind(Settings {
+            bind: "127.0.0.1:0".parse().expect("an address"),
+            world,
+            config: Config::default(),
+            identity: Identity::self_signed(["localhost", "127.0.0.1"]).expect("a certificate"),
+        })
+        .expect("a server");
+        let address = server.address("127.0.0.1").expect("an address");
+        tokio::spawn(server.serve());
+        address
+    });
+    let mut clients = [
+        Online::new(net::connect(&address).expect("a link"), ship),
+        Online::new(net::connect(&address).expect("a link"), ship),
+    ];
+    let started = Instant::now();
+    // Run frames until `done`, with pilot 1 at the controls or away.
+    let until = |clients: &mut [Online; 2], away: bool, done: &dyn Fn(&[Online; 2]) -> bool| {
+        while !done(clients) {
+            assert!(started.elapsed() < Duration::from_secs(20), "it came");
+            let t = started.elapsed().as_secs_f64();
+            clients[0].frame(hands(0, t));
+            clients[1].frame(Hands {
+                away,
+                ..hands(1, t)
+            });
+            std::thread::sleep(Duration::from_millis(4));
+        }
+    };
+    until(&mut clients, false, &|c| {
+        c.iter().all(|c| c.stage() == Stage::Lobby)
+    });
+    clients[0].join(ship, name("miriam"));
+    until(&mut clients, false, &|c| c[0].stage() == Stage::Playing);
+    clients[1].join(ship, name("miriam"));
+    until(&mut clients, false, &|c| c[1].refused_name().is_some());
+    assert_eq!(clients[1].stage(), Stage::Lobby);
+    clients[1].join(ship, name("juan"));
+    until(&mut clients, false, &|c| c[1].stage() == Stage::Playing);
+
+    let own = clients[1].ship().expect("flying");
+    let seen = |c: &[Online; 2]| c[0].pilot(own).map(|entry| entry.active);
+    until(&mut clients, false, &|c| seen(c) == Some(true));
+    assert_eq!(
+        clients[0].pilot(own).expect("told").username.as_str(),
+        "juan"
+    );
+    until(&mut clients, true, &|c| seen(c) == Some(false));
+    until(&mut clients, false, &|c| seen(c) == Some(true));
+}

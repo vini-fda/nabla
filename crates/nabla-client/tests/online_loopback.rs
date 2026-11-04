@@ -10,7 +10,7 @@ use nabla_client::online::{Hands, Online};
 use nabla_core::solutions::SOLUTIONS;
 use nabla_net::Config;
 use nabla_net::client::{SNAP_POSITION, Stage};
-use nabla_net::wire::Username;
+use nabla_net::wire::{Password, Username};
 use nabla_server::impair::{Impairment, Proxy};
 use nabla_server::{Identity, Metrics, Server, Settings};
 use nabla_sim::steering::{Input, Steering};
@@ -64,6 +64,7 @@ fn two_pilots(
             world,
             config: Config::default(),
             identity: Identity::self_signed(["localhost", "127.0.0.1"]).expect("a certificate"),
+            password: None,
         })
         .expect("a server");
         let target = server.local_addr().expect("an address");
@@ -221,6 +222,7 @@ fn a_client_that_is_dropped_frees_its_ship_at_once() {
             world,
             config: Config::default(),
             identity: Identity::self_signed(["localhost", "127.0.0.1"]).expect("a certificate"),
+            password: None,
         })
         .expect("a server");
         let address = server.address("127.0.0.1").expect("an address");
@@ -274,6 +276,7 @@ fn names_and_absences_reach_the_other_pilot_over_a_real_connection() {
             world,
             config: Config::default(),
             identity: Identity::self_signed(["localhost", "127.0.0.1"]).expect("a certificate"),
+            password: None,
         })
         .expect("a server");
         let address = server.address("127.0.0.1").expect("an address");
@@ -318,4 +321,60 @@ fn names_and_absences_reach_the_other_pilot_over_a_real_connection() {
     );
     until(&mut clients, true, &|c| seen(c) == Some(false));
     until(&mut clients, false, &|c| seen(c) == Some(true));
+}
+
+/// A server with a password, as a pilot meets it: asked, wrong, and then right, each on a
+/// connection of its own over the real transport.
+#[test]
+fn a_password_is_asked_for_and_checked_over_a_real_connection() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("a runtime");
+    let world = Preset::Vacuum
+        .world()
+        .multiplayer(60, 1000.0, 16)
+        .expect("a world");
+    let ship = ShipRequest::from(world.default_ship());
+    let password = |text| Some(Password::parse(text).expect("valid"));
+    let (address, metrics) = runtime.block_on(async {
+        let server = Server::bind(Settings {
+            bind: "127.0.0.1:0".parse().expect("an address"),
+            world,
+            config: Config::default(),
+            identity: Identity::self_signed(["localhost", "127.0.0.1"]).expect("a certificate"),
+            password: password("hunter2"),
+        })
+        .expect("a server");
+        let address = server.address("127.0.0.1").expect("an address");
+        let metrics = server.metrics();
+        tokio::spawn(server.serve());
+        (address, metrics)
+    });
+    let connect =
+        |given| Online::with_password(net::connect(&address).expect("a link"), ship, given);
+    let until = |client: &mut Online, stage: Stage| {
+        let started = Instant::now();
+        while client.stage() != stage {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "stuck at {:?}, looking for {stage:?}: {:?}",
+                client.stage(),
+                client.closed()
+            );
+            client.frame(hands(0, started.elapsed().as_secs_f64()));
+            std::thread::sleep(Duration::from_millis(4));
+        }
+    };
+
+    until(&mut connect(None), Stage::NeedsPassword);
+    until(&mut connect(password("wrong")), Stage::WrongPassword);
+    assert_eq!(metrics.lock().expect("the metrics").pilots, 0);
+
+    let mut client = connect(password("hunter2"));
+    until(&mut client, Stage::Lobby);
+    client.join(ship, name("miriam"));
+    until(&mut client, Stage::Playing);
+    assert_eq!(client.closed(), None);
 }

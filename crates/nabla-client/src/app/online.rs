@@ -8,7 +8,7 @@ use std::ops::RangeInclusive;
 
 use nabla_net::client::Stage;
 use nabla_net::link::Address;
-use nabla_net::wire::{MAX_USERNAME, RosterEntry, Username};
+use nabla_net::wire::{MAX_PASSWORD, MAX_USERNAME, Password, RosterEntry, Username};
 
 use super::{
     Aim, GridStyle, Input, ViewerApp, canvas_buttons, draw_grid, fit_camera, icons, keys, palette,
@@ -123,7 +123,12 @@ impl ViewerApp {
         match net::connect(&address) {
             Ok(transport) => {
                 log::info!("Connecting to {address}");
-                self.online = Some(Online::new(transport, self.join_request));
+                let password = Password::parse(self.server_password.trim()).ok();
+                self.online = Some(Online::with_password(
+                    transport,
+                    self.join_request,
+                    password,
+                ));
                 self.screen = super::Screen::Online;
                 self.online_fit = true;
                 self.follow_ship = true;
@@ -137,6 +142,7 @@ impl ViewerApp {
     fn disconnect_online(&mut self) {
         self.online = None;
         self.online_levels = None;
+        self.server_password.clear();
         self.screen = super::Screen::Title;
         self.notifications.clear();
     }
@@ -265,31 +271,36 @@ impl ViewerApp {
             let width = ui.available_width().min(460.0);
             ui.allocate_ui(egui::vec2(width, 0.0), |ui| {
                 ui.set_width(width);
-                if let Some(why) = closed {
-                    ui.colored_label(palette::RED, format!("The connection ended: {why}"));
-                } else {
-                    match stage {
-                        Stage::Connecting => {
-                            ui.horizontal(|ui| {
-                                ui.spinner();
-                                ui.label("Connecting");
-                            });
+                // What the server said comes before the connection's end, which often follows it.
+                match (stage, closed) {
+                    (Stage::NeedsPassword, _) => self.password_ui(ui, false),
+                    (Stage::WrongPassword, _) => self.password_ui(ui, true),
+                    (Stage::Rejected, why) => {
+                        ui.colored_label(palette::RED, "The server turned this client away.");
+                        if let Some(why) = why {
+                            ui.label(why);
                         }
-                        Stage::Joining => {
-                            ui.horizontal(|ui| {
-                                ui.spinner();
-                                ui.label("Taking a ship");
-                            });
-                        }
-                        Stage::Full => {
-                            ui.colored_label(palette::YELLOW, "The server is full.");
-                            ui.label("Every place is taken. Try again in a moment.");
-                        }
-                        Stage::Rejected => {
-                            ui.colored_label(palette::RED, "The server turned this client away.");
-                        }
-                        Stage::Lobby | Stage::Playing => self.ship_picker_ui(ui),
                     }
+                    (Stage::Full, _) => {
+                        ui.colored_label(palette::YELLOW, "The server is full.");
+                        ui.label("Every place is taken. Try again in a moment.");
+                    }
+                    (_, Some(why)) => {
+                        ui.colored_label(palette::RED, format!("The connection ended: {why}"));
+                    }
+                    (Stage::Connecting, None) => {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label("Connecting");
+                        });
+                    }
+                    (Stage::Joining, None) => {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label("Taking a ship");
+                        });
+                    }
+                    (Stage::Lobby | Stage::Playing, None) => self.ship_picker_ui(ui),
                 }
                 ui.add_space(16.0);
                 ui.horizontal(|ui| {
@@ -302,6 +313,32 @@ impl ViewerApp {
                 });
             });
         });
+    }
+
+    /// The field for the server's password. Each try is a new connection, since the server ends
+    /// one that gets it wrong, and may have ended this one for taking too long.
+    fn password_ui(&mut self, ui: &mut egui::Ui, wrong: bool) {
+        ui.strong("Password");
+        let field = ui.add(
+            egui::TextEdit::singleline(&mut self.server_password)
+                .password(true)
+                .hint_text("this server asks for one")
+                .char_limit(MAX_PASSWORD)
+                .desired_width(f32::INFINITY),
+        );
+        if wrong {
+            ui.colored_label(palette::RED, "That is not the password.");
+        }
+        if let Some(why) = &self.online_error {
+            ui.colored_label(palette::RED, why);
+        }
+        let valid = Password::parse(self.server_password.trim()).is_ok();
+        let entered = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        ui.add_space(8.0);
+        let connect = ui.add_enabled(valid, egui::Button::new("Connect"));
+        if connect.clicked() || (valid && entered) {
+            self.connect_online(&ui.ctx().clone());
+        }
     }
 
     /// The ship the pilot asks for, within what the world allows, and the button to take it.

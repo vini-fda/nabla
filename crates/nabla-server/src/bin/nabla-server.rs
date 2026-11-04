@@ -4,21 +4,24 @@
 //! nabla-server [--bind 0.0.0.0:4433] [--world vacuum|planet|planet-moon|FILE.toml]
 //!              [--tick-rate 60] [--arena 1000] [--max-pilots 16]
 //!              [--cert cert.pem --key key.pem] [--name localhost --name 192.168.0.5]
+//!              [--password-file FILE]
 //! ```
 //!
 //! Without `--cert` it makes a self-signed certificate, good for two weeks, whose hash is printed
 //! in the address clients connect to. With one, clients need no hash.
+//!
+//! With `--password-file`, clients must say what the file holds before they see the lobby.
 
 use std::net::SocketAddr;
 use std::time::Duration;
 
 use nabla_net::Config;
-use nabla_server::cli::{flag, parsed, world};
+use nabla_server::cli::{flag, parsed, password_file, world};
 use nabla_server::{Server, Settings};
 use wtransport::Identity;
 
 const HELP: &str = "nabla-server [--bind ADDR] [--world NAME|FILE] [--tick-rate N] [--arena S] \
-[--max-pilots N] [--cert PEM --key PEM] [--name HOST]...";
+[--max-pilots N] [--cert PEM --key PEM] [--name HOST]... [--password-file FILE]";
 
 #[tokio::main]
 async fn main() {
@@ -45,6 +48,8 @@ async fn run() -> Result<(), String> {
     let max_pilots: usize = parsed(&args, "--max-pilots", nabla_sim::world::MAX_PILOTS)?;
     let name = flag(&args, "--world").unwrap_or_else(|| "planet-moon".to_owned());
     let world = world(&name, tick_rate, arena, nabla_sim::world::MAX_PILOTS)?;
+    let password = password_file(&args)?;
+    let private = password.is_some();
 
     let identity = match (flag(&args, "--cert"), flag(&args, "--key")) {
         (Some(cert), Some(key)) => Identity::load_pemfiles(&cert, &key)
@@ -75,6 +80,7 @@ async fn run() -> Result<(), String> {
         world,
         config,
         identity,
+        password,
     })?;
     let host = if bind.ip().is_unspecified() {
         "localhost".to_owned()
@@ -84,6 +90,9 @@ async fn run() -> Result<(), String> {
     let address = server.address(&host).map_err(|e| e.to_string())?;
     log::info!("world {name}, {tick_rate} Hz, arena {arena}, up to {max_pilots} pilots");
     log::info!("connect to {address}");
+    if private {
+        log::info!("pilots need the password to get in");
+    }
     if bind.ip().is_loopback() {
         log::info!(
             "in the web app of `cargo xtask web-dev`: http://localhost:8080/?server={}&connect#dev",

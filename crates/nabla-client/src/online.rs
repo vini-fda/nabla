@@ -20,7 +20,7 @@ use nabla_net::client::{
     Correction, CorrectionStats, LobbyInfo, Remote, SNAP_HEADING, SNAP_POSITION, Stage, Step,
 };
 use nabla_net::link::Incoming;
-use nabla_net::wire::{RosterEntry, ShipId, Tick, Username};
+use nabla_net::wire::{Password, RosterEntry, ShipId, Tick, Username};
 use nabla_net::{ClientMachine, Config};
 use nabla_sim::command::Command;
 use nabla_sim::steering::{Input, Steering};
@@ -215,12 +215,24 @@ pub struct Online {
 impl Online {
     /// A client that will ask the server it is connected to for `request` when it is told to
     /// [`join`](Self::join).
-    pub fn new(mut transport: Box<dyn Transport>, request: ShipRequest) -> Self {
+    pub fn new(transport: Box<dyn Transport>, request: ShipRequest) -> Self {
+        Self::with_password(transport, request, None)
+    }
+
+    /// As [`new`](Self::new), saying `password` if the server asks for one.
+    pub fn with_password(
+        mut transport: Box<dyn Transport>,
+        request: ShipRequest,
+        password: Option<Password>,
+    ) -> Self {
         let mut machine = ClientMachine::waiting_in_the_lobby(
             Config::default(),
             request,
             crate::version::build_version!(),
         );
+        if let Some(password) = password {
+            machine = machine.with_password(password);
+        }
         for kind in machine.start() {
             transport.send(kind);
         }
@@ -245,9 +257,10 @@ impl Online {
         self.machine.stage()
     }
 
-    /// Why the connection is over, if it is.
+    /// Why the connection is over, if it is. What the server said comes first: a server that
+    /// turns a client away then closes the connection, and the close says only that it did.
     pub fn closed(&self) -> Option<&str> {
-        self.closed.as_deref().or_else(|| self.machine.refusal())
+        self.machine.refusal().or(self.closed.as_deref())
     }
 
     pub fn lobby(&self) -> Option<LobbyInfo> {

@@ -5,6 +5,19 @@ edition.workspace = true
 description = "The multiplayer server: WebTransport and the owner task around nabla-net's ServerMachine, and the bots and the impaired network it is tested with."
 publish = false
 
+# These have no tests: without `test = false`, the tests build each one as an empty test binary.
+[[bin]]
+name = "nabla-bot"
+test = false
+
+[[bin]]
+name = "nabla-server"
+test = false
+
+[[bin]]
+name = "nabla-soak"
+test = false
+
 [dependencies]
 env_logger = { version = "0.11.11", default-features = false, features = ["auto-color"] }
 log = "0.4.35"

@@ -32,9 +32,13 @@ jobs:
     name: CI
     uses: ./.github/workflows/ci.yml
 
+  # The builds don't wait for `checks`: a tag's commit has usually just passed them on main, and
+  # nothing is signed or published until they pass here too. No Rust cache either: a tag's own
+  # caches could only ever be restored by runs on that same tag, and main saves none for this
+  # profile.
   build:
     name: Build ${{ matrix.target }}
-    needs: [version, checks]
+    needs: version
     strategy:
       fail-fast: false
       matrix:
@@ -65,12 +69,6 @@ jobs:
         if: runner.os == 'Linux'
         with:
           make-default: false
-
-      # A tag's caches could only ever be restored by runs on that same tag: don't save them.
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
-          save-if: false
 
       # libudev: gilrs reads game controllers through it on Linux.
       - name: System libraries for eframe and gilrs
@@ -133,7 +131,7 @@ jobs:
   # release notes say how to run it on macOS).
   build-server:
     name: Build the server for ${{ matrix.target }}
-    needs: [version, checks]
+    needs: version
     strategy:
       fail-fast: false
       matrix:
@@ -160,12 +158,6 @@ jobs:
         with:
           make-default: false
 
-      # A tag's caches could only ever be restored by runs on that same tag: don't save them.
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: server-${{ matrix.target }}
-          save-if: false
-
       - name: Build and package
         run: |
           cargo build --locked --release -p nabla-server --bin nabla-server --target ${{ matrix.target }}
@@ -188,7 +180,7 @@ jobs:
   # Without the secrets, the ad-hoc build ships as is and Gatekeeper blocks its first launch.
   sign-macos:
     name: Sign and notarize the macOS app
-    needs: build
+    needs: [build, checks]
     runs-on: macos-latest
     environment: release
     outputs:
@@ -290,7 +282,7 @@ jobs:
 
   release:
     name: Publish the release
-    needs: [build, build-server, sign-macos]
+    needs: [build, build-server, sign-macos, checks]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

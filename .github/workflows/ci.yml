@@ -130,32 +130,26 @@ jobs:
           sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
             libxkbcommon-dev libwayland-dev libssl-dev libasound2-dev libudev-dev
 
+      # A pre-built cargo-nextest binary, for every runner OS.
+      - uses: taiki-e/install-action@nextest
+
       # Platform specific code (`cfg(target_os)`) is only linted on its own platform.
       - name: Clippy
         run: cargo clippy $CARGO_FLAGS --workspace --all-targets --target ${{ matrix.target }}
 
-      # Release mode keeps the solution tests fast. Overflow checks and debug assertions stay
-      # on, so arithmetic bugs that release builds would hide still fail the tests. They are on
-      # for this workspace's crates only: the dependencies build exactly as in a release build.
-      # The release app itself (whole-program LTO) and the macOS bundle are built by
-      # release.yml, on version tags only.
-      # Includes the solution tests (every solution still solves every case) and the ASCII lint
-      # for the app sources.
+      # The `ci` profile of Cargo.toml: optimized, which keeps the solution tests fast, with
+      # overflow checks and debug assertions on for this workspace's crates. The release app
+      # itself (whole-program LTO) and the macOS bundle are built by release.yml, on version
+      # tags only. Includes the solution tests (every solution still solves every case) and the
+      # ASCII lint for the app sources.
       - name: Test
         run: >-
-          cargo test $CARGO_FLAGS --workspace --release --target ${{ matrix.target }}
-          --config 'profile.release.package.nabla-core.debug-assertions=true'
-          --config 'profile.release.package.nabla-core.overflow-checks=true'
-          --config 'profile.release.package.nabla-net.debug-assertions=true'
-          --config 'profile.release.package.nabla-net.overflow-checks=true'
-          --config 'profile.release.package.nabla-server.debug-assertions=true'
-          --config 'profile.release.package.nabla-server.overflow-checks=true'
-          --config 'profile.release.package.nabla-sim.debug-assertions=true'
-          --config 'profile.release.package.nabla-sim.overflow-checks=true'
-          --config 'profile.release.package.nabla-synth.debug-assertions=true'
-          --config 'profile.release.package.nabla-synth.overflow-checks=true'
-          --config 'profile.release.package.nabla-client.debug-assertions=true'
-          --config 'profile.release.package.nabla-client.overflow-checks=true'
+          cargo nextest run $CARGO_FLAGS --workspace --cargo-profile ci
+          --lib --bins --tests --target ${{ matrix.target }}
+
+      # nextest does not run doctests.
+      - name: Doctests
+        run: cargo test $CARGO_FLAGS --workspace --profile ci --doc --target ${{ matrix.target }}
 
   # The web app: compile for wasm and run the exact trunk build that gets deployed.
   web:

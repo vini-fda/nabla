@@ -64,7 +64,6 @@ fn one_pilot_on_a_clean_link_is_predicted_exactly() {
         first.1.abs() < 0.05 && last.1.abs() < 0.002,
         "{first:?} {last:?}"
     );
-    assert!(Behavior::Honest == Behavior::Honest && Link::clean(0.0).loss == 0.0);
 }
 
 /// The error `e = mu - mu*` of the margin after time `from`, in milliseconds, at each report.

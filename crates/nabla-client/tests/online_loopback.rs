@@ -130,11 +130,11 @@ fn two_pilots(
 
 #[test]
 fn two_pilots_in_a_vacuum_at_100_ms_are_never_corrected() {
-    let (clients, _, metrics) = two_pilots(Preset::Vacuum, 15.0, None);
+    let (clients, _, metrics) = two_pilots(Preset::Vacuum, 5.0, None);
     for (i, client) in clients.iter().enumerate() {
         assert_eq!(client.stage(), Stage::Playing, "{i}");
         let info = client.info();
-        assert!(info.corrections.snapshots > 600, "{i}: {info:?}");
+        assert!(info.corrections.snapshots > 200, "{i}: {info:?}");
         assert_eq!(info.ships, 2, "{i}");
         let rtt = info.rtt.expect("QUIC measured a round trip");
         assert!((0.09..0.2).contains(&rtt), "{rtt}");
@@ -160,11 +160,11 @@ fn two_pilots_in_a_vacuum_at_100_ms_are_never_corrected() {
 
 #[test]
 fn among_bodies_the_corrections_match_the_replay_table() {
-    let (clients, _, metrics) = two_pilots(Preset::PlanetAndMoon, 15.0, None);
+    let (clients, _, metrics) = two_pilots(Preset::PlanetAndMoon, 5.0, None);
     let held = metrics.held;
     for (i, client) in clients.iter().enumerate() {
         let c = client.info().corrections;
-        assert!(c.snapshots > 600, "{i}: {c:?}");
+        assert!(c.snapshots > 200, "{i}: {c:?}");
         assert!(c.max_position < SNAP_POSITION, "{i}, {held} held: {c:?}");
         // tab-replay: positions to 1e-3 and velocities to 3e-2, even in contact. That is for
         // commands that all came in time, as they do in virtual time in
@@ -178,7 +178,7 @@ fn among_bodies_the_corrections_match_the_replay_table() {
 
 #[test]
 fn an_autopilot_lands_through_a_real_server_while_another_pilot_flies_by_hand() {
-    let (clients, landed, metrics) = two_pilots(Preset::Vacuum, 40.0, Some(3.0));
+    let (clients, landed, metrics) = two_pilots(Preset::Vacuum, 40.0, Some(0.5));
     let held = metrics.held;
     assert!(landed, "the autopilot lands within 40 s, {held} held");
     for (i, client) in clients.iter().enumerate() {

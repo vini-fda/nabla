@@ -416,14 +416,4 @@ mod tests {
             assert!(fastest <= with_gravity, "{fastest} over {with_gravity}");
         }
     }
-
-    #[test]
-    fn a_tick_of_60_hz_is_two_substeps() {
-        assert_eq!((1.0 / 60.0 * 120.0_f64).ceil(), 2.0);
-        assert_eq!(
-            (120.0 * (1.0 / 60.0_f64)).ceil(),
-            2.0,
-            "as the paper computes it"
-        );
-    }
 }

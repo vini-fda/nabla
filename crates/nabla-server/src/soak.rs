@@ -71,7 +71,7 @@ pub async fn run(soak: Soak) -> Result<Outcomes, String> {
         flights.push(tokio::spawn(async move {
             // Not all at one instant, as pilots are not.
             tokio::time::sleep(Duration::from_millis(30 * i as u64)).await;
-            bot::fly(&address, request, bot_name(i), seed, duration).await
+            bot::fly(&address, request, bot_name(i), Some(seed), duration).await
         }));
     }
     // Everyone is in by now (the places are taken), so this one finds no room.
@@ -80,7 +80,7 @@ pub async fn run(soak: Soak) -> Result<Outcomes, String> {
         &address,
         request,
         bot_name(MAX_PILOTS),
-        soak.seed + 99,
+        Some(soak.seed + 99),
         Duration::from_secs(2),
     )
     .await;

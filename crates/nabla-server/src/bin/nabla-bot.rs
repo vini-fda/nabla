@@ -1,8 +1,10 @@
 //! `nabla-bot`: one headless pilot, flying a ship by random input on a server.
 //!
 //! ```text
-//! nabla-bot --server https://host:4433#sha256=... [--seconds 30] [--seed 1] [--name bot1]
+//! nabla-bot --server https://host:4433#sha256=... [--seconds 30] [--seed 1] [--name bot1] [--still]
 //! ```
+//!
+//! With `--still` it touches nothing: the ship coasts, and its pilot soon shows as inactive.
 
 #![expect(clippy::print_stdout, reason = "the report is this program's output")]
 
@@ -19,7 +21,7 @@ async fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
     if let Err(why) = go().await {
         log::error!(
-            "{why}\nusage: nabla-bot --server ADDRESS [--seconds N] [--seed N] [--name NAME]"
+            "{why}\nusage: nabla-bot --server ADDRESS [--seconds N] [--seed N] [--name NAME] [--still]"
         );
         std::process::exit(2);
     }
@@ -38,7 +40,7 @@ async fn go() -> Result<(), String> {
         &address,
         request,
         username,
-        seed,
+        (!args.iter().any(|arg| arg == "--still")).then_some(seed),
         Duration::from_secs_f64(seconds),
     )
     .await;

@@ -416,10 +416,10 @@ fn hello() -> Vec<u8> {
     })
 }
 
-fn join(world: &World) -> Vec<u8> {
+fn join(world: &World, name: &str) -> Vec<u8> {
     encode(&ClientStream::Join {
         request: ShipRequest::from(world.default_ship()),
-        username: Username::parse("t").expect("a valid name"),
+        username: Username::parse(name).expect("a valid name"),
     })
 }
 
@@ -430,7 +430,7 @@ fn the_server_answers_each_message_only_in_its_turn() {
     let conn = ConnId(7);
     server.connect(conn, 0.0);
     assert!(
-        streams(server.on_stream(conn, &join(&world), 0.0)).is_empty(),
+        streams(server.on_stream(conn, &join(&world, "t"), 0.0)).is_empty(),
         "no join before hello"
     );
     let lobby = streams(server.on_stream(conn, &hello(), 0.0));
@@ -439,13 +439,13 @@ fn the_server_answers_each_message_only_in_its_turn() {
         streams(server.on_stream(conn, &hello(), 0.0)).is_empty(),
         "no second hello"
     );
-    let welcome = streams(server.on_stream(conn, &join(&world), 0.0));
+    let welcome = streams(server.on_stream(conn, &join(&world, "t"), 0.0));
     assert!(matches!(
         welcome.as_slice(),
         [ServerStream::Welcome(_), ServerStream::Roster(_)]
     ));
     assert!(
-        streams(server.on_stream(conn, &join(&world), 0.0)).is_empty(),
+        streams(server.on_stream(conn, &join(&world, "u"), 0.0)).is_empty(),
         "no second ship"
     );
     assert_eq!(server.pilots(), 1);
@@ -473,7 +473,7 @@ fn a_seventeenth_pilot_is_told_the_server_is_full() {
     for i in 0..17 {
         server.connect(ConnId(i), 0.0);
         server.on_stream(ConnId(i), &hello(), 0.0);
-        let out = streams(server.on_stream(ConnId(i), &join(&world), 0.0));
+        let out = streams(server.on_stream(ConnId(i), &join(&world, &format!("p{i}")), 0.0));
         if i < 16 {
             assert!(
                 matches!(out.first(), Some(ServerStream::Welcome(_))),
@@ -486,7 +486,7 @@ fn a_seventeenth_pilot_is_told_the_server_is_full() {
     assert_eq!(server.pilots(), 16);
     // A place that frees up can be taken.
     server.on_disconnect(ConnId(3));
-    server.on_stream(ConnId(16), &join(&world), 0.0);
+    server.on_stream(ConnId(16), &join(&world, "p16"), 0.0);
     assert_eq!(server.pilots(), 16);
     assert!(server.ship_of(ConnId(16)).is_some());
 }
@@ -506,7 +506,7 @@ fn a_missing_command_is_held_and_then_goes_neutral() {
     let conn = ConnId(0);
     server.connect(conn, 0.0);
     server.on_stream(conn, &hello(), 0.0);
-    server.on_stream(conn, &join(&world), 0.0);
+    server.on_stream(conn, &join(&world, "t"), 0.0);
     let ship = server.ship_of(conn).expect("flying");
     let thrust = Command::Direct {
         thrust: 2.0,
@@ -630,4 +630,257 @@ fn a_hidden_tab_coasts_and_then_catches_up_without_breaking_anything() {
         report.exact_checks > 3000,
         "predictions stayed exact throughout"
     );
+}
+
+/// A connection that has said hello and joined as `name`.
+fn pilot(server: &mut ServerMachine, world: &World, conn: u32, name: &str) -> Vec<ServerStream> {
+    server.connect(ConnId(conn), 0.0);
+    server.on_stream(ConnId(conn), &hello(), 0.0);
+    let out = server.on_stream(ConnId(conn), &join(world, name), 0.0);
+    streams(out.into_iter().filter(|o| o.conn == ConnId(conn)).collect())
+}
+
+fn say(server: &mut ServerMachine, conn: u32, message: &ClientStream) {
+    server.on_stream(ConnId(conn), &encode(message), 0.0);
+}
+
+/// One tick, after `command` (if any) is sent for it. Returns the roster messages it caused.
+fn step(server: &mut ServerMachine, conn: u32, command: Option<Command>) -> Vec<ServerStream> {
+    let t = server.tick_number();
+    if let Some(command) = command {
+        let bytes = encode(&Commands {
+            stamp: t,
+            cmds: vec![Some(command)],
+        });
+        server.on_datagram(ConnId(conn), &bytes, server.due(t));
+    }
+    // What the first connection hears.
+    let out = server.tick(server.due(t));
+    streams(out.into_iter().filter(|o| o.conn == ConnId(0)).collect())
+        .into_iter()
+        .filter(|m| matches!(m, ServerStream::Roster(_)))
+        .collect()
+}
+
+fn presence_config() -> Config {
+    Config {
+        idle: 1e9,
+        silence_ticks: 5,
+        input_idle: 1.0,
+        keep_log: true,
+        ..Config::default()
+    }
+}
+
+const PUSH: Command = Command::Direct {
+    thrust: 1.0,
+    torque: 0.0,
+};
+const HANDS_OFF: Command = Command::Direct {
+    thrust: 0.0,
+    torque: 0.0,
+};
+
+fn is_active(message: &ServerStream) -> Option<bool> {
+    match message {
+        ServerStream::Roster(entry) => Some(entry.active),
+        _ => None,
+    }
+}
+
+#[test]
+fn a_taken_name_is_refused_and_is_free_again_once_its_ship_leaves() {
+    let world = vacuum();
+    let mut server = server(&world, Config::default());
+    assert!(matches!(
+        pilot(&mut server, &world, 0, "ada").first(),
+        Some(ServerStream::Welcome(_))
+    ));
+    assert_eq!(
+        pilot(&mut server, &world, 1, "ada"),
+        [ServerStream::NameTaken]
+    );
+    assert_eq!(server.pilots(), 1);
+    assert!(server.ship_of(ConnId(1)).is_none());
+    // Still in the lobby, it can join under another name.
+    let out = streams(server.on_stream(ConnId(1), &join(&world, "bob"), 0.0));
+    assert!(matches!(out.first(), Some(ServerStream::Welcome(_))));
+    // After Leave the name is free.
+    say(&mut server, 0, &ClientStream::Leave);
+    server.connect(ConnId(2), 0.0);
+    server.on_stream(ConnId(2), &hello(), 0.0);
+    let out = streams(server.on_stream(ConnId(2), &join(&world, "ada"), 0.0));
+    assert!(matches!(out.first(), Some(ServerStream::Welcome(_))));
+    // And after a disconnect.
+    server.on_disconnect(ConnId(1));
+    let out = streams(server.on_stream(ConnId(0), &join(&world, "bob"), 0.0));
+    assert!(matches!(out.first(), Some(ServerStream::Welcome(_))));
+}
+
+#[test]
+fn a_full_server_says_full_even_to_a_name_it_knows() {
+    let world = vacuum();
+    let mut server = server(&world, Config::default());
+    for i in 0..16 {
+        pilot(&mut server, &world, i, &format!("p{i}"));
+    }
+    assert_eq!(pilot(&mut server, &world, 16, "p0"), [ServerStream::Full]);
+    assert_eq!(pilot(&mut server, &world, 17, "late"), [ServerStream::Full]);
+}
+
+#[test]
+fn an_away_pilot_is_inactive_and_comes_back_with_one_message_each_way() {
+    let world = vacuum();
+    let mut server = server(&world, presence_config());
+    pilot(&mut server, &world, 0, "ada");
+    pilot(&mut server, &world, 1, "bob");
+    // A bystander also hears it, and flipping Away many times in a tick is one message.
+    for _ in 0..3 {
+        say(&mut server, 0, &ClientStream::Away(true));
+        say(&mut server, 0, &ClientStream::Away(false));
+    }
+    say(&mut server, 0, &ClientStream::Away(true));
+    let heard = step(&mut server, 0, Some(PUSH));
+    assert_eq!(
+        heard.iter().map(is_active).collect::<Vec<_>>(),
+        [Some(false)]
+    );
+    assert!(step(&mut server, 0, Some(PUSH)).is_empty());
+    say(&mut server, 0, &ClientStream::Away(false));
+    let heard = step(&mut server, 0, Some(PUSH));
+    assert_eq!(
+        heard.iter().map(is_active).collect::<Vec<_>>(),
+        [Some(true)]
+    );
+    // Out of turn (in the lobby) it changes nothing.
+    server.connect(ConnId(9), 0.0);
+    say(&mut server, 9, &ClientStream::Away(true));
+    assert!(step(&mut server, 0, Some(PUSH)).is_empty());
+}
+
+#[test]
+fn silence_turns_a_ship_inactive_and_commands_bring_it_back() {
+    let world = vacuum();
+    let mut server = server(&world, presence_config());
+    pilot(&mut server, &world, 0, "ada");
+    let mut flips = Vec::new();
+    for _ in 0..4 {
+        flips.extend(step(&mut server, 0, Some(PUSH)));
+    }
+    assert!(flips.is_empty());
+    // silence_ticks = 5 ticks with nothing, and it is inactive, once.
+    for _ in 0..20 {
+        flips.extend(step(&mut server, 0, None));
+    }
+    assert_eq!(
+        flips.iter().map(is_active).collect::<Vec<_>>(),
+        [Some(false)]
+    );
+    let back = step(&mut server, 0, Some(PUSH));
+    assert_eq!(back.iter().map(is_active).collect::<Vec<_>>(), [Some(true)]);
+    assert!(step(&mut server, 0, Some(PUSH)).is_empty());
+}
+
+#[test]
+fn input_idle_seconds_of_neutral_commands_turn_a_ship_inactive() {
+    let world = vacuum();
+    let mut server = server(&world, presence_config());
+    pilot(&mut server, &world, 0, "ada");
+    pilot(&mut server, &world, 1, "autopilot");
+    let mut flips = Vec::new();
+    // Two seconds: commands arrive every tick, but they ask for nothing.
+    for _ in 0..120 {
+        let t = server.tick_number();
+        let bytes = encode(&Commands {
+            stamp: t,
+            cmds: vec![Some(PUSH)],
+        });
+        server.on_datagram(ConnId(1), &bytes, server.due(t));
+        flips.extend(step(&mut server, 0, Some(HANDS_OFF)));
+    }
+    assert_eq!(
+        flips.iter().map(is_active).collect::<Vec<_>>(),
+        [Some(false)]
+    );
+    // Within input_idle (1 s = 60 ticks) plus a tick.
+    let back = step(&mut server, 0, Some(PUSH));
+    assert_eq!(back.iter().map(is_active).collect::<Vec<_>>(), [Some(true)]);
+}
+
+#[test]
+fn a_stream_of_direct_commands_that_ask_for_something_stays_active() {
+    let world = vacuum();
+    let mut server = server(&world, presence_config());
+    pilot(&mut server, &world, 0, "auto");
+    for i in 0..600 {
+        let command = Command::Direct {
+            thrust: 0.5 + f64::from(i % 3) * 0.1,
+            torque: 0.0,
+        };
+        assert!(step(&mut server, 0, Some(command)).is_empty());
+    }
+}
+
+#[test]
+fn presence_never_touches_the_flight() {
+    let world = vacuum();
+    let run = |noise: bool| {
+        let mut server = server(&world, presence_config());
+        pilot(&mut server, &world, 0, "ada");
+        for i in 0..300u32 {
+            if noise && i % 7 == 0 {
+                say(&mut server, 0, &ClientStream::Away(i % 14 == 0));
+            }
+            let command = (i % 11 != 5).then_some(Command::Direct {
+                thrust: f64::from(i % 4) * 0.25,
+                torque: 0.1,
+            });
+            step(&mut server, 0, command);
+        }
+        server.log(ShipId(0)).expect("log").clone()
+    };
+    assert_eq!(run(false), run(true));
+}
+
+#[test]
+fn a_late_joiner_is_told_current_names_and_activity() {
+    let world = vacuum();
+    let mut server = server(&world, presence_config());
+    pilot(&mut server, &world, 0, "ada");
+    pilot(&mut server, &world, 1, "bob");
+    say(&mut server, 0, &ClientStream::Away(true));
+    step(&mut server, 0, Some(PUSH));
+    let out = pilot(&mut server, &world, 2, "cy");
+    let seen: Vec<(String, bool)> = out
+        .iter()
+        .filter_map(|m| match m {
+            ServerStream::Roster(e) => Some((e.username.to_string(), e.active)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            ("ada".to_owned(), false),
+            ("bob".to_owned(), true),
+            ("cy".to_owned(), true)
+        ]
+    );
+}
+
+#[test]
+fn an_old_client_is_rejected_and_closed() {
+    let world = vacuum();
+    let mut server = server(&world, Config::default());
+    server.connect(ConnId(0), 0.0);
+    let old = encode(&ClientStream::Hello {
+        protocol: 1,
+        build: "old".to_owned(),
+    });
+    let out = server.on_stream(ConnId(0), &old, 0.0);
+    assert_eq!(out.last().map(|o| &o.kind), Some(&Kind::Close));
+    assert!(matches!(
+        streams(out).as_slice(),
+        [ServerStream::Rejected(_)]
+    ));
 }

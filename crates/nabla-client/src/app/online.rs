@@ -271,37 +271,36 @@ impl ViewerApp {
             let width = ui.available_width().min(460.0);
             ui.allocate_ui(egui::vec2(width, 0.0), |ui| {
                 ui.set_width(width);
-                // These come before the connection's end, which is expected after them.
-                if stage == Stage::NeedsPassword {
-                    self.password_ui(ui, false);
-                } else if stage == Stage::WrongPassword {
-                    self.password_ui(ui, true);
-                } else if let Some(why) = closed {
-                    ui.colored_label(palette::RED, format!("The connection ended: {why}"));
-                } else {
-                    match stage {
-                        Stage::Connecting => {
-                            ui.horizontal(|ui| {
-                                ui.spinner();
-                                ui.label("Connecting");
-                            });
+                // What the server said comes before the connection's end, which often follows it.
+                match (stage, closed) {
+                    (Stage::NeedsPassword, _) => self.password_ui(ui, false),
+                    (Stage::WrongPassword, _) => self.password_ui(ui, true),
+                    (Stage::Rejected, why) => {
+                        ui.colored_label(palette::RED, "The server turned this client away.");
+                        if let Some(why) = why {
+                            ui.label(why);
                         }
-                        Stage::Joining => {
-                            ui.horizontal(|ui| {
-                                ui.spinner();
-                                ui.label("Taking a ship");
-                            });
-                        }
-                        Stage::Full => {
-                            ui.colored_label(palette::YELLOW, "The server is full.");
-                            ui.label("Every place is taken. Try again in a moment.");
-                        }
-                        Stage::Rejected => {
-                            ui.colored_label(palette::RED, "The server turned this client away.");
-                        }
-                        Stage::Lobby | Stage::Playing => self.ship_picker_ui(ui),
-                        Stage::NeedsPassword | Stage::WrongPassword => {}
                     }
+                    (Stage::Full, _) => {
+                        ui.colored_label(palette::YELLOW, "The server is full.");
+                        ui.label("Every place is taken. Try again in a moment.");
+                    }
+                    (_, Some(why)) => {
+                        ui.colored_label(palette::RED, format!("The connection ended: {why}"));
+                    }
+                    (Stage::Connecting, None) => {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label("Connecting");
+                        });
+                    }
+                    (Stage::Joining, None) => {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label("Taking a ship");
+                        });
+                    }
+                    (Stage::Lobby | Stage::Playing, None) => self.ship_picker_ui(ui),
                 }
                 ui.add_space(16.0);
                 ui.horizontal(|ui| {

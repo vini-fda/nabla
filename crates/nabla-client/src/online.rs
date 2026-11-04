@@ -257,9 +257,10 @@ impl Online {
         self.machine.stage()
     }
 
-    /// Why the connection is over, if it is.
+    /// Why the connection is over, if it is. What the server said comes first: a server that
+    /// turns a client away then closes the connection, and the close says only that it did.
     pub fn closed(&self) -> Option<&str> {
-        self.closed.as_deref().or_else(|| self.machine.refusal())
+        self.machine.refusal().or(self.closed.as_deref())
     }
 
     pub fn lobby(&self) -> Option<LobbyInfo> {

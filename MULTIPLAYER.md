@@ -104,5 +104,5 @@ The hash then changes only when you renew.
 | `invalid peer certificate: UnknownIssuer` in the app, or `Opening handshake failed` in a browser | The hash is missing or out of date, usually from an address saved before a restart. Copy the address from the server's log again. A certificate longer than 14 days fails the same way. |
 | That is not the password | Check it against the server's password file, and try again. |
 | The server is full | Every place is taken. Press Ask again when someone leaves. |
-| The server turned this client away | The client and the server speak different versions of the protocol. Update whichever is older. |
+| The server turned this client away | The client and the server speak different versions of the protocol. Update the one the message names. |
 | A name such as `host.local` stays on Connecting | The name can resolve to IPv6 first, and a server on an IPv4 address never hears it. Use the IP address, or start the server with `--bind '[::]:4433'`. |

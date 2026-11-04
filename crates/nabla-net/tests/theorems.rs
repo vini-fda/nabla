@@ -1030,6 +1030,26 @@ fn a_connection_not_let_in_soon_enough_is_closed_once() {
 }
 
 #[test]
+fn a_client_of_another_version_is_told_which_end_to_update() {
+    let world = vacuum();
+    let refusal = |protocol| {
+        let mut server = server(&world, Config::default());
+        server.connect(ConnId(0), 0.0);
+        let hello = encode(&ClientStream::Hello {
+            protocol,
+            build: "other".to_owned(),
+        });
+        match streams(server.on_stream(ConnId(0), &hello, 0.0)).as_slice() {
+            [ServerStream::Rejected(why)] => why.clone(),
+            other => panic!("{other:?}"),
+        }
+    };
+    let current = nabla_net::wire::PROTOCOL;
+    assert!(refusal(current - 1).contains("update the client"));
+    assert!(refusal(current + 1).contains("update the server"));
+}
+
+#[test]
 fn an_old_client_is_rejected_and_closed() {
     let world = vacuum();
     let mut server = server(&world, Config::default());

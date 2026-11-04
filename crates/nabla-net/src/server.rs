@@ -265,7 +265,7 @@ impl ServerMachine {
                 if protocol != PROTOCOL {
                     out.push(stream(
                         conn,
-                        &ServerStream::Rejected("protocol version".to_owned()),
+                        &ServerStream::Rejected(other_version(protocol)),
                     ));
                     out.push(Outgoing {
                         conn,
@@ -602,6 +602,16 @@ impl ServerMachine {
             }
         }
     }
+}
+
+/// What to tell a client that speaks another version of the protocol, and which end to update.
+fn other_version(client: u16) -> String {
+    let older = if client < PROTOCOL {
+        "client"
+    } else {
+        "server"
+    };
+    format!("the client speaks protocol {client} and the server {PROTOCOL}: update the {older}")
 }
 
 fn record(ship: ShipId, sim: &Ship) -> ShipRecord {

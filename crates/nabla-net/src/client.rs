@@ -19,6 +19,10 @@ use crate::wire::{
 };
 use crate::{Config, Kind};
 
+/// All that a server of protocol 2 or earlier says to a client of another version. Later servers
+/// say more, so a server that says this is older than any client that reads this.
+const OLD_SERVER_REFUSAL: &str = "protocol version";
+
 /// A correction past this many world units, or [`SNAP_HEADING`] radians, is too large to hide:
 /// a screen draws it as a jump, and not eased.
 pub const SNAP_POSITION: f64 = 2.0;
@@ -401,7 +405,14 @@ impl ClientMachine {
                     self.phase = Phase::Full;
                 }
             }
-            ServerStream::Rejected(why) => self.phase = Phase::Rejected(why),
+            ServerStream::Rejected(why) => {
+                self.phase = Phase::Rejected(if why == OLD_SERVER_REFUSAL {
+                    "this server speaks an older protocol than the client: update the server"
+                        .to_owned()
+                } else {
+                    why
+                });
+            }
             ServerStream::Roster(entry) => self.roster_entry(entry),
             ServerStream::PasswordRequired => {
                 if matches!(self.phase, Phase::Hello) {
@@ -895,6 +906,30 @@ mod tests {
         client.on_stream(&encode(&ServerStream::WrongPassword), 0.2);
         assert_eq!(client.stage(), Stage::WrongPassword);
         assert_eq!(client.refusal(), Some("the password is wrong"));
+    }
+
+    #[test]
+    fn a_refusal_from_an_older_server_says_to_update_it() {
+        let mut client = unconnected();
+        client.start();
+        let refusal = ServerStream::Rejected(OLD_SERVER_REFUSAL.to_owned());
+        client.on_stream(&encode(&refusal), 0.1);
+        assert_eq!(client.stage(), Stage::Rejected);
+        assert!(
+            client
+                .refusal()
+                .is_some_and(|why| why.contains("update the server")),
+            "{:?}",
+            client.refusal()
+        );
+    }
+
+    #[test]
+    fn any_other_refusal_is_passed_on_as_it_came() {
+        let mut client = unconnected();
+        client.start();
+        client.on_stream(&encode(&ServerStream::Rejected("why".to_owned())), 0.1);
+        assert_eq!(client.refusal(), Some("why"));
     }
 
     #[test]

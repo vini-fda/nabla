@@ -6,7 +6,7 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 
 use nabla_core::solutions::SOLUTIONS;
-use nabla_net::wire::ConnId;
+use nabla_net::wire::{ConnId, ServerStream, encode};
 use nabla_net::{Kind, ServerMachine};
 use nabla_sim::rng::Rng;
 use nabla_sim::steering::Input;
@@ -523,6 +523,45 @@ fn hermite_interpolation_is_as_exact_as_the_paper_says() {
         assert!((hermite(&s, &end, 1.0, h).x - end.x).abs() < 1e-12);
     }
     assert!(worst < 1e-5, "{worst}");
+}
+
+#[test]
+fn what_the_server_said_outlasts_the_end_of_the_connection() {
+    let world = vacuum();
+    let inbox: Rc<RefCell<VecDeque<Incoming>>> = Rc::default();
+    let pipe = Pipe {
+        inbox: Rc::clone(&inbox),
+        outbox: Rc::default(),
+    };
+    let mut client = Online::new(Box::new(pipe), ShipRequest::from(world.default_ship()));
+    assert_eq!(client.closed(), None);
+
+    let refusal = ServerStream::Rejected("update the server".to_owned());
+    inbox
+        .borrow_mut()
+        .push_back(Incoming::Stream(encode(&refusal)));
+    inbox.borrow_mut().push_back(Incoming::Closed(
+        "connection closed by peer: bye (code 0)".to_owned(),
+    ));
+    client.frame_at(0.1, scripted(0, 0.1));
+    assert_eq!(client.stage(), Stage::Rejected);
+    assert_eq!(client.closed(), Some("update the server"));
+}
+
+#[test]
+fn a_connection_that_ends_with_nothing_said_gives_the_transport_reason() {
+    let world = vacuum();
+    let inbox: Rc<RefCell<VecDeque<Incoming>>> = Rc::default();
+    let pipe = Pipe {
+        inbox: Rc::clone(&inbox),
+        outbox: Rc::default(),
+    };
+    let mut client = Online::new(Box::new(pipe), ShipRequest::from(world.default_ship()));
+    inbox
+        .borrow_mut()
+        .push_back(Incoming::Closed("timed out".to_owned()));
+    client.frame_at(0.1, scripted(0, 0.1));
+    assert_eq!(client.closed(), Some("timed out"));
 }
 
 #[test]

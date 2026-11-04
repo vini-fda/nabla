@@ -19,6 +19,17 @@ env:
   # this variable would replace.
   RUSTFLAGS: -D warnings --cfg=web_sys_unstable_apis
   RUSTDOCFLAGS: -D warnings
+  # Overflow checks and debug assertions for this workspace's crates in the release profile,
+  # shared by the nextest run and the doctests so both build the same artifacts.
+  TEST_PROFILE_FLAGS: >-
+    --config profile.release.package.nabla-core.debug-assertions=true
+    --config profile.release.package.nabla-core.overflow-checks=true
+    --config profile.release.package.nabla-net.debug-assertions=true
+    --config profile.release.package.nabla-net.overflow-checks=true
+    --config profile.release.package.nabla-server.debug-assertions=true
+    --config profile.release.package.nabla-server.overflow-checks=true
+    --config profile.release.package.nabla-sim.debug-assertions=true
+    --config profile.release.package.nabla-sim.overflow-checks=true
 
 # A new push to a pull request cancels its still-running checks.
 concurrency:
@@ -130,6 +141,9 @@ jobs:
           sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
             libxkbcommon-dev libwayland-dev libssl-dev libasound2-dev libudev-dev
 
+      # A pre-built cargo-nextest binary, for every runner OS.
+      - uses: taiki-e/install-action@nextest
+
       # Platform specific code (`cfg(target_os)`) is only linted on its own platform.
       - name: Clippy
         run: cargo clippy $CARGO_FLAGS --workspace --all-targets --target ${{ matrix.target }}
@@ -143,15 +157,14 @@ jobs:
       # for the app sources.
       - name: Test
         run: >-
-          cargo test $CARGO_FLAGS --workspace --release --target ${{ matrix.target }}
-          --config 'profile.release.package.nabla-core.debug-assertions=true'
-          --config 'profile.release.package.nabla-core.overflow-checks=true'
-          --config 'profile.release.package.nabla-net.debug-assertions=true'
-          --config 'profile.release.package.nabla-net.overflow-checks=true'
-          --config 'profile.release.package.nabla-server.debug-assertions=true'
-          --config 'profile.release.package.nabla-server.overflow-checks=true'
-          --config 'profile.release.package.nabla-sim.debug-assertions=true'
-          --config 'profile.release.package.nabla-sim.overflow-checks=true'
+          cargo nextest run $CARGO_FLAGS --workspace --release --target ${{ matrix.target }}
+          $TEST_PROFILE_FLAGS
+
+      # nextest does not run doctests.
+      - name: Doctests
+        run: >-
+          cargo test $CARGO_FLAGS --workspace --release --doc --target ${{ matrix.target }}
+          $TEST_PROFILE_FLAGS
           --config 'profile.release.package.nabla-synth.debug-assertions=true'
           --config 'profile.release.package.nabla-synth.overflow-checks=true'
           --config 'profile.release.package.nabla-client.debug-assertions=true'

@@ -60,7 +60,7 @@ mod web {
     use std::collections::VecDeque;
     use std::rc::Rc;
 
-    use js_sys::{Promise, Reflect, Uint8Array};
+    use js_sys::{Function, Promise, Reflect, Uint8Array};
     use nabla_net::Kind;
     use nabla_net::frame::{FrameReader, frame};
     use nabla_net::link::{Address, Incoming};
@@ -68,8 +68,9 @@ mod web {
     use wasm_bindgen::{JsCast as _, JsValue};
     use wasm_bindgen_futures::{JsFuture, spawn_local};
     use web_sys::{
-        ReadableStream, ReadableStreamDefaultReader, WebTransport, WebTransportHash,
-        WebTransportOptions, WritableStream, WritableStreamDefaultWriter,
+        ReadableStream, ReadableStreamDefaultReader, WebTransport,
+        WebTransportDatagramDuplexStream, WebTransportHash, WebTransportOptions, WritableStream,
+        WritableStreamDefaultWriter,
     };
 
     use super::Transport;
@@ -154,8 +155,7 @@ mod web {
             stream: property::<WritableStream>(&bidi, "writable")?
                 .get_writer()
                 .map_err(|e| describe(&e))?,
-            datagrams: datagrams
-                .writable()
+            datagrams: datagram_stream(&datagrams)?
                 .get_writer()
                 .map_err(|e| describe(&e))?,
         };
@@ -202,6 +202,22 @@ mod web {
             Ok(_) => Ok(()),
             Err(e) => Err(describe(&e)),
         }
+    }
+
+    /// The stream that datagrams are written to. The standard replaced `writable`, the only one
+    /// `web_sys` wraps, with `createWritable`, and Safari has only the new one.
+    fn datagram_stream(
+        datagrams: &WebTransportDatagramDuplexStream,
+    ) -> Result<WritableStream, String> {
+        let create = Reflect::get(datagrams, &"createWritable".into()).map_err(|e| describe(&e))?;
+        let Some(create) = create.dyn_ref::<Function>() else {
+            return property(datagrams, "writable");
+        };
+        create
+            .call0(datagrams)
+            .map_err(|e| describe(&e))?
+            .dyn_into()
+            .map_err(|_wrong| "createWritable gave no stream".to_owned())
     }
 
     /// The property `name` of `object`, as a `T`: for what `web_sys` does not wrap.

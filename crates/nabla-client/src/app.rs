@@ -21,8 +21,9 @@ use crate::gizmo::ViewGizmo;
 use crate::grid::{GridStyle, draw_grid};
 use crate::keys;
 use crate::notifications::Notifications;
+use crate::plots::Plots;
 use crate::plume::Plume;
-use crate::replay::{Replay, Series};
+use crate::replay::Replay;
 use crate::ship3d::{self, DepthMap, SHIP_GLB, ShipModel, ShipRenderer};
 use crate::sound::Sound;
 use crate::theme::{self, icons, palette};
@@ -208,37 +209,6 @@ fn all_cases() -> Vec<CaseEntry> {
         cases[..=i].rotate_right(1);
     }
     cases
-}
-
-/// Plot series of the flight.
-struct Plots {
-    x: Vec<PlotPoint>,
-    y: Vec<PlotPoint>,
-    vx: Vec<PlotPoint>,
-    vy: Vec<PlotPoint>,
-    theta: Vec<PlotPoint>,
-    omega: Vec<PlotPoint>,
-    thrust: Vec<PlotPoint>,
-    torque: Vec<PlotPoint>,
-}
-
-fn points(series: &Series) -> Vec<PlotPoint> {
-    series.iter().map(|&[t, v]| PlotPoint::new(t, v)).collect()
-}
-
-impl Plots {
-    fn new(r: &Replay) -> Self {
-        Self {
-            x: points(&r.state_series(|s| s.x)),
-            y: points(&r.state_series(|s| s.y)),
-            vx: points(&r.state_series(|s| s.vx)),
-            vy: points(&r.state_series(|s| s.vy)),
-            theta: points(&r.state_series(|s| s.theta)),
-            omega: points(&r.state_series(|s| s.omega)),
-            thrust: points(&r.control_series(|u| u.thrust)),
-            torque: points(&r.control_series(|u| u.torque)),
-        }
-    }
 }
 
 pub struct ViewerApp {
@@ -1247,15 +1217,15 @@ impl ViewerApp {
         }
     }
 
-    /// The plots of the flight so far, which grows every frame.
+    /// The plots of the end of the flight.
     fn plots_ui(&self, ui: &mut egui::Ui) {
-        Self::plots_of(ui, &self.game.replay, self.game.time());
+        Self::plots_of(ui, &self.game.plots, self.game.time());
     }
 
-    /// The plots of `replay`, with the present marked at `t` seconds into it.
-    fn plots_of(ui: &mut egui::Ui, replay: &Replay, t: f64) {
+    /// The plots of `plots`, with the present marked at `t` seconds. Each fits its axes to what
+    /// it holds, so they follow the window once the oldest samples are being discarded.
+    fn plots_of(ui: &mut egui::Ui, plots: &Plots, t: f64) {
         let _span = span!(Level::Trace, "plots");
-        let plots = Plots::new(replay);
         ui.heading("State plots");
         egui::ScrollArea::vertical().show(ui, |ui| {
             time_plot(
@@ -1264,7 +1234,10 @@ impl ViewerApp {
                 "m",
                 &formula::POSITION,
                 t,
-                &[("x", &plots.x, POS_X_COLOR), ("y", &plots.y, POS_Y_COLOR)],
+                &[
+                    ("x", plots.x.points(), POS_X_COLOR),
+                    ("y", plots.y.points(), POS_Y_COLOR),
+                ],
             );
             time_plot(
                 ui,
@@ -1273,8 +1246,8 @@ impl ViewerApp {
                 &formula::VELOCITY,
                 t,
                 &[
-                    ("vx", &plots.vx, VEL_X_COLOR),
-                    ("vy", &plots.vy, VEL_Y_COLOR),
+                    ("vx", plots.vx.points(), VEL_X_COLOR),
+                    ("vy", plots.vy.points(), VEL_Y_COLOR),
                 ],
             );
             time_plot(
@@ -1283,7 +1256,7 @@ impl ViewerApp {
                 "rad",
                 &formula::THETA,
                 t,
-                &[("theta", &plots.theta, THETA_COLOR)],
+                &[("theta", plots.theta.points(), THETA_COLOR)],
             );
             time_plot(
                 ui,
@@ -1291,7 +1264,7 @@ impl ViewerApp {
                 "rad/s",
                 &formula::OMEGA,
                 t,
-                &[("omega", &plots.omega, OMEGA_COLOR)],
+                &[("omega", plots.omega.points(), OMEGA_COLOR)],
             );
             time_plot(
                 ui,
@@ -1299,7 +1272,7 @@ impl ViewerApp {
                 "N",
                 &formula::THRUST,
                 t,
-                &[("F", &plots.thrust, THRUST_COLOR)],
+                &[("F", plots.thrust.points(), THRUST_COLOR)],
             );
             time_plot(
                 ui,
@@ -1307,7 +1280,7 @@ impl ViewerApp {
                 "N m",
                 &formula::TORQUE,
                 t,
-                &[("tau", &plots.torque, TORQUE_COLOR)],
+                &[("tau", plots.torque.points(), TORQUE_COLOR)],
             );
         });
     }
@@ -1365,7 +1338,7 @@ impl ViewerApp {
                 Button::toggle(
                     icons::outline::PATH,
                     &mut self.show_path,
-                    "Show the path flown so far",
+                    "Show the path flown in the last minute",
                 ),
                 Button::switch(
                     [
@@ -1644,7 +1617,8 @@ impl ViewerApp {
         self.view == CanvasView::Debug || self.ship3d.is_none()
     }
 
-    /// Full path, and the path up to the ship's current (possibly between-samples) position.
+    /// The path held (a flight's last minute), that up to the ship's current (possibly
+    /// between-samples) position, and where the run started, even once that path has moved on.
     fn draw_path(
         &self,
         painter: &egui::Painter,
@@ -1653,13 +1627,12 @@ impl ViewerApp {
         k: usize,
         now: &State,
     ) {
-        let states = &replay.trajectory.states;
         let point = |s: &State| Vec3::plane(world(s.x, s.y));
-        let full = screen_path(&self.camera, rect, states.iter().map(point));
+        let full = screen_path(&self.camera, rect, replay.states().iter().map(point));
         let traveled = screen_path(
             &self.camera,
             rect,
-            states[..=k].iter().chain([now]).map(point),
+            replay.states_up_to(k).chain([now]).map(point),
         );
         for run in full {
             painter.add(egui::Shape::line(
@@ -1674,10 +1647,8 @@ impl ViewerApp {
             ));
         }
 
-        if let Some(start) = self
-            .camera
-            .world_to_screen(world(states[0].x, states[0].y), rect)
-        {
+        let start = replay.case.start;
+        if let Some(start) = self.camera.world_to_screen(world(start.x, start.y), rect) {
             painter.circle_stroke(
                 start,
                 START_RADIUS_PX,
@@ -2701,7 +2672,7 @@ fn time_plot(
     unit: &str,
     symbol: &Formula,
     t: f64,
-    lines: &[(&str, &Vec<PlotPoint>, egui::Color32)],
+    lines: &[(&str, &[PlotPoint], egui::Color32)],
 ) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
@@ -2711,11 +2682,7 @@ fn time_plot(
     });
     make_plot(title).show(ui, |plot_ui| {
         for &(name, series, color) in lines {
-            plot_ui.line(
-                Line::new(name, series.as_slice())
-                    .color(color)
-                    .allow_band(false),
-            );
+            plot_ui.line(Line::new(name, series).color(color).allow_band(false));
         }
         plot_ui.vline(VLine::new("", t).color(CURSOR_COLOR));
     });
@@ -2732,6 +2699,18 @@ mod tests {
         assert!(app.slow_frame_to_log(2.0 * SLOW_FRAME, 0.0));
         assert!(!app.slow_frame_to_log(2.0 * SLOW_FRAME, 0.5), "too soon");
         assert!(app.slow_frame_to_log(2.0 * SLOW_FRAME, SLOW_FRAME_LOG_PERIOD));
+    }
+
+    #[test]
+    fn a_new_step_size_restarts_the_flight_with_plots_sized_for_it() {
+        let mut app = ViewerApp::default();
+        for (h, steps) in [(0.1, 600), (0.01, 6000), (0.05, 1200)] {
+            app.h = h;
+            app.start_game();
+            assert_eq!(app.game.replay.h(), h);
+            assert_eq!(app.game.plots.steps(), steps);
+            assert_eq!(app.game.plots.x.points().len(), 1, "only the start");
+        }
     }
 
     #[test]

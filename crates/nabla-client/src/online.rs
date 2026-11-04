@@ -30,6 +30,7 @@ use web_time::Instant;
 use crate::game::{Autopilot, FlightController, Objective, forecast_of, run_controller};
 use crate::net::Transport;
 use crate::orbit::{self, Pilot, Prediction};
+use crate::plots::{Plots, window_steps};
 use crate::replay::Replay;
 
 /// `tau_s`: how long a correction takes to fade from the picture, in seconds.
@@ -199,6 +200,8 @@ pub struct Online {
     smoothing: Smoothing,
     /// The own ship's predicted flight, tick by tick.
     trail: BTreeMap<Tick, Step>,
+    /// The buffers of the own ship's plots, kept from frame to frame.
+    plots: Option<Plots>,
     playout: Playout,
     engaged: Option<Engaged>,
     /// What the ship is aiming for, which an autopilot flies to once engaged.
@@ -225,6 +228,7 @@ impl Online {
             last: 0.0,
             smoothing: Smoothing::default(),
             trail: BTreeMap::new(),
+            plots: None,
             playout: Playout::default(),
             engaged: None,
             objective: Objective::ReachB,
@@ -547,6 +551,21 @@ impl Online {
             }
         }
         views
+    }
+
+    /// The plots of the own ship's recent flight, `own`. Predicted ticks are corrected after the
+    /// fact, so they are recorded anew each frame, in buffers allocated the first time. They need
+    /// not hold more than the trail, which also bounds them whatever the server's `h`.
+    pub fn plots_of_own(&mut self, own: &View) -> &Plots {
+        let steps = window_steps(own.replay.h()).min(TRAIL as usize);
+        let plots = self
+            .plots
+            .take()
+            .filter(|plots| plots.steps() == steps)
+            .unwrap_or_else(|| Plots::new(steps));
+        let plots = self.plots.insert(plots);
+        plots.rerecord(&own.replay);
+        plots
     }
 
     /// The own ship, drawn between its last two predicted ticks, and moved by the smoothing.

@@ -70,10 +70,8 @@ impl ViewerApp {
 
     /// The time the forecast starts at: of the next sample to be flown.
     pub(super) fn flight_next_time(&self) -> f64 {
-        self.online_flight().map_or_else(
-            || self.game.replay.trajectory.controls.len() as f64 * self.game.replay.h(),
-            crate::online::Online::time,
-        )
+        self.online_flight()
+            .map_or_else(|| self.game.replay.duration(), crate::online::Online::time)
     }
 
     pub(super) fn flight_h(&self) -> f64 {
@@ -840,7 +838,7 @@ mod tests {
             Steering::Raw,
         );
         assert_eq!(
-            app.game.replay.trajectory.controls[0].thrust,
+            app.game.replay.control(0).expect("a control").thrust,
             app.game.world.players[0].task.params.f_max,
             "manual thrust resumes"
         );

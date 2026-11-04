@@ -27,6 +27,7 @@ mod notifications;
 pub mod online;
 mod orbit;
 mod planets;
+mod plots;
 mod plume;
 pub mod replay;
 mod ship3d;

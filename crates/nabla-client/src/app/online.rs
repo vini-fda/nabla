@@ -330,8 +330,10 @@ impl ViewerApp {
         let reveal = super::RIGHT_PANEL.show(ui, &mut show_plots, &mut view, |ui, view| {
             match super::RightView::ALL[view] {
                 super::RightView::Plots => {
-                    if let Some(own) = views.first().filter(|view| view.own) {
-                        Self::plots_of(ui, &own.replay, own.t);
+                    if let Some(own) = views.first().filter(|view| view.own)
+                        && let Some(online) = &mut self.online
+                    {
+                        Self::plots_of(ui, online.plots_of_own(own), own.t);
                     }
                 }
                 super::RightView::Objective => self.objective_ui(ui),

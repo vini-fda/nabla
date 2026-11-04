@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 
 use nabla_core::problem::{Case, Outcome, Trajectory};
 use nabla_core::solutions::StoredSolution;
-use nabla_core::{Control, Params, State, Task, step};
+use nabla_core::{Control, Params, State, Task, flow};
 use nabla_net::client::{
     Correction, CorrectionStats, LobbyInfo, Remote, SNAP_HEADING, SNAP_POSITION, Stage, Step,
 };
@@ -30,6 +30,7 @@ use web_time::Instant;
 use crate::game::{Autopilot, FlightController, Objective, forecast_of, run_controller};
 use crate::net::Transport;
 use crate::orbit::{self, Pilot, Prediction};
+use crate::plots::{Plots, window_steps};
 use crate::replay::Replay;
 
 /// `tau_s`: how long a correction takes to fade from the picture, in seconds.
@@ -137,9 +138,9 @@ impl Smoothing {
         }
     }
 
-    /// Let `dt` seconds pass: `epsilon` fades by `exp(-dt / tau_s)`.
-    pub fn decay(&mut self, dt: f64) {
-        let keep = (-dt / SMOOTHING).exp();
+    /// Let `elapsed` seconds pass: `epsilon` fades by `exp(-elapsed / tau_s)`.
+    pub fn decay(&mut self, elapsed: f64) {
+        let keep = (-elapsed / SMOOTHING).exp();
         self.x *= keep;
         self.y *= keep;
         self.theta *= keep;
@@ -199,6 +200,8 @@ pub struct Online {
     smoothing: Smoothing,
     /// The own ship's predicted flight, tick by tick.
     trail: BTreeMap<Tick, Step>,
+    /// The buffers of the own ship's plots, kept from frame to frame.
+    plots: Option<Plots>,
     playout: Playout,
     engaged: Option<Engaged>,
     /// What the ship is aiming for, which an autopilot flies to once engaged.
@@ -225,6 +228,7 @@ impl Online {
             last: 0.0,
             smoothing: Smoothing::default(),
             trail: BTreeMap::new(),
+            plots: None,
             playout: Playout::default(),
             engaged: None,
             objective: Objective::ReachB,
@@ -412,7 +416,7 @@ impl Online {
     /// One frame at local time `now`: take in what the network brought, issue the commands that
     /// are due, and bring the smoothing, the trail and the playout up to date.
     pub fn frame_at(&mut self, now: f64, hands: Hands) {
-        let dt = (now - self.last).clamp(0.0, MAX_FRAME);
+        let frame_time = (now - self.last).clamp(0.0, MAX_FRAME);
         self.last = now;
         while let Some(incoming) = self.transport.recv() {
             match incoming {
@@ -473,7 +477,7 @@ impl Online {
         if let Some(correction) = self.machine.take_correction() {
             self.smoothing.absorb(&correction);
         }
-        self.smoothing.decay(dt);
+        self.smoothing.decay(frame_time);
         let steps = self.machine.trajectory();
         let newest = steps.last().map(|step| step.tick);
         for step in steps {
@@ -547,6 +551,21 @@ impl Online {
             }
         }
         views
+    }
+
+    /// The plots of the own ship's recent flight, `own`. Predicted ticks are corrected after the
+    /// fact, so they are recorded anew each frame, in buffers allocated the first time. They need
+    /// not hold more than the trail, which also bounds them whatever the server's `h`.
+    pub fn plots_of_own(&mut self, own: &View) -> &Plots {
+        let steps = window_steps(own.replay.h()).min(TRAIL as usize);
+        let plots = self
+            .plots
+            .take()
+            .filter(|plots| plots.steps() == steps)
+            .unwrap_or_else(|| Plots::new(steps));
+        let plots = self.plots.insert(plots);
+        plots.rerecord(&own.replay);
+        plots
     }
 
     /// The own ship, drawn between its last two predicted ticks, and moved by the smoothing.
@@ -645,12 +664,8 @@ fn state_at(records: &[Remote], at: f64, h: f64, params: &Params) -> Option<Stat
             thrust: f64::from(last.record.thrust),
             torque: f64::from(last.record.torque),
         };
-        let params = Params {
-            h: ahead,
-            ..*params
-        };
         return Some(if ahead > 0.0 {
-            step(&params, &last.record.state, &control)
+            flow(params, &last.record.state, &control, ahead)
         } else {
             last.record.state
         });

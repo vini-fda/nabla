@@ -4,8 +4,9 @@
 //! Vacuum flights run on the same exact sampled-data model a solution is scored on.
 //! Worlds with celestial bodies use Rapier substeps with collision-aware replay samples. At each sample
 //! `t_k = k h` the controls the player holds become `u_k`, held for the whole step, and
-//! `s_(k+1) = step(s_k, u_k)`. So a flight is a [`Replay`] that grows as it goes, and the canvas,
-//! plumes, plots and sound show it as they show a solution's run.
+//! `s_(k+1) = step(s_k, u_k)`. So a flight is a [`Replay`] recorded as it goes, of which only the
+//! last minute is kept, and the canvas, plumes and sound show it as they show a solution's run. The
+//! plots show the same minute, from [`Plots`] recorded along with it.
 //!
 //! Thrust is all or nothing, as a key or a button is. Torque is all or nothing from the keyboard
 //! too, and as strong as the joystick is pushed on a touch screen. Fine control scales both down
@@ -31,13 +32,14 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use egui::{Color32, Pos2, Rect, Sense, Vec2, pos2, vec2};
 use log::Level;
-use nabla_core::problem::{Case, Outcome, Trajectory};
+use nabla_core::problem::Case;
 use nabla_core::solutions::StoredSolution;
 use nabla_core::{Control, Controller, State, Task, step};
 use web_time::Instant;
 
 use crate::orbit::{self, Pilot, Prediction, Target};
 use crate::physics::Physics;
+use crate::plots::{Plots, window_steps};
 use crate::replay::Replay;
 use crate::theme::{icons, palette};
 use crate::world::World;
@@ -200,10 +202,12 @@ pub(crate) fn forecast_of(
 pub struct Game {
     pub world: World,
     physics: Option<Physics>,
-    /// The flight so far: every sample up to the present, and the state at the end of the
-    /// step under way. Its outcome stays [`Outcome::Timeout`]: a flight has no step budget, and
-    /// [`Self::landed`] says when it reached the target set.
+    /// The last minute of the flight: the samples up to the present, and the state at the end of
+    /// the step under way. A flight has no step budget, and [`Self::landed`] says when it reached
+    /// the target set. Allocated here, for the flight's `h`.
     pub replay: Replay,
+    /// The same minute, for the state plots: also allocated here.
+    pub plots: Plots,
     /// Time since the start, in simulated seconds.
     time: f64,
     pub paused: bool,
@@ -227,15 +231,14 @@ impl Game {
     }
 
     pub fn in_world(case: Case, world: World) -> Self {
-        let trajectory = Trajectory {
-            states: vec![case.start],
-            controls: Vec::new(),
-            outcome: Outcome::Timeout,
-        };
+        let steps = window_steps(case.task.params.h);
+        let mut plots = Plots::new(steps);
+        plots.record_state(0.0, &case.start);
         Self {
             physics: (!world.bodies.is_empty()).then(|| Physics::new(&world)),
             world,
-            replay: Replay::new(case, trajectory),
+            replay: Replay::recording(case, steps),
+            plots,
             time: 0.0,
             paused: false,
             landed: None,
@@ -328,7 +331,7 @@ impl Game {
     }
 
     pub fn next_state(&self) -> State {
-        *self.replay.trajectory.states.last().expect("initial state")
+        *self.replay.state(self.replay.last_frame())
     }
 
     /// A short forecast from the next control sample, without advancing the live controller.
@@ -382,22 +385,26 @@ impl Game {
         )
     }
 
-    /// Run the flight `dt` real seconds on, unless paused, with `input` held at the samples
+    /// Run the flight `frame_time` real seconds on, unless paused, with `input` held at the samples
     /// this passes, steering as `steering` says. With an engaged controller, it flies instead,
     /// and the input does nothing; should the policy fail, the player takes over, and
     /// [`Self::take_fault`] says why.
-    pub fn advance(&mut self, dt: f64, input: Input, steering: Steering) {
+    pub fn advance(&mut self, frame_time: f64, input: Input, steering: Steering) {
         if self.paused {
             return;
         }
-        let _span = span!(Level::Trace, "advance, t = {:.3} s + {dt:.3} s", self.time);
-        self.time += dt.clamp(0.0, MAX_FRAME_TIME);
+        let _span = span!(
+            Level::Trace,
+            "advance, t = {:.3} s + {frame_time:.3} s",
+            self.time
+        );
+        self.time += frame_time.clamp(0.0, MAX_FRAME_TIME);
         let h = self.replay.h();
         let task = self.replay.case.task;
         // Every sample up to the present gets its control, so the step under way is known.
-        while self.replay.trajectory.controls.len() as f64 * h <= self.time {
-            let k = self.replay.trajectory.controls.len();
-            let s = self.replay.trajectory.states[k];
+        while self.replay.last_frame() as f64 * h <= self.time {
+            let k = self.replay.last_frame();
+            let s = self.next_state();
             if self.objective == Objective::ReachB && self.landed.is_none() && task.reached(&s) {
                 self.landed = Some(k);
                 log::info!("Landed at step {k}");
@@ -408,18 +415,16 @@ impl Game {
             }
             let u =
                 piloted.unwrap_or_else(|| steer(input, steering, &mut self.hold, &task.params, &s));
-            let trajectory = &mut self.replay.trajectory;
-            trajectory.controls.push(u);
-            if let Some(physics) = &mut self.physics {
+            let (next, samples) = if let Some(physics) = &mut self.physics {
                 let mut samples = physics.step(h, u);
                 samples[0] = s;
-                trajectory
-                    .states
-                    .push(*samples.last().expect("physics samples"));
-                self.replay.collision_steps.push(samples);
+                (*samples.last().expect("physics samples"), Some(samples))
             } else {
-                trajectory.states.push(step(&task.params, &s, &u));
-            }
+                (step(&task.params, &s, &u), None)
+            };
+            self.replay.record(u, next, samples);
+            self.plots
+                .record_step(self.replay.time(k), self.replay.time(k + 1), &u, &next);
         }
     }
 
@@ -808,6 +813,131 @@ mod tests {
     }
 
     #[test]
+    fn a_flight_and_its_plots_hold_only_the_last_minute_and_fly_on_exactly() {
+        let h = 0.1;
+        let mut case = suite::find("agile").expect("case exists");
+        case.task.params.h = h;
+        let params = case.task.params;
+        let mut exact = case.start;
+        let mut g = Game::new(case);
+        let allocations = g.plots.allocations();
+        let capacities = |g: &Game| {
+            (
+                g.replay.states().capacity(),
+                g.replay.controls().capacity(),
+                g.replay.collision_steps().capacity(),
+            )
+        };
+        let capacity = capacities(&g);
+        assert_eq!(g.plots.x.points().len(), 1, "from the start");
+        let thrust = Input {
+            thrust: 1.0,
+            turn: 0.5,
+            ..Input::default()
+        };
+        let u = thrust.control(&params);
+
+        let mut flown = 0.0;
+        let mut flown_steps = 0;
+        while flown < 100.0 {
+            g.advance(h, thrust, Steering::Raw);
+            flown += h;
+            assert_eq!(g.plots.allocations(), allocations, "at {flown} s");
+            assert_eq!(capacities(&g), capacity, "at {flown} s");
+            assert!(g.replay.controls().len() <= 600, "at {flown} s");
+            while flown_steps < g.replay.last_frame() {
+                exact = step(&params, &exact, &u);
+                flown_steps += 1;
+            }
+            // The newest sample is the flight's own, whatever has been discarded.
+            assert_eq!(g.next_state(), exact, "at {flown} s");
+            let newest = g.plots.x.points().last().expect("a sample").x;
+            let oldest = g.plots.x.points()[0].x;
+            assert!((newest - g.replay.duration()).abs() < 1e-9);
+            assert!(newest - oldest < 60.0 + 1e-9, "at {flown} s");
+            assert!(oldest <= (newest - 60.0).max(0.0) + 1e-9, "at {flown} s");
+        }
+
+        // Frames still count from the start, and the present is among those held.
+        let last = g.replay.last_frame();
+        assert!(last >= 1000, "{last} samples");
+        let first = last - 600;
+        assert_eq!(g.replay.first_frame(), first);
+        assert_eq!(
+            (g.replay.states().len(), g.replay.controls().len()),
+            (601, 600)
+        );
+        let (k, tau) = g.moment();
+        assert!(k >= first && tau < h, "at sample {k} + {tau}");
+        assert!((g.replay.time(k) + tau - g.time()).abs() < 1e-9);
+
+        // The plots hold the very samples the replay does.
+        assert_eq!(g.plots.vx.points().len(), 601);
+        for (i, (x, omega)) in g
+            .plots
+            .x
+            .points()
+            .iter()
+            .zip(g.plots.omega.points())
+            .enumerate()
+        {
+            let s = g.replay.state(first + i);
+            assert_eq!([x.x, x.y], [g.replay.time(first + i), s.x]);
+            assert_eq!([omega.x, omega.y], [g.replay.time(first + i), s.omega]);
+        }
+        assert_eq!(g.plots.thrust.points().len(), 1200);
+        for (pair, u) in g.plots.thrust.points().chunks(2).zip(g.replay.controls()) {
+            assert_eq!([pair[0].y, pair[1].y], [u.thrust, u.thrust]);
+        }
+        assert!(g.plots.thrust.points().iter().any(|p| p.y > 0.0), "thrusts");
+        let torque = g.plots.torque.points();
+        assert!(torque.iter().any(|p| p.y != 0.0), "turns");
+
+        // The sound reads the present, and the plume half a second back: both still held.
+        let t = g.time();
+        let full = u.thrust / params.f_max;
+        assert!((g.replay.thrust_fraction(t) - full).abs() < 1e-9);
+        assert!((g.replay.thrust_fraction(t - 0.5) - full).abs() < 1e-9);
+        assert_eq!(g.replay.thrust_fraction(1.0), 0.0, "long discarded");
+    }
+
+    #[test]
+    fn a_flight_with_collisions_holds_only_the_last_minute_of_substeps() {
+        let mut world = crate::world::Preset::PlanetAndMoon.world();
+        world.players[0].task.params.h = 0.1;
+        let mut g = Game::in_world(world.case(), world);
+        let capacity = g.replay.collision_steps().capacity();
+        while g.time() < 65.0 {
+            g.advance(0.1, Input::default(), Steering::Raw);
+            assert_eq!(
+                g.replay.collision_steps().len(),
+                g.replay.controls().len(),
+                "a step's substeps go with it"
+            );
+        }
+        assert_eq!(g.replay.collision_steps().len(), 600);
+        assert_eq!(g.replay.collision_steps().capacity(), capacity);
+        let r = &g.replay;
+        for k in [r.first_frame(), r.last_frame() - 1] {
+            assert_eq!(r.state_at(k, 0.0), *r.state(k), "substeps of frame {k}");
+        }
+        let (k, tau) = g.moment();
+        assert_eq!(g.state(), r.state_at(k, tau));
+    }
+
+    #[test]
+    fn the_plots_follow_a_flight_with_collisions_to_its_last_sample() {
+        let world = crate::world::Preset::PlanetAndMoon.world();
+        let mut g = Game::in_world(world.case(), world);
+        for _ in 0..100 {
+            g.advance(0.05, Input::default(), Steering::Raw);
+        }
+        let newest = g.plots.y.points().last().expect("a sample");
+        assert_eq!(newest.y, g.next_state().y);
+        assert_eq!(g.plots.y.points().len(), g.replay.last_frame() + 1);
+    }
+
+    #[test]
     fn saves_current_state_and_reloads_collision_world() {
         let mut world = crate::world::Preset::PlanetAndMoon.world();
         world.gravity_constant = 2.5;
@@ -967,12 +1097,8 @@ mod tests {
         };
         g.advance(2.5 * h, thrust, Steering::Raw);
         let r = &g.replay;
-        assert_eq!(
-            r.trajectory.controls.len(),
-            3,
-            "samples 0, 1 and 2 have controls"
-        );
-        assert_eq!(r.trajectory.states.len(), 4, "and the step under way ends");
+        assert_eq!(r.controls().len(), 3, "samples 0, 1 and 2 have controls");
+        assert_eq!(r.states().len(), 4, "and the step under way ends");
         let params = r.case.task.params;
         let u = thrust.control(&params);
         let s1 = step(&params, &r.case.start, &u);
@@ -1026,7 +1152,7 @@ mod tests {
                     s.theta
                 );
                 assert_eq!(g.hold, Some(stop), "{at}: held where it stopped");
-                for u in &g.replay.trajectory.controls {
+                for u in g.replay.controls() {
                     assert!(u.is_admissible(&params), "{at}: admissible");
                 }
             }
@@ -1058,7 +1184,7 @@ mod tests {
             "no guide without the assist"
         );
         let tau_max = g.replay.case.task.params.tau_max;
-        let last = g.replay.trajectory.controls.last().expect("controls");
+        let last = g.replay.controls().back().expect("controls");
         assert_eq!(last.torque, tau_max, "the player's torque, unchanged");
         fly(&mut g, 5.0, Input::default(), Steering::Sas);
         let s = g.state();
@@ -1103,8 +1229,8 @@ mod tests {
                 let mut g = Game::new(case);
                 fly(&mut g, 30.0, aim(heading, cone), Steering::Sas);
                 let at = format!("{name}, h = {h}");
-                let r = &g.replay.trajectory;
-                for (s, u) in r.states.iter().zip(&r.controls) {
+                let r = &g.replay;
+                for (s, u) in r.states().iter().zip(r.controls()) {
                     assert!(u.is_admissible(&params), "{at}: admissible");
                     let error = wrap(heading - s.theta).abs();
                     let thrusting = u.thrust > 0.0;
@@ -1132,7 +1258,7 @@ mod tests {
         fly(&mut g, 0.5, input, Steering::Raw);
         assert!(g.state().theta < start, "turns right");
         assert!(
-            g.replay.trajectory.controls.iter().all(|u| u.torque <= 0.0),
+            g.replay.controls().iter().all(|u| u.torque <= 0.0),
             "the aim's torque, not the turn's"
         );
     }
@@ -1158,13 +1284,8 @@ mod tests {
             }
             assert_eq!(g.landed(), Some(n), "{}: as scored", solution.name);
             assert!(g.autopiloted(), "{}: all the way", solution.name);
-            let flown = &g.replay.trajectory;
-            assert_eq!(
-                flown.controls[..n],
-                scored.controls[..],
-                "{}",
-                solution.name
-            );
+            let flown: Vec<Control> = g.replay.controls().iter().take(n).copied().collect();
+            assert_eq!(flown, scored.controls, "{}", solution.name);
         }
     }
 
@@ -1191,7 +1312,7 @@ mod tests {
         let landed = g.landed().expect("landed");
         fly_with(&mut g, 10.0, Some(solution));
         let task = g.replay.case.task;
-        for s in &g.replay.trajectory.states[landed..] {
+        for s in g.replay.states().iter().skip(landed) {
             let distance = (s.x - task.goal.x).hypot(s.y - task.goal.y);
             assert!(
                 distance < 3.0 * task.tolerance.position,
@@ -1232,7 +1353,7 @@ mod tests {
         let fault = g.take_fault().expect("a fault");
         assert!(fault.contains("inadmissible"), "{fault}");
         let params = g.replay.case.task.params;
-        for u in &g.replay.trajectory.controls {
+        for u in g.replay.controls() {
             assert!(u.is_admissible(&params), "the player's controls instead");
         }
         assert!(!g.autopiloted(), "the player flew");
@@ -1327,7 +1448,7 @@ mod tests {
         )
         .expect("engage");
         g.advance(0.0, Input::default(), Steering::Raw);
-        let k = g.replay.trajectory.controls.len();
+        let k = g.replay.last_frame();
         let before = g.next_state();
         let path = g.prediction();
         assert_eq!(
@@ -1338,7 +1459,7 @@ mod tests {
         assert_eq!(g.next_state(), before);
         assert_eq!(path[0], [before.x, before.y]);
         g.advance(g.replay.h(), Input::default(), Steering::Raw);
-        let next = g.replay.trajectory.states[k + 1];
+        let next = *g.replay.state(k + 1);
         assert!((path[1][0] - next.x).hypot(path[1][1] - next.y) < 1e-4);
     }
 }

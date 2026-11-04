@@ -638,7 +638,7 @@ $
 
 To obtain these bounds, use $norm(mathbf(p)(t_k+r)-mathbf(p)_k)<=v_* r$ in each force integral. Thus small heading change alone is no longer an adequate accuracy criterion. Large field gradients or high speed also demand smaller integration steps. These are local bounds, not accumulated trajectory-error guarantees.
 
-A predictor can integrate the coupled translational equations numerically while evaluating rotation analytically. It must check convergence as integration steps are refined and enforce clearance between samples. The app's Rapier integration at substeps of at most $1/120$ second is a numerical plant model, not the exact flow map above; agreement with a controller's predictor must be measured, especially over long orbits.
+A predictor can integrate the coupled translational equations numerically while evaluating rotation analytically. It must check convergence as integration steps are refined and enforce clearance between samples. The app's Rapier integration is a numerical plant model, not the exact flow map above; agreement with a controller's predictor must be measured, especially over long orbits. Its time step $Delta_t$ is distinct from the sampling period $h$: each period of zero-order hold is simulated as $ceil(120 h)$ substeps, so $Delta_t = h \/ ceil(120 h) <= 1\/120$ second, with the control constant across them. So $Delta_t$ follows from $h$, and changing $h$ changes the simulation as well. A vacuum flight has no $Delta_t$, since it evaluates the exact flow map.
 
 === A constrained capture-and-maintain control problem
 

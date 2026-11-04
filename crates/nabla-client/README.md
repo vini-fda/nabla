@@ -25,7 +25,7 @@ Security: loaded TOML is schema-validated and limited to 1 MiB, one player and 1
 - **Left panel**: the case picker, its sampling period `h`, parameters and initial state, and how the autopilot's policy does on it; the **Autopilot** (its policy, its switch, and **Show code**, a window with the policy's source, syntax highlighted and with line numbers); the state and control at present; display options; and sound: master/ion/RCS volume knobs, and buttons to hear each thruster on its own.
 - **Main canvas**: the ship, in 3D or as a flat triangle with velocity (green) and acceleration (red) arrows (**Debug** in Settings), in a Desmos-style coordinate grid you can pan (drag) and zoom (scroll, anchored at the cursor). The camera follows the ship from the start. It starts as a top-down orthographic view; the axes gizmo in its top right corner turns it to look from any side. Right of it, floating buttons show or hide the gizmo (sphere), follow the ship (rocket) and show or hide the path flown (a curve between two dots), turning light blue while on, switch dragging the canvas between panning and rotating the camera (arrows), and switch between orthographic and perspective projection (grid). Perspective uses the field of view of Blender's default 50 mm camera, and keeps the plane through the view's center at the same zoom as orthographic. It shows the path, the start, the goal `B` with its position tolerance, and a marker at the canvas's edge pointing to `B` while it is off screen.
 - **Bottom bar**: pause and restart, the **SAS**, **Autopilot** and **Point** switches, and the time.
-- **Right panel**: choose **State plots** or **Objective** in its vertical title bar, where the one showing is white and the other gray. **State plots**: x, y, vx, vy, θ, ω and the controls F, τ over the flight so far, with a cursor at the present. **Objective**: a mutually exclusive selector (**Reach B** or **Orbit**), with orbit target, altitude, preview and engagement controls when Orbit is selected.
+- **Right panel**: choose **State plots** or **Objective** in its vertical title bar, where the one showing is white and the other gray. **State plots**: x, y, vx, vy, θ, ω and the controls F, τ over the last 60 s of the flight, with a cursor at the present. **Objective**: a mutually exclusive selector (**Reach B** or **Orbit**), with orbit target, altitude, preview and engagement controls when Orbit is selected.
 
 Once the ship lands, a banner gives the step count, next to the policy's on the same case. The plots, plumes and sound follow the flight.
 
@@ -78,7 +78,7 @@ For Orbit, the forecast rolls out a copy of the live controller, including its c
 | **Top-down view** button under the gizmo | Back to the default top-down orthographic view |
 | Sphere button | Show / hide the gizmo |
 | Rocket button | Follow the ship, as `F` |
-| Path button | Show / hide the path, as the **Path** checkbox in Settings |
+| Path button | Show / hide the path of the last 60 s, as the **Path** checkbox in Settings |
 | Arrows button | Switch what dragging the canvas does: pan (four arrows, the default) or rotate the camera (circular arrow) |
 | Grid button | Switch between orthographic (flat grid, the default) and perspective projection |
 | Controller: left stick / Cross / R2 / L2 held | Turn / full thrust / thrust as hard as it is pulled / fine control |
@@ -103,7 +103,8 @@ src/
 ├── lib.rs        # module wiring
 ├── app.rs        # egui UI: case & autopilot, the game's bar, canvas, plots, code window
 ├── game.rs      ← the flight: grows a sample at a time from the player's controls or the autopilot's policy; touch joystick and pads
-├── replay.rs    ← a recorded run on a case: exact states between samples, plot series
+├── replay.rs    ← a recorded run on a case: exact states between samples; a flight keeps its last 60 s, in buffers of a fixed size
+├── plots.rs     ← what the state plots show: the same 60 s as points to draw, in buffers of a fixed size
 ├── camera.rs    ← orthographic orbit camera: world↔screen transform, pan, cursor-anchored zoom
 ├── gizmo.rs     ← Blender-style axes gizmo: orbit by dragging, snap to an axis by clicking
 ├── canvas_buttons.rs ← floating icon toggles over the canvas (gizmo, follow ship)

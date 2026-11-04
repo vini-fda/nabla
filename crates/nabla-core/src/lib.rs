@@ -12,5 +12,5 @@ pub mod problem;
 pub mod solutions;
 pub mod suite;
 
-pub use model::{Control, Params, State, step};
+pub use model::{Control, Params, State, flow, step};
 pub use problem::{Controller, Goal, Task, Tolerance};

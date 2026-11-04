@@ -432,14 +432,7 @@ fn hermite_interpolation_is_as_exact_as_the_paper_says() {
         };
         let end = vacuum_step(&params, &s, &u);
         let fraction = rng.unit();
-        let exact = vacuum_step(
-            &Params {
-                h: fraction * h,
-                ..params
-            },
-            &s,
-            &u,
-        );
+        let exact = flow(&params, &s, &u, fraction * h);
         let near = hermite(&s, &end, fraction, h);
         worst = worst.max((near.x - exact.x).hypot(near.y - exact.y));
         // The bound of prop-hermite for q = 1, with the spin of this sample.
@@ -689,6 +682,32 @@ fn a_late_frame_still_hears_the_thrust_of_the_tick_it_is_in() {
             "{late} s late heard {}",
             own.replay.thrust_fraction(own.t)
         );
+    }
+}
+
+#[test]
+fn the_own_plots_show_the_recent_flight_in_the_same_buffers_each_frame() {
+    let world = vacuum();
+    let ours = ShipRequest::from(world.default_ship());
+    let mut rig = Rig::new(world, 0.050, 0.0, 8);
+    rig.add(ours);
+    rig.join_all(&[ours]);
+    let hands = |_: usize, _: f64| Hands::default();
+    let mut allocations = None;
+    for _ in 0..3 {
+        rig.run(1.0, &hands);
+        let now = rig.now;
+        let views = rig.clients[0].views(now);
+        let own = views.first().filter(|view| view.own).expect("the own ship");
+        let plots = rig.clients[0].plots_of_own(own);
+        let last = own.replay.last_frame();
+        assert_eq!(plots.x.points().len(), last + 1);
+        assert_eq!(plots.thrust.points().len(), 2 * last);
+        let newest = plots.x.points().last().expect("a sample");
+        assert_eq!(newest.y, own.replay.state(last).x);
+        assert!(newest.x >= own.t, "{} is before {}", newest.x, own.t);
+        let now = plots.allocations();
+        assert_eq!(*allocations.get_or_insert(now), now);
     }
 }
 

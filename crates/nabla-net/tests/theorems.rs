@@ -4,7 +4,7 @@
 use nabla_net::Config;
 use nabla_net::sim::{Behavior, Checks, Hostile, Link, Peer, Report, Scenario, Sim};
 use nabla_net::wire::{
-    ClientStream, Commands, ConnId, ServerStream, ShipId, Username, decode, encode,
+    ClientStream, Commands, ConnId, Password, ServerStream, ShipId, Username, decode, encode,
 };
 use nabla_net::{Kind, ServerMachine};
 use nabla_sim::command::Command;
@@ -866,6 +866,167 @@ fn a_late_joiner_is_told_current_names_and_activity() {
             ("cy".to_owned(), true)
         ]
     );
+}
+
+fn locked(world: &World) -> ServerMachine {
+    server(world, Config::default()).with_password(Password::parse("hunter2").expect("valid"))
+}
+
+fn say_password(text: &str) -> Vec<u8> {
+    encode(&ClientStream::Password(
+        Password::parse(text).expect("valid"),
+    ))
+}
+
+#[test]
+fn a_server_with_a_password_shows_nothing_until_it_is_said() {
+    let world = vacuum();
+    let mut server = locked(&world);
+    server.connect(ConnId(0), 0.0);
+    assert_eq!(
+        streams(server.on_stream(ConnId(0), &hello(), 0.0)),
+        [ServerStream::PasswordRequired],
+        "no lobby: it holds the world and who is flying"
+    );
+    assert!(
+        streams(server.on_stream(ConnId(0), &join(&world, "early"), 0.0)).is_empty(),
+        "no ship before the password"
+    );
+    assert_eq!(server.pilots(), 0);
+    assert!(matches!(
+        streams(server.on_stream(ConnId(0), &say_password("hunter2"), 0.0)).as_slice(),
+        [ServerStream::Lobby(_)]
+    ));
+    assert!(matches!(
+        streams(server.on_stream(ConnId(0), &join(&world, "t"), 0.0)).as_slice(),
+        [ServerStream::Welcome(_), ServerStream::Roster(_)]
+    ));
+    assert_eq!(server.pilots(), 1);
+}
+
+#[test]
+fn a_wrong_password_ends_the_connection_and_gets_no_second_guess() {
+    let world = vacuum();
+    let mut server = locked(&world);
+    server.connect(ConnId(0), 0.0);
+    server.on_stream(ConnId(0), &hello(), 0.0);
+    let out = server.on_stream(ConnId(0), &say_password("guess"), 0.0);
+    assert_eq!(out.last().map(|o| &o.kind), Some(&Kind::Close));
+    assert_eq!(streams(out), [ServerStream::WrongPassword]);
+    // Frames already on their way when the connection closes count for nothing.
+    assert!(
+        server
+            .on_stream(ConnId(0), &say_password("hunter2"), 0.0)
+            .is_empty()
+    );
+    assert!(
+        server
+            .on_stream(ConnId(0), &join(&world, "t"), 0.0)
+            .is_empty()
+    );
+    assert_eq!(server.pilots(), 0);
+}
+
+#[test]
+fn a_password_before_hello_or_on_an_open_server_changes_nothing() {
+    let world = vacuum();
+    let mut server = locked(&world);
+    server.connect(ConnId(0), 0.0);
+    assert!(
+        server
+            .on_stream(ConnId(0), &say_password("hunter2"), 0.0)
+            .is_empty()
+    );
+    assert!(
+        streams(server.on_stream(ConnId(0), &join(&world, "t"), 0.0)).is_empty(),
+        "the password out of turn let nothing in"
+    );
+
+    let mut open = self::server(&world, Config::default());
+    open.connect(ConnId(0), 0.0);
+    assert!(matches!(
+        streams(open.on_stream(ConnId(0), &hello(), 0.0)).as_slice(),
+        [ServerStream::Lobby(_)]
+    ));
+    assert!(
+        open.on_stream(ConnId(0), &say_password("hunter2"), 0.0)
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_client_of_another_version_hears_that_before_any_password() {
+    let world = vacuum();
+    let mut server = locked(&world);
+    server.connect(ConnId(0), 0.0);
+    let old = encode(&ClientStream::Hello {
+        protocol: 2,
+        build: "old".to_owned(),
+    });
+    assert!(matches!(
+        streams(server.on_stream(ConnId(0), &old, 0.0)).as_slice(),
+        [ServerStream::Rejected(_)]
+    ));
+}
+
+/// Without this, a stranger waiting at the password would learn every pilot's name.
+#[test]
+fn only_those_let_in_hear_of_the_pilots() {
+    let world = vacuum();
+    let mut server = locked(&world);
+    let (pilot, outsider, fresh) = (ConnId(0), ConnId(1), ConnId(2));
+    server.connect(pilot, 0.0);
+    server.connect(outsider, 0.0);
+    server.connect(fresh, 0.0);
+    server.on_stream(outsider, &hello(), 0.0);
+    server.on_stream(pilot, &hello(), 0.0);
+    server.on_stream(pilot, &say_password("hunter2"), 0.0);
+
+    let heard_by = |out: &[nabla_net::Outgoing], conn| out.iter().any(|o| o.conn == conn);
+    let joining = server.on_stream(pilot, &join(&world, "secret"), 0.0);
+    assert!(heard_by(&joining, pilot));
+    assert!(!heard_by(&joining, outsider), "{joining:?}");
+    assert!(!heard_by(&joining, fresh), "{joining:?}");
+
+    let leaving = encode(&ClientStream::Leave);
+    let left = server.on_stream(pilot, &leaving, 0.0);
+    assert!(!heard_by(&left, outsider), "{left:?}");
+    assert!(!heard_by(&left, fresh), "{left:?}");
+}
+
+#[test]
+fn a_connection_not_let_in_soon_enough_is_closed_once() {
+    let world = vacuum();
+    let config = Config::default();
+    let mut server = locked(&world);
+    let (silent, stuck, inside) = (ConnId(0), ConnId(1), ConnId(2));
+    for conn in [silent, stuck, inside] {
+        server.connect(conn, 0.0);
+    }
+    server.on_stream(stuck, &hello(), 0.0);
+    server.on_stream(inside, &hello(), 0.0);
+    server.on_stream(inside, &say_password("hunter2"), 0.0);
+
+    let closed = |out: &[nabla_net::Outgoing]| {
+        out.iter()
+            .filter(|o| o.kind == Kind::Close)
+            .map(|o| o.conn)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(closed(&server.tick(config.admission)), []);
+    assert_eq!(
+        closed(&server.tick(config.admission + 0.1)),
+        [silent, stuck]
+    );
+    assert_eq!(closed(&server.tick(config.admission + 0.2)), []);
+    // Hanging on past the deadline did not let it try.
+    assert!(
+        server
+            .on_stream(stuck, &say_password("hunter2"), config.admission + 0.3)
+            .is_empty()
+    );
+    // And the lobby has no such deadline.
+    assert_eq!(closed(&server.tick(config.admission * 100.0)), []);
 }
 
 #[test]

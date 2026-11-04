@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use nabla_net::client::CorrectionStats;
 use nabla_net::link::{Address, Incoming};
 use nabla_net::native::Link;
-use nabla_net::wire::Username;
+use nabla_net::wire::{Password, Username};
 use nabla_net::{ClientMachine, Config, Kind};
 use nabla_sim::command::Command;
 use nabla_sim::rng::Rng;
@@ -102,17 +102,23 @@ impl Pilot {
 /// Connect to `address`, ask for `request` under the name `username`, and fly for `duration`
 /// (counted from the first moment it plays) on the runtime this is awaited in.
 ///
+/// It says `password` if the server asks for one.
+///
 /// It flies by random input from `seed`, or with its hands off the controls if there is none: the
 /// ship coasts, and its commands, which keep its place, ask for nothing.
 pub async fn fly(
     address: &Address,
     request: ShipRequest,
     username: Username,
+    password: Option<Password>,
     seed: Option<u64>,
     duration: Duration,
 ) -> BotReport {
     let mut link = Link::open(&Handle::current(), address);
     let mut machine = ClientMachine::new(Config::default(), request, username, "nabla-bot");
+    if let Some(password) = password {
+        machine = machine.with_password(password);
+    }
     for kind in machine.start() {
         link.send(kind);
     }

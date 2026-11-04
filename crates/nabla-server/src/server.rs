@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use nabla_net::frame::{FrameReader, frame};
 use nabla_net::link::{Address, hex};
-use nabla_net::wire::{ConnId, MAX_CLIENT_FRAME};
+use nabla_net::wire::{ConnId, MAX_CLIENT_FRAME, Password};
 use nabla_net::{Config, Kind, ServerMachine};
 use nabla_sim::world::World;
 use tokio::sync::mpsc;
@@ -42,6 +42,8 @@ pub struct Settings {
     pub world: World,
     pub config: Config,
     pub identity: Identity,
+    /// What a connection must say to be let in, if anything.
+    pub password: Option<Password>,
 }
 
 /// What a connection task tells the owner.
@@ -84,6 +86,7 @@ impl Server {
             world,
             config,
             identity,
+            password,
         } = settings;
         let hash = identity
             .certificate_chain()
@@ -93,7 +96,10 @@ impl Server {
             .hash();
         let h = world.h();
         let max_datagram = config.max_datagram;
-        let machine = ServerMachine::new(world, config, 0.0)?;
+        let mut machine = ServerMachine::new(world, config, 0.0)?;
+        if let Some(password) = password {
+            machine = machine.with_password(password);
+        }
         let mut server = ServerConfig::builder()
             .with_bind_address(bind)
             .with_identity(identity)

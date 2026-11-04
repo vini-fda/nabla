@@ -14,8 +14,8 @@ use nabla_sim::world::{ShipRequest, World};
 
 use crate::margin::MarginController;
 use crate::wire::{
-    ClientStream, Commands, MAX_STREAM_FRAME, PROTOCOL, RosterEntry, ServerStream, ShipId,
-    ShipRecord, Snapshot, Tick, Username, decode, encode,
+    ClientStream, Commands, MAX_STREAM_FRAME, PROTOCOL, Password, RosterEntry, ServerStream,
+    ShipId, ShipRecord, Snapshot, Tick, Username, decode, encode,
 };
 use crate::{Config, Kind};
 
@@ -102,6 +102,11 @@ pub enum Stage {
     Full,
     /// The server turned the client away.
     Rejected,
+    /// The server asks for a password this client does not have. It takes a new connection, with
+    /// the password, to go on.
+    NeedsPassword,
+    /// The password was wrong, and the server ended the connection.
+    WrongPassword,
 }
 
 /// What the lobby said about who is flying.
@@ -137,6 +142,10 @@ enum Phase {
     Rejected(String),
     /// The ship is gone (it left, or was idle too long), and the client is in the lobby.
     Lobby,
+    /// The server asked for a password, and there is none to give it.
+    NeedsPassword,
+    /// The server refused the password.
+    WrongPassword,
 }
 
 /// A ship being flown.
@@ -230,6 +239,8 @@ pub struct ClientMachine {
     config: Config,
     request: ShipRequest,
     build: String,
+    /// What to say if the server asks for a password, and only then.
+    password: Option<Password>,
     /// Join under this name as soon as the first lobby arrives. A client that has left waits to
     /// be told.
     auto_join: Option<Username>,
@@ -260,6 +271,7 @@ impl ClientMachine {
             config,
             request,
             build: build.to_owned(),
+            password: None,
             auto_join: None,
             asked: None,
             refused: None,
@@ -269,6 +281,13 @@ impl ClientMachine {
             lobby: None,
             roster: BTreeMap::new(),
         }
+    }
+
+    /// This client, saying `password` if the server asks for one.
+    #[must_use]
+    pub fn with_password(mut self, password: Password) -> Self {
+        self.password = Some(password);
+        self
     }
 
     /// The first message of the connection.
@@ -384,6 +403,20 @@ impl ClientMachine {
             }
             ServerStream::Rejected(why) => self.phase = Phase::Rejected(why),
             ServerStream::Roster(entry) => self.roster_entry(entry),
+            ServerStream::PasswordRequired => {
+                if matches!(self.phase, Phase::Hello) {
+                    let Some(password) = self.password.clone() else {
+                        self.phase = Phase::NeedsPassword;
+                        return Vec::new();
+                    };
+                    return vec![Kind::Stream(encode(&ClientStream::Password(password)))];
+                }
+            }
+            ServerStream::WrongPassword => {
+                if matches!(self.phase, Phase::Hello) {
+                    self.phase = Phase::WrongPassword;
+                }
+            }
         }
         Vec::new()
     }
@@ -557,6 +590,8 @@ impl ClientMachine {
             Phase::Playing(_) => Stage::Playing,
             Phase::Full => Stage::Full,
             Phase::Rejected(_) => Stage::Rejected,
+            Phase::NeedsPassword => Stage::NeedsPassword,
+            Phase::WrongPassword => Stage::WrongPassword,
         }
     }
 
@@ -574,6 +609,8 @@ impl ClientMachine {
         match &self.phase {
             Phase::Rejected(why) => Some(why),
             Phase::Full => Some("the server is full"),
+            Phase::NeedsPassword => Some("the server asks for a password"),
+            Phase::WrongPassword => Some("the password is wrong"),
             _ => None,
         }
     }
@@ -726,19 +763,26 @@ mod tests {
         ShipRequest::from(world().default_ship())
     }
 
-    /// Say hello, and hear the lobby: what the client answers.
-    fn through_the_lobby(client: &mut ClientMachine) -> Vec<Kind> {
-        client.start();
-        let lobby = ServerStream::Lobby(Lobby {
+    fn lobby() -> Vec<u8> {
+        encode(&ServerStream::Lobby(Lobby {
             world: world().to_toml().expect("a world in TOML"),
             pilots: Vec::new(),
             max_pilots: 4,
-        });
-        client.on_stream(&encode(&lobby), 0.0)
+        }))
+    }
+
+    /// Say hello, and hear the lobby: what the client answers.
+    fn through_the_lobby(client: &mut ClientMachine) -> Vec<Kind> {
+        client.start();
+        client.on_stream(&lobby(), 0.0)
+    }
+
+    fn unconnected() -> ClientMachine {
+        ClientMachine::waiting_in_the_lobby(Config::default(), request(), "test")
     }
 
     fn waiting() -> ClientMachine {
-        let mut client = ClientMachine::waiting_in_the_lobby(Config::default(), request(), "test");
+        let mut client = unconnected();
         assert!(through_the_lobby(&mut client).is_empty());
         client
     }
@@ -799,6 +843,58 @@ mod tests {
         client.on_stream(&encode(&ServerStream::NameTaken), 0.1);
         assert_eq!(client.stage(), Stage::Rejected);
         assert_eq!(client.refusal(), Some("the name is taken"));
+    }
+
+    #[test]
+    fn a_client_with_a_password_says_it_when_asked_and_only_then() {
+        let password = Password::parse("hunter2").expect("valid");
+        let mut client = unconnected().with_password(password.clone());
+        assert_eq!(
+            client.start(),
+            says(&ClientStream::Hello {
+                protocol: PROTOCOL,
+                build: "test".to_owned(),
+            }),
+            "the first message does not hold it"
+        );
+        assert_eq!(
+            client.on_stream(&encode(&ServerStream::PasswordRequired), 0.1),
+            says(&ClientStream::Password(password))
+        );
+        assert_eq!(client.stage(), Stage::Connecting);
+
+        // From the lobby, a server has no more to ask for.
+        client.on_stream(&lobby(), 0.2);
+        assert_eq!(client.stage(), Stage::Lobby);
+        assert!(
+            client
+                .on_stream(&encode(&ServerStream::PasswordRequired), 0.3)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_client_without_a_password_stops_and_says_so() {
+        let mut client = unconnected();
+        client.start();
+        assert!(
+            client
+                .on_stream(&encode(&ServerStream::PasswordRequired), 0.1)
+                .is_empty()
+        );
+        assert_eq!(client.stage(), Stage::NeedsPassword);
+        assert_eq!(client.refusal(), Some("the server asks for a password"));
+    }
+
+    #[test]
+    fn a_wrong_password_ends_the_attempt() {
+        let password = Password::parse("hunter2").expect("valid");
+        let mut client = unconnected().with_password(password);
+        client.start();
+        client.on_stream(&encode(&ServerStream::PasswordRequired), 0.1);
+        client.on_stream(&encode(&ServerStream::WrongPassword), 0.2);
+        assert_eq!(client.stage(), Stage::WrongPassword);
+        assert_eq!(client.refusal(), Some("the password is wrong"));
     }
 
     #[test]

@@ -690,6 +690,8 @@ special case of A1, so all of @safety would hold on one.
     columns: (auto, auto, 1fr),
     ([Message], [Channel], [Contents]),
     [`Hello`], [stream, up], [Protocol and build version.],
+    [`PasswordRequired`], [stream, down], [Instead of `Lobby`, from a server with a password.],
+    [`Password`], [stream, up], [The answer to `PasswordRequired`. It gets `Lobby`, or `WrongPassword` and the end of the connection.],
     [`Lobby`], [stream, down], [The world (validated TOML, with its tick rate and arena), $Pset$, the default ship, the pilots present, and $N_max$.],
     [`Join`], [stream, up], [The parameters the pilot asks for, and the name to fly under.],
     [`Welcome`], [stream, down], [The pilot's ship $i$, its granted parameters, a tick $T_0$, all ships' states at $T_0$. Or `Full`, if there is no room, or `NameTaken`, if a ship is flying under that name.],

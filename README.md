@@ -69,6 +69,7 @@ The worlds are built into the binary, so `target/release/nabla-server` can be co
 | `--max-pilots N` | `16` | How many ships may fly at once |
 | `--name HOST` | `localhost`, `127.0.0.1`, `::1` | A name for the self-signed certificate; repeat it for more |
 | `--cert PEM --key PEM` | | A certificate to use instead of a self-signed one |
+| `--password-file FILE` | | Let in only pilots who know the password this file holds |
 
 It logs the address to connect to, and how the flight is going every ten seconds, until Ctrl-C. `RUST_LOG=debug` logs more.
 

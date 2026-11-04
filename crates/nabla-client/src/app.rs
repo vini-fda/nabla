@@ -308,6 +308,9 @@ pub struct ViewerApp {
     connect_on_start: bool,
     /// The server's address as typed on the title screen.
     server_address: String,
+    /// The password of that server, as typed when it asked for one, until the pilot goes back to
+    /// the title screen.
+    server_password: String,
     online_error: Option<String>,
     /// The ship the pilot asks a server for, in the lobby.
     join_request: nabla_sim::world::ShipRequest,
@@ -384,6 +387,7 @@ impl Default for ViewerApp {
             online: None,
             connect_on_start: false,
             server_address: online::DEFAULT_SERVER.to_owned(),
+            server_password: String::new(),
             online_error: None,
             join_request: world_default_request(),
             username: String::new(),

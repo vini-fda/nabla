@@ -11,8 +11,9 @@ use nabla_sim::ship::Ship;
 use nabla_sim::world::{MAX_PILOTS, World};
 
 use crate::wire::{
-    ClientStream, Commands, ConnId, Lobby, MAX_COMMANDS, MAX_STREAM_FRAME, PROTOCOL, RosterEntry,
-    ServerStream, ShipId, ShipRecord, Snapshot, Tick, Username, Welcome, decode, encode,
+    ClientStream, Commands, ConnId, Lobby, MAX_COMMANDS, MAX_STREAM_FRAME, PROTOCOL, Password,
+    RosterEntry, ServerStream, ShipId, ShipRecord, Snapshot, Tick, Username, Welcome, decode,
+    encode,
 };
 use crate::{Config, Kind, Outgoing};
 
@@ -63,14 +64,27 @@ impl ShipLog {
 enum Phase {
     /// Connected, and `Hello` not yet heard.
     Fresh,
+    /// `Hello` is heard, and the server waits for the password.
+    Locked,
     /// In the lobby: no ship.
     Lobby,
     /// Flying this ship.
     Piloting(ShipId),
+    /// Told to go, and on its way out: nothing it says counts any more.
+    TurnedAway,
+}
+
+impl Phase {
+    /// Whether the connection may hear of the world and who is in it.
+    fn is_admitted(self) -> bool {
+        matches!(self, Self::Lobby | Self::Piloting(_))
+    }
 }
 
 struct Conn {
     phase: Phase,
+    /// When it connected, by the server's clock.
+    since: f64,
     /// When anything last came from it, by the server's clock.
     last_heard: f64,
 }
@@ -101,6 +115,8 @@ pub struct ServerMachine {
     world: World,
     world_file: String,
     config: Config,
+    /// What a connection must say to be let in, if anything.
+    password: Option<Password>,
     /// The real time of tick 0: `R(T) = t0 + T h`.
     t0: f64,
     /// The tick that runs next: `T`.
@@ -133,6 +149,7 @@ impl ServerMachine {
             world_file: world.to_toml()?,
             world,
             config,
+            password: None,
             t0,
             tick: 0,
             conns: BTreeMap::new(),
@@ -143,6 +160,13 @@ impl ServerMachine {
             logs: BTreeMap::new(),
             held: 0,
         })
+    }
+
+    /// This server, letting in only the connections that say `password`.
+    #[must_use]
+    pub fn with_password(mut self, password: Password) -> Self {
+        self.password = Some(password);
+        self
     }
 
     /// The tick that runs next, `T`: so there have been `T` of them.
@@ -204,6 +228,7 @@ impl ServerMachine {
             conn,
             Conn {
                 phase: Phase::Fresh,
+                since: now,
                 last_heard: now,
             },
         );
@@ -237,14 +262,30 @@ impl ServerMachine {
         };
         match (phase, message) {
             (Phase::Fresh, ClientStream::Hello { protocol, .. }) => {
-                if protocol == PROTOCOL {
-                    self.set_phase(conn, Phase::Lobby);
-                    out.push(self.lobby(conn));
-                } else {
+                if protocol != PROTOCOL {
                     out.push(stream(
                         conn,
                         &ServerStream::Rejected("protocol version".to_owned()),
                     ));
+                    out.push(Outgoing {
+                        conn,
+                        kind: Kind::Close,
+                    });
+                } else if self.password.is_some() {
+                    self.set_phase(conn, Phase::Locked);
+                    out.push(stream(conn, &ServerStream::PasswordRequired));
+                } else {
+                    self.set_phase(conn, Phase::Lobby);
+                    out.push(self.lobby(conn));
+                }
+            }
+            (Phase::Locked, ClientStream::Password(given)) => {
+                if self.password.as_ref().is_some_and(|p| p.matches(&given)) {
+                    self.set_phase(conn, Phase::Lobby);
+                    out.push(self.lobby(conn));
+                } else {
+                    self.set_phase(conn, Phase::TurnedAway);
+                    out.push(stream(conn, &ServerStream::WrongPassword));
                     out.push(Outgoing {
                         conn,
                         kind: Kind::Close,
@@ -322,6 +363,7 @@ impl ServerMachine {
     pub fn tick(&mut self, now: f64) -> Vec<Outgoing> {
         let mut out = Vec::new();
         self.retire_the_idle(now, &mut out);
+        self.retire_the_unadmitted(now, &mut out);
         let t = self.tick;
         for (id, slot) in &mut self.ships {
             let delivered = slot.buf.remove(&t);
@@ -474,7 +516,7 @@ impl ServerMachine {
         let others: Vec<ConnId> = self
             .conns
             .iter()
-            .filter(|&(&c, state)| c != conn && state.phase != Phase::Fresh)
+            .filter(|&(&c, state)| c != conn && state.phase.is_admitted())
             .map(|(&c, _)| c)
             .collect();
         let message = ServerStream::Roster(entry);
@@ -493,7 +535,7 @@ impl ServerMachine {
             entry.until = Some(self.tick);
             let message = ServerStream::Roster(entry);
             for (&conn, state) in &self.conns {
-                if state.phase != Phase::Fresh {
+                if state.phase.is_admitted() {
                     out.push(stream(conn, &message));
                 }
             }
@@ -522,7 +564,7 @@ impl ServerMachine {
             entry.active = active;
             let message = ServerStream::Roster(entry.clone());
             for (&conn, state) in &self.conns {
-                if state.phase != Phase::Fresh {
+                if state.phase.is_admitted() {
                     out.push(stream(conn, &message));
                 }
             }
@@ -543,6 +585,21 @@ impl ServerMachine {
             .collect();
         for ship in idle {
             self.leave(ship, out);
+        }
+    }
+
+    /// A connection that has not got as far as the lobby in time goes, so that one which never
+    /// says anything, or does not know the password, does not hold a connection's place.
+    fn retire_the_unadmitted(&mut self, now: f64, out: &mut Vec<Outgoing>) {
+        for (&conn, c) in &mut self.conns {
+            let waiting = matches!(c.phase, Phase::Fresh | Phase::Locked);
+            if waiting && now - c.since > self.config.admission {
+                c.phase = Phase::TurnedAway;
+                out.push(Outgoing {
+                    conn,
+                    kind: Kind::Close,
+                });
+            }
         }
     }
 }

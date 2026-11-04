@@ -12,7 +12,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 /// The version of this protocol, which `Hello` carries.
-pub const PROTOCOL: u16 = 2;
+pub const PROTOCOL: u16 = 3;
 
 /// The most a stream frame may hold: a world file is at most 1 MiB, and a `Lobby` holds one.
 pub const MAX_STREAM_FRAME: usize = 1024 * 1024 + 4096;
@@ -94,6 +94,71 @@ impl std::fmt::Display for InvalidUsername {
     }
 }
 
+/// The longest a [`Password`] may be, in bytes.
+pub const MAX_PASSWORD: usize = 256;
+
+/// What a server may ask of a connection before it shows it anything: 1 to [`MAX_PASSWORD`] bytes,
+/// with no white space at either end.
+///
+/// Every value of this type is valid, decoded ones too. It never prints, so a message that holds
+/// one can be logged.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String")]
+pub struct Password(String);
+
+impl Password {
+    /// `text` as a password.
+    ///
+    /// # Errors
+    /// If it is empty, too long, or has white space at either end.
+    pub fn parse(text: &str) -> Result<Self, InvalidPassword> {
+        Self::try_from(text.to_owned())
+    }
+
+    /// Whether `given` is this password, looking at every byte of the longer whatever it finds, so
+    /// that the time taken says nothing of how much of a guess was right.
+    pub fn matches(&self, given: &Self) -> bool {
+        let (ours, theirs) = (self.0.as_bytes(), given.0.as_bytes());
+        let mut difference = ours.len() ^ theirs.len();
+        for i in 0..ours.len().max(theirs.len()) {
+            let byte = |text: &[u8]| text.get(i).copied().unwrap_or(0);
+            difference |= usize::from(byte(ours) ^ byte(theirs));
+        }
+        std::hint::black_box(difference) == 0
+    }
+}
+
+impl TryFrom<String> for Password {
+    type Error = InvalidPassword;
+
+    fn try_from(text: String) -> Result<Self, InvalidPassword> {
+        if (1..=MAX_PASSWORD).contains(&text.len()) && text.trim() == text {
+            Ok(Self(text))
+        } else {
+            Err(InvalidPassword)
+        }
+    }
+}
+
+impl std::fmt::Debug for Password {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Password(..)")
+    }
+}
+
+/// Why text is not a [`Password`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InvalidPassword;
+
+impl std::fmt::Display for InvalidPassword {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "a password is 1 to {MAX_PASSWORD} bytes, with no white space at either end"
+        )
+    }
+}
+
 /// What a client says on its stream.
 ///
 /// A new variant goes last, and `Hello` stays first and as it is: a client of any version must be
@@ -112,6 +177,8 @@ pub enum ClientStream {
     /// The pilot has left this app for another (`true`), or has come back to it (`false`). It says
     /// only how the ship's name is shown, and nothing about its flight.
     Away(bool),
+    /// The answer to [`ServerStream::PasswordRequired`].
+    Password(Password),
 }
 
 /// What the server says on a stream.
@@ -130,6 +197,11 @@ pub enum ServerStream {
     /// A ship in the world is already flying under the name asked for. The client stays in the
     /// lobby.
     NameTaken,
+    /// The answer to `Hello` from a server with a password, in place of the lobby. A client that
+    /// knows the password says it, and one that does not can ask its pilot and connect again.
+    PasswordRequired,
+    /// That was not the password. The connection ends here, so each guess costs a new one.
+    WrongPassword,
 }
 
 /// The world, as a validated world file with its tick rate, arena and allowed ships, and who is
@@ -362,6 +434,34 @@ mod tests {
             encode(&ServerStream::Rejected("x".to_owned())),
             [3, 1, b'x']
         );
+    }
+
+    #[test]
+    fn a_password_crosses_the_wire_only_if_it_is_valid() {
+        let password = Password::parse("correct horse").expect("valid");
+        let message = ClientStream::Password(password.clone());
+        assert_eq!(decode::<ClientStream>(&encode(&message), 1000), Ok(message));
+        for bad in ["", " padded", "padded\n", &"x".repeat(MAX_PASSWORD + 1)] {
+            assert_eq!(Password::parse(bad), Err(InvalidPassword), "{bad:?}");
+            assert!(decode::<Password>(&encode(&bad.to_owned()), 1000).is_err());
+        }
+        assert!(Password::parse(&"x".repeat(MAX_PASSWORD)).is_ok());
+    }
+
+    #[test]
+    fn a_password_matches_itself_and_nothing_else() {
+        let password = Password::parse("hunter2").expect("valid");
+        assert!(password.matches(&password.clone()));
+        for other in ["hunter", "hunter22", "hunter3", "Hunter2", "x"] {
+            assert!(!password.matches(&Password::parse(other).expect("valid")));
+        }
+    }
+
+    #[test]
+    fn a_password_never_prints() {
+        let password = Password::parse("hunter2").expect("valid");
+        let printed = format!("{:?}", ClientStream::Password(password));
+        assert!(!printed.contains("hunter2"), "{printed}");
     }
 
     #[test]

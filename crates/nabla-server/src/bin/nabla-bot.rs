@@ -2,6 +2,7 @@
 //!
 //! ```text
 //! nabla-bot --server https://host:4433#sha256=... [--seconds 30] [--seed 1] [--name bot1] [--still]
+//!           [--password-file FILE]
 //! ```
 //!
 //! With `--still` it touches nothing: the ship coasts, and its pilot soon shows as inactive.
@@ -13,7 +14,7 @@ use std::time::Duration;
 use nabla_net::link::Address;
 use nabla_net::wire::Username;
 use nabla_server::bot::{self, Outcome};
-use nabla_server::cli::{flag, parsed};
+use nabla_server::cli::{flag, parsed, password_file};
 use nabla_sim::world::Preset;
 
 #[tokio::main]
@@ -21,7 +22,7 @@ async fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
     if let Err(why) = go().await {
         log::error!(
-            "{why}\nusage: nabla-bot --server ADDRESS [--seconds N] [--seed N] [--name NAME] [--still]"
+            "{why}\nusage: nabla-bot --server ADDRESS [--seconds N] [--seed N] [--name NAME] [--still] [--password-file FILE]"
         );
         std::process::exit(2);
     }
@@ -40,6 +41,7 @@ async fn go() -> Result<(), String> {
         &address,
         request,
         username,
+        password_file(&args)?,
         (!args.iter().any(|arg| arg == "--still")).then_some(seed),
         Duration::from_secs_f64(seconds),
     )

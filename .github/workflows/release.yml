@@ -1,10 +1,15 @@
 name: Release
 
 # Publishes a GitHub Release with native builds of the app and the multiplayer server for every
-# version tag `vX.Y.Z`. Pushes to main never release. To release, bump the versions and push a tag (see README.md).
+# version tag `vX.Y.Z`. To release, merge a version bump (see README.md): tag.yml then tags it and
+# starts this workflow on the tag.
 on:
   push:
     tags: ["v*.*.*"]
+  # How tag.yml starts it, since a tag pushed with GITHUB_TOKEN triggers no workflows. Only a run
+  # on a version tag gets anywhere: the `version` job fails on any other ref, and the `release`
+  # environment deploys only version tags.
+  workflow_dispatch:
 
 permissions:
   contents: write

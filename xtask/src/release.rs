@@ -1,5 +1,6 @@
 //! The steps of a release (see the README): `bump` sets the workspace version, and `tag` checks
-//! that the checkout is ready, tags it and offers to push the tag, which publishes the release.
+//! that the checkout is ready, tags it and pushes the tag, which publishes the release. Merging a
+//! bump runs `tag --ci` (.github/workflows/tag.yml); `cargo tag` is the same task by hand.
 
 use std::fmt;
 use std::io::{self, Write as _};
@@ -138,11 +139,15 @@ fn confirm(question: &str) -> Result<bool> {
 
 /// The `tag` task: check that the checkout is what should be released, tag it with the workspace
 /// version, and offer to push the tag. Running it again after a declined or failed push is fine.
+///
+/// With `ci`, for a workflow on a push to `main`: it doesn't ask, it prints the tag once pushed
+/// and nothing else on stdout, and a version already tagged is no error, as `Cargo.toml` also
+/// changes without a bump.
 #[expect(
     clippy::print_stdout,
-    reason = "saying the tag was not pushed is the task's output"
+    reason = "the pushed tag, or saying it was not pushed, is the task's output"
 )]
-pub fn tag(sh: &Shell) -> Result<()> {
+pub fn tag(sh: &Shell, ci: bool) -> Result<()> {
     let branch = cmd!(sh, "git branch --show-current").read()?;
     if branch != "main" {
         let branch = if branch.is_empty() {
@@ -174,10 +179,15 @@ pub fn tag(sh: &Shell) -> Result<()> {
         })
     };
     if on_remote(&tag_ref).is_some() {
+        if ci {
+            return Ok(());
+        }
         bail!("{tag} is already on origin: bump the version first, with `cargo bump`");
     }
     let head = cmd!(sh, "git rev-parse HEAD").read()?;
-    if on_remote("refs/heads/main") != Some(head.as_str()) {
+    // A workflow checks out the commit that was pushed, which is the one to tag even if another
+    // merge has since moved `main` on.
+    if !ci && on_remote("refs/heads/main") != Some(head.as_str()) {
         bail!("local `main` and `origin/main` differ: push or pull first");
     }
 
@@ -203,10 +213,13 @@ pub fn tag(sh: &Shell) -> Result<()> {
         );
     }
 
-    if confirm(&format!("Push {tag} to origin, publishing the release?"))? {
-        cmd!(sh, "git push origin {tag_ref}").run()?;
-    } else {
+    if !ci && !confirm(&format!("Push {tag} to origin, publishing the release?"))? {
         println!("Not pushed. To publish it later, run `cargo tag` again.");
+        return Ok(());
+    }
+    cmd!(sh, "git push origin {tag_ref}").run()?;
+    if ci {
+        println!("{tag}");
     }
     Ok(())
 }

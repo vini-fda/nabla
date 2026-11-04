@@ -10,6 +10,19 @@ use rapier2d::prelude::{
 use crate::span;
 use crate::world::{CelestialBody, World};
 
+/// The rate the simulation runs at, at the least, in steps per second: `Delta_t <= 1 / this`.
+const MIN_SIMULATION_RATE: f64 = 120.0;
+
+/// How one sampling period `h` is simulated: the number of Rapier substeps, and their `Delta_t`.
+///
+/// There are `ceil(120 h)` of `Delta_t = h / ceil(120 h)` seconds, with the control held over all
+/// of them, so `Delta_t` follows from `h`. Replicas agree on it only if they agree on `h` to the
+/// last bit, which is why the count multiplies by the rate: dividing by `1 / 120` rounds differently.
+pub fn substeps(h: f64) -> (usize, f64) {
+    let count = (h * MIN_SIMULATION_RATE).ceil() as usize;
+    (count, h / count as f64)
+}
+
 /// The gravitational acceleration at `position`, `sum G M (body - player) / r^3`.
 ///
 /// Inside a body, use a uniform solid sphere's field,
@@ -110,19 +123,20 @@ impl Physics {
         self.theta = s.theta;
     }
 
-    /// One control period, recording substeps for rendering through collisions.
+    /// One sampling period `h` under the control `u`, recording its [`substeps`] for rendering
+    /// through collisions.
     pub fn step(&mut self, h: f64, u: Control) -> Vec<State> {
         let _span = span!(Level::Trace, "physics step");
-        let count = (h * 120.0).ceil() as usize;
-        let dt = (h / count as f64) as f32;
-        self.world.integration_parameters.dt = dt;
+        let (count, delta_t) = substeps(h);
+        let delta_t = delta_t as f32;
+        self.world.integration_parameters.dt = delta_t;
         let mut samples = Vec::with_capacity(count + 1);
         samples.push(self.state());
         for _ in 0..count {
             let body = &mut self.world.bodies[self.player];
             let old_angle = body.rotation().angle();
             let old_omega = body.angvel();
-            let heading = old_angle + body.angvel() * dt * 0.5;
+            let heading = old_angle + body.angvel() * delta_t * 0.5;
             let position = body.translation();
             let [ax, ay] = gravity_acceleration(
                 &self.sources,
@@ -139,8 +153,9 @@ impl Physics {
             body.add_torque(u.torque as f32, true);
             self.world.step();
             let angle = self.world.bodies[self.player].rotation().angle();
-            let expected =
-                f64::from(f32::midpoint(old_omega, self.world.bodies[self.player].angvel()) * dt);
+            let expected = f64::from(
+                f32::midpoint(old_omega, self.world.bodies[self.player].angvel()) * delta_t,
+            );
             self.theta += expected + crate::steering::wrap(f64::from(angle - old_angle) - expected);
             samples.push(self.state());
         }
@@ -323,6 +338,24 @@ mod tests {
     }
 
     #[test]
+    fn the_simulation_step_follows_from_the_sampling_period() {
+        for (h, count) in [
+            (0.01, 2),
+            (0.02, 3),
+            (1.0 / 120.0, 1),
+            (1.0 / 60.0, 2),
+            (0.0167, 3),
+            (0.05, 6),
+            (0.1, 12),
+        ] {
+            let (substeps, delta_t) = substeps(h);
+            assert_eq!(substeps, count, "h = {h}");
+            assert!((delta_t * count as f64 - h).abs() < 1e-15, "h = {h}");
+            assert!(delta_t <= 1.0 / MIN_SIMULATION_RATE + 1e-15, "h = {h}");
+        }
+    }
+
+    #[test]
     fn gravity_accelerates_players_equally_and_keeps_bodies_static() {
         let mut save = Preset::Planet.world();
         save.bodies = vec![source([0.0, 0.0], 1.0, 100.0)];
@@ -335,11 +368,12 @@ mod tests {
         let mut light = Physics::new(&save);
         save.players[0].task.params.mass *= 10.0;
         let mut heavy = Physics::new(&save);
-        let dt = 1.0 / 120.0;
-        light.step(dt, Control::default());
-        heavy.step(dt, Control::default());
+        // A sampling period as short as one substep.
+        let h = 1.0 / MIN_SIMULATION_RATE;
+        light.step(h, Control::default());
+        heavy.step(h, Control::default());
         assert!(
-            (light.state().vx / dt + 2.0).abs() < 1e-4,
+            (light.state().vx / h + 2.0).abs() < 1e-4,
             "integrates G M / r^2"
         );
         for _ in 0..100 {

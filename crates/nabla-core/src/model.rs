@@ -103,15 +103,21 @@ const MAX_PANELS: usize = 4096;
 ///
 /// This is the sampled-data map `Φ_h` of the write-up (`docs/main.typ`). It does not check admissibility.
 pub fn step(p: &Params, s: &State, u: &Control) -> State {
-    let h = p.h;
+    flow(p, s, u, p.h)
+}
+
+/// The state `duration` seconds on under the constant control `u`, for any `duration >= 0`: the
+/// exact flow that [`step`] follows for one sampling period, and that shows the ship between
+/// samples. It reads no `p.h`, and does not check admissibility.
+pub fn flow(p: &Params, s: &State, u: &Control, duration: f64) -> State {
     let alpha = u.torque / p.inertia;
-    let theta = s.theta + h * s.omega + 0.5 * alpha * h * h;
-    let omega = s.omega + alpha * h;
+    let theta = s.theta + duration * s.omega + 0.5 * alpha * duration * duration;
+    let omega = s.omega + alpha * duration;
 
     if u.thrust == 0.0 {
         return State {
-            x: s.x + h * s.vx,
-            y: s.y + h * s.vy,
+            x: s.x + duration * s.vx,
+            y: s.y + duration * s.vy,
             vx: s.vx,
             vy: s.vy,
             theta,
@@ -119,10 +125,10 @@ pub fn step(p: &Params, s: &State, u: &Control) -> State {
         };
     }
 
-    // Heading integrals c = ∫ e(φ), d = ∫ (h − r) e(φ) over [0, h].
-    let span = s.omega.abs() * h + 0.5 * alpha.abs() * h * h;
+    // Heading integrals c = ∫ e(φ), d = ∫ (duration − r) e(φ) over [0, duration].
+    let span = s.omega.abs() * duration + 0.5 * alpha.abs() * duration * duration;
     let panels = ((span / MAX_PANEL_PHASE).ceil() as usize).clamp(1, MAX_PANELS);
-    let width = h / panels as f64;
+    let width = duration / panels as f64;
     let (mut cx, mut cy, mut dx, mut dy) = (0.0, 0.0, 0.0, 0.0);
     for j in 0..panels {
         let mid = (j as f64 + 0.5) * width;
@@ -132,15 +138,15 @@ pub fn step(p: &Params, s: &State, u: &Control) -> State {
             let (sin, cos) = (s.theta + s.omega * r + 0.5 * alpha * r * r).sin_cos();
             cx += w * cos;
             cy += w * sin;
-            dx += w * (h - r) * cos;
-            dy += w * (h - r) * sin;
+            dx += w * (duration - r) * cos;
+            dy += w * (duration - r) * sin;
         }
     }
 
     let a = u.thrust / p.mass;
     State {
-        x: s.x + h * s.vx + a * dx,
-        y: s.y + h * s.vy + a * dy,
+        x: s.x + duration * s.vx + a * dx,
+        y: s.y + duration * s.vy + a * dy,
         vx: s.vx + a * cx,
         vy: s.vy + a * cy,
         theta,
@@ -194,16 +200,16 @@ mod tests {
             theta: s.theta + c * k[4],
             omega: s.omega + c * k[5],
         };
-        let dt = p.h / substeps as f64;
+        let delta_t = p.h / substeps as f64;
         let mut s = *s;
         for _ in 0..substeps {
             let k1 = f(&s);
-            let k2 = f(&add(&s, &k1, dt / 2.0));
-            let k3 = f(&add(&s, &k2, dt / 2.0));
-            let k4 = f(&add(&s, &k3, dt));
+            let k2 = f(&add(&s, &k1, delta_t / 2.0));
+            let k3 = f(&add(&s, &k2, delta_t / 2.0));
+            let k4 = f(&add(&s, &k3, delta_t));
             let k: [f64; 6] =
                 std::array::from_fn(|i| (k1[i] + 2.0 * k2[i] + 2.0 * k3[i] + k4[i]) / 6.0);
-            s = add(&s, &k, dt);
+            s = add(&s, &k, delta_t);
         }
         s
     }
@@ -343,8 +349,28 @@ mod tests {
             thrust: 1.7,
             torque: 0.6,
         };
-        let half = Params { h: P.h / 2.0, ..P };
-        let twice = step(&half, &step(&half, &s, &u), &u);
+        let half = P.h / 2.0;
+        let twice = flow(&P, &flow(&P, &s, &u, half), &u, half);
         assert_close(&step(&P, &s, &u), &twice, 1e-14);
+    }
+
+    #[test]
+    fn a_step_is_the_flow_over_one_sampling_period() {
+        let s = State {
+            x: 1.0,
+            y: -2.0,
+            vx: 0.3,
+            vy: 0.4,
+            theta: 0.5,
+            omega: 1.5,
+        };
+        let u = Control {
+            thrust: 1.7,
+            torque: 0.6,
+        };
+        assert_eq!(step(&P, &s, &u), flow(&P, &s, &u, P.h));
+        // The flow's duration is its own, whatever the sampling period.
+        let other = Params { h: 7.0 * P.h, ..P };
+        assert_eq!(flow(&other, &s, &u, P.h), step(&P, &s, &u));
     }
 }

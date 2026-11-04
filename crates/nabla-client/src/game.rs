@@ -385,16 +385,20 @@ impl Game {
         )
     }
 
-    /// Run the flight `dt` real seconds on, unless paused, with `input` held at the samples
+    /// Run the flight `frame_time` real seconds on, unless paused, with `input` held at the samples
     /// this passes, steering as `steering` says. With an engaged controller, it flies instead,
     /// and the input does nothing; should the policy fail, the player takes over, and
     /// [`Self::take_fault`] says why.
-    pub fn advance(&mut self, dt: f64, input: Input, steering: Steering) {
+    pub fn advance(&mut self, frame_time: f64, input: Input, steering: Steering) {
         if self.paused {
             return;
         }
-        let _span = span!(Level::Trace, "advance, t = {:.3} s + {dt:.3} s", self.time);
-        self.time += dt.clamp(0.0, MAX_FRAME_TIME);
+        let _span = span!(
+            Level::Trace,
+            "advance, t = {:.3} s + {frame_time:.3} s",
+            self.time
+        );
+        self.time += frame_time.clamp(0.0, MAX_FRAME_TIME);
         let h = self.replay.h();
         let task = self.replay.case.task;
         // Every sample up to the present gets its control, so the step under way is known.

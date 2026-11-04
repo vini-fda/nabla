@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 
 use nabla_core::problem::{Case, Outcome, Trajectory};
 use nabla_core::solutions::StoredSolution;
-use nabla_core::{Control, Params, State, Task, step};
+use nabla_core::{Control, Params, State, Task, flow};
 use nabla_net::client::{
     Correction, CorrectionStats, LobbyInfo, Remote, SNAP_HEADING, SNAP_POSITION, Stage, Step,
 };
@@ -138,9 +138,9 @@ impl Smoothing {
         }
     }
 
-    /// Let `dt` seconds pass: `epsilon` fades by `exp(-dt / tau_s)`.
-    pub fn decay(&mut self, dt: f64) {
-        let keep = (-dt / SMOOTHING).exp();
+    /// Let `elapsed` seconds pass: `epsilon` fades by `exp(-elapsed / tau_s)`.
+    pub fn decay(&mut self, elapsed: f64) {
+        let keep = (-elapsed / SMOOTHING).exp();
         self.x *= keep;
         self.y *= keep;
         self.theta *= keep;
@@ -416,7 +416,7 @@ impl Online {
     /// One frame at local time `now`: take in what the network brought, issue the commands that
     /// are due, and bring the smoothing, the trail and the playout up to date.
     pub fn frame_at(&mut self, now: f64, hands: Hands) {
-        let dt = (now - self.last).clamp(0.0, MAX_FRAME);
+        let frame_time = (now - self.last).clamp(0.0, MAX_FRAME);
         self.last = now;
         while let Some(incoming) = self.transport.recv() {
             match incoming {
@@ -477,7 +477,7 @@ impl Online {
         if let Some(correction) = self.machine.take_correction() {
             self.smoothing.absorb(&correction);
         }
-        self.smoothing.decay(dt);
+        self.smoothing.decay(frame_time);
         let steps = self.machine.trajectory();
         let newest = steps.last().map(|step| step.tick);
         for step in steps {
@@ -664,12 +664,8 @@ fn state_at(records: &[Remote], at: f64, h: f64, params: &Params) -> Option<Stat
             thrust: f64::from(last.record.thrust),
             torque: f64::from(last.record.torque),
         };
-        let params = Params {
-            h: ahead,
-            ..*params
-        };
         return Some(if ahead > 0.0 {
-            step(&params, &last.record.state, &control)
+            flow(params, &last.record.state, &control, ahead)
         } else {
             last.record.state
         });

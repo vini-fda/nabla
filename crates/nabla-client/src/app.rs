@@ -1417,8 +1417,8 @@ impl ViewerApp {
         // ship, while following it.
         let zoom = self.gamepads.state().map_or(0.0, gamepad::State::zoom);
         if zoom != 0.0 {
-            let dt = ui.input(|i| i.stable_dt).min(0.1);
-            let factor = (zoom * CONTROLLER_ZOOM_RATE * dt).exp();
+            let frame_time = ui.input(|i| i.stable_dt).min(0.1);
+            let factor = (zoom * CONTROLLER_ZOOM_RATE * frame_time).exp();
             self.camera.zoom_at(factor, rect.center(), rect);
         }
     }
@@ -2108,9 +2108,9 @@ impl ViewerApp {
             cone: self.aim_cone.to_radians(),
         });
         self.input_thrust = input.thrust;
-        let dt = f64::from(ui.input(|i| i.stable_dt));
+        let frame_time = f64::from(ui.input(|i| i.stable_dt));
         let was_landed = self.game.landed().is_some();
-        self.game.advance(dt, input, self.steering);
+        self.game.advance(frame_time, input, self.steering);
         if let Some(fault) = self.game.take_fault() {
             self.notifications
                 .post(format!("Flight assist switched off: {fault}"), palette::RED);

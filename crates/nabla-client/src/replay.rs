@@ -12,7 +12,7 @@
 use std::collections::VecDeque;
 
 use nabla_core::problem::{Case, Trajectory};
-use nabla_core::{Control, Params, State, step};
+use nabla_core::{Control, State, flow};
 
 /// One run on one case.
 pub struct Replay {
@@ -153,13 +153,7 @@ impl Replay {
             };
         }
         match self.controls.get(held) {
-            Some(u) if offset > 0.0 => {
-                let params = Params {
-                    h: offset,
-                    ..self.case.task.params
-                };
-                step(&params, &self.states[held], u)
-            }
+            Some(u) if offset > 0.0 => flow(&self.case.task.params, &self.states[held], u, offset),
             _ => *self.state(frame),
         }
     }
@@ -371,12 +365,9 @@ mod tests {
                 "continuous at t_(k+1)"
             );
             // Two half steps under the held control reach the next sample.
-            let half = Params {
-                h: h / 2.0,
-                ..r.case.task.params
-            };
+            let params = r.case.task.params;
             let u = r.control(k).expect("control");
-            let twice = step(&half, &r.state_at(k, h / 2.0), u);
+            let twice = flow(&params, &r.state_at(k, h / 2.0), u, h / 2.0);
             assert!(
                 close(&twice, r.state(k + 1), 1e-12),
                 "consistent with s_(k+1)"

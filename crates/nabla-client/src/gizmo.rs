@@ -150,8 +150,10 @@ impl ViewGizmo {
         let Some(target) = self.target else {
             return;
         };
-        let dt = ctx.input(|i| i.stable_dt).min(0.1);
-        camera.orbit = camera.orbit.toward(target, 1.0 - (-TURN_RATE * dt).exp());
+        let frame_time = ctx.input(|i| i.stable_dt).min(0.1);
+        camera.orbit = camera
+            .orbit
+            .toward(target, 1.0 - (-TURN_RATE * frame_time).exp());
         if camera.orbit.is_near(target, 1e-3) {
             camera.orbit = target;
             self.target = None;

@@ -2,8 +2,8 @@
 //!
 //! A flight's [`Replay`] holds the same window, as states and controls. A plot line borrows its
 //! points as one slice of `[t, value]` pairs, so the plots have buffers of their own, allocated
-//! with the flight, and recording a sample in them never allocates. The step size `h` is fixed
-//! for a flight (changing it starts a new one), and so is their size.
+//! with the flight, and recording a sample in them never allocates. The sampling period `h` is
+//! fixed for a flight (changing it starts a new one), and so is their size.
 
 use egui_plot::PlotPoint;
 use nabla_core::{Control, State};

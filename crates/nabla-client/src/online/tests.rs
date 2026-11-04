@@ -432,14 +432,7 @@ fn hermite_interpolation_is_as_exact_as_the_paper_says() {
         };
         let end = vacuum_step(&params, &s, &u);
         let fraction = rng.unit();
-        let exact = vacuum_step(
-            &Params {
-                h: fraction * h,
-                ..params
-            },
-            &s,
-            &u,
-        );
+        let exact = flow(&params, &s, &u, fraction * h);
         let near = hermite(&s, &end, fraction, h);
         worst = worst.max((near.x - exact.x).hypot(near.y - exact.y));
         // The bound of prop-hermite for q = 1, with the spin of this sample.

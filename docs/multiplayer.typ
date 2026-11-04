@@ -226,7 +226,8 @@ Let $phi(s, u)$ be the state one tick after $s$ under the held control $u$. The 
 
 - In a vacuum, $phi$ is `nabla_core::step`: closed-form rotation and Gauss–Legendre quadrature for the
   translation, accurate to rounding. It is a pure function of `f64`s.
-- In a world with bodies, $phi$ is `Physics::step`: $ceil(120 h)$ substeps of Rapier, in `f32`, with the
+- In a world with bodies, $phi$ is `Physics::step`: $ceil(120 h)$ substeps of Rapier, each of
+  $Delta_t = h slash ceil(120 h)$ seconds, with the command held over all of them, in `f32`, with the
   field
   $ g(p) = sum_b G M_b frac(c_b - p, max(|c_b - p|, R_b)^3) $
   computed by `gravity_acceleration`. Each body $b$ has center $c_b$, radius $R_b$, mass $M_b$, is fixed, and

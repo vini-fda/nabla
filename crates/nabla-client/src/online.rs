@@ -20,7 +20,7 @@ use nabla_net::client::{
     Correction, CorrectionStats, LobbyInfo, Remote, SNAP_HEADING, SNAP_POSITION, Stage, Step,
 };
 use nabla_net::link::Incoming;
-use nabla_net::wire::{ShipId, Tick};
+use nabla_net::wire::{RosterEntry, ShipId, Tick, Username};
 use nabla_net::{ClientMachine, Config};
 use nabla_sim::command::Command;
 use nabla_sim::steering::{Input, Steering};
@@ -54,6 +54,8 @@ const MAX_FRAME: f64 = 0.25;
 pub struct Hands {
     pub input: Input,
     pub steering: Steering,
+    /// The pilot has left this app for another.
+    pub away: bool,
 }
 
 /// A ship to draw.
@@ -214,9 +216,11 @@ impl Online {
     /// A client that will ask the server it is connected to for `request` when it is told to
     /// [`join`](Self::join).
     pub fn new(mut transport: Box<dyn Transport>, request: ShipRequest) -> Self {
-        let mut machine =
-            ClientMachine::new(Config::default(), request, crate::version::build_version!())
-                .waiting_in_the_lobby();
+        let mut machine = ClientMachine::waiting_in_the_lobby(
+            Config::default(),
+            request,
+            crate::version::build_version!(),
+        );
         for kind in machine.start() {
             transport.send(kind);
         }
@@ -258,14 +262,14 @@ impl Online {
         self.machine.params()
     }
 
-    /// Ask for a ship. Does nothing outside the lobby.
-    pub fn join(&mut self, request: ShipRequest) {
-        self.join_at(self.started.elapsed().as_secs_f64(), request);
+    /// Ask for a ship, to fly as `username`. Does nothing outside the lobby.
+    pub fn join(&mut self, request: ShipRequest, username: Username) {
+        self.join_at(self.started.elapsed().as_secs_f64(), request, username);
     }
 
     /// [`Self::join`] at local time `now`.
-    pub fn join_at(&mut self, now: f64, request: ShipRequest) {
-        for kind in self.machine.join(request, now) {
+    pub fn join_at(&mut self, now: f64, request: ShipRequest, username: Username) {
+        for kind in self.machine.join(request, username, now) {
             self.transport.send(kind);
         }
     }
@@ -284,6 +288,21 @@ impl Online {
         self.playout = Playout::default();
         self.engaged = None;
         self.landed = false;
+    }
+
+    /// The name the server last refused because a ship is flying under it.
+    pub fn refused_name(&self) -> Option<&Username> {
+        self.machine.refused_name()
+    }
+
+    /// The ship this client flies.
+    pub fn ship(&self) -> Option<ShipId> {
+        self.machine.ship()
+    }
+
+    /// Who flies `ship`, and whether they are active, once the roster has said.
+    pub fn pilot(&self, ship: ShipId) -> Option<&RosterEntry> {
+        self.machine.roster().get(&ship)
     }
 
     /// `h`, the world's tick, in seconds.
@@ -430,6 +449,9 @@ impl Online {
                 }
                 Incoming::Closed(why) => self.closed = Some(why),
             }
+        }
+        for kind in self.machine.set_away(hands.away) {
+            self.transport.send(kind);
         }
         if !self.machine.is_playing() {
             if !self.trail.is_empty() {

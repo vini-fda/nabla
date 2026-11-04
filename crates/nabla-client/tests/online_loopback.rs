@@ -10,10 +10,15 @@ use nabla_client::online::{Hands, Online};
 use nabla_core::solutions::SOLUTIONS;
 use nabla_net::Config;
 use nabla_net::client::{SNAP_POSITION, Stage};
+use nabla_net::wire::Username;
 use nabla_server::impair::{Impairment, Proxy};
 use nabla_server::{Identity, Metrics, Server, Settings};
 use nabla_sim::steering::{Input, Steering};
 use nabla_sim::world::{Preset, ShipRequest};
+
+fn name(text: &str) -> Username {
+    Username::parse(text).expect("a valid name")
+}
 
 fn hands(who: usize, seconds: f64) -> Hands {
     let phase = ((seconds + who as f64 * 0.7) / 1.3).floor() as i64;
@@ -28,6 +33,7 @@ fn hands(who: usize, seconds: f64) -> Hands {
         } else {
             Steering::Sas
         },
+        ..Hands::default()
     }
 }
 
@@ -91,8 +97,8 @@ fn two_pilots(
             client.frame(hands(who, t));
         }
         if !joined && clients.iter().all(|c| c.stage() == Stage::Lobby) {
-            clients[0].join(ours);
-            clients[1].join(stronger);
+            clients[0].join(ours, name("ours"));
+            clients[1].join(stronger, name("stronger"));
             joined = true;
         }
         if joined && clients.iter().all(|c| c.stage() == Stage::Playing) {
@@ -231,7 +237,7 @@ fn a_client_that_is_dropped_frees_its_ship_at_once() {
         assert!(started.elapsed() < Duration::from_secs(5), "the ship came");
         client.frame(hands(0, started.elapsed().as_secs_f64()));
         if !joined && client.stage() == Stage::Lobby {
-            client.join(ship);
+            client.join(ship, name("solo"));
             joined = true;
         }
         std::thread::sleep(Duration::from_millis(4));
@@ -247,4 +253,69 @@ fn a_client_that_is_dropped_frees_its_ship_at_once() {
         );
         std::thread::sleep(Duration::from_millis(4));
     }
+}
+
+/// Names, a refusal and an absence, as they cross a real connection.
+#[test]
+fn names_and_absences_reach_the_other_pilot_over_a_real_connection() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("a runtime");
+    let world = Preset::Vacuum
+        .world()
+        .multiplayer(60, 1000.0, 16)
+        .expect("a world");
+    let ship = ShipRequest::from(world.default_ship());
+    let address = runtime.block_on(async {
+        let server = Server::bind(Settings {
+            bind: "127.0.0.1:0".parse().expect("an address"),
+            world,
+            config: Config::default(),
+            identity: Identity::self_signed(["localhost", "127.0.0.1"]).expect("a certificate"),
+        })
+        .expect("a server");
+        let address = server.address("127.0.0.1").expect("an address");
+        tokio::spawn(server.serve());
+        address
+    });
+    let mut clients = [
+        Online::new(net::connect(&address).expect("a link"), ship),
+        Online::new(net::connect(&address).expect("a link"), ship),
+    ];
+    let started = Instant::now();
+    // Run frames until `done`, with pilot 1 at the controls or away.
+    let until = |clients: &mut [Online; 2], away: bool, done: &dyn Fn(&[Online; 2]) -> bool| {
+        while !done(clients) {
+            assert!(started.elapsed() < Duration::from_secs(20), "it came");
+            let t = started.elapsed().as_secs_f64();
+            clients[0].frame(hands(0, t));
+            clients[1].frame(Hands {
+                away,
+                ..hands(1, t)
+            });
+            std::thread::sleep(Duration::from_millis(4));
+        }
+    };
+    until(&mut clients, false, &|c| {
+        c.iter().all(|c| c.stage() == Stage::Lobby)
+    });
+    clients[0].join(ship, name("miriam"));
+    until(&mut clients, false, &|c| c[0].stage() == Stage::Playing);
+    clients[1].join(ship, name("miriam"));
+    until(&mut clients, false, &|c| c[1].refused_name().is_some());
+    assert_eq!(clients[1].stage(), Stage::Lobby);
+    clients[1].join(ship, name("juan"));
+    until(&mut clients, false, &|c| c[1].stage() == Stage::Playing);
+
+    let own = clients[1].ship().expect("flying");
+    let seen = |c: &[Online; 2]| c[0].pilot(own).map(|entry| entry.active);
+    until(&mut clients, false, &|c| seen(c) == Some(true));
+    assert_eq!(
+        clients[0].pilot(own).expect("told").username.as_str(),
+        "juan"
+    );
+    until(&mut clients, true, &|c| seen(c) == Some(false));
+    until(&mut clients, false, &|c| seen(c) == Some(true));
 }

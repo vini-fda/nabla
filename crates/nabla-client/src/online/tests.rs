@@ -175,7 +175,8 @@ impl Rig {
         }
         for (i, request) in requests.iter().enumerate() {
             let now = self.now;
-            self.clients[i].join_at(now, *request);
+            let username = Username::parse(&format!("pilot{i}")).expect("a valid name");
+            self.clients[i].join_at(now, *request, username);
         }
     }
 }
@@ -225,6 +226,7 @@ fn scripted(who: usize, now: f64) -> Hands {
         } else {
             Steering::Sas
         },
+        ..Hands::default()
     }
 }
 
@@ -235,6 +237,77 @@ fn stronger_ship() -> ShipRequest {
         f_max: 12.0,
         tau_max: 8.0,
     }
+}
+
+/// The name `pilot` sees on `ship`'s tag, and whether its dot is green.
+fn tag_of(pilot: &Online, ship: ShipId) -> (String, bool) {
+    let entry = pilot.pilot(ship).expect("the roster has told of it");
+    (entry.username.to_string(), entry.active)
+}
+
+#[test]
+fn each_pilot_sees_every_name_and_who_has_gone_away() {
+    let world = vacuum();
+    let ours = ShipRequest::from(world.default_ship());
+    let mut rig = Rig::new(world, 0.050, 0.0, 1);
+    rig.add(ours);
+    rig.add(ours);
+    rig.join_all(&[ours, ours]);
+    rig.run(1.0, &scripted);
+    let (a, b) = (
+        rig.clients[0].ship().expect("flying"),
+        rig.clients[1].ship().expect("flying"),
+    );
+    for client in &rig.clients {
+        assert_eq!(tag_of(client, a), ("pilot0".to_owned(), true));
+        assert_eq!(tag_of(client, b), ("pilot1".to_owned(), true));
+    }
+    // Pilot 1 tabs away, and every screen shows it, their own included.
+    let tabbed_away = |who: usize, now: f64| Hands {
+        away: who == 1,
+        ..scripted(who, now)
+    };
+    rig.run(0.5, &tabbed_away);
+    for client in &rig.clients {
+        assert_eq!(tag_of(client, a), ("pilot0".to_owned(), true));
+        assert_eq!(tag_of(client, b), ("pilot1".to_owned(), false));
+    }
+    // And comes back.
+    rig.run(0.5, &scripted);
+    for client in &rig.clients {
+        assert_eq!(tag_of(client, b), ("pilot1".to_owned(), true));
+    }
+}
+
+#[test]
+fn a_taken_name_sends_the_pilot_back_to_pick_another() {
+    let world = vacuum();
+    let ours = ShipRequest::from(world.default_ship());
+    let mut rig = Rig::new(world, 0.050, 0.0, 1);
+    rig.add(ours);
+    rig.add(ours);
+    rig.join_all(&[ours]);
+    rig.run(1.0, &scripted);
+    assert_eq!(rig.clients[1].stage(), Stage::Lobby);
+    let taken = Username::parse("pilot0").expect("a valid name");
+    let now = rig.now;
+    rig.clients[1].join_at(now, ours, taken.clone());
+    rig.run(0.5, &scripted);
+    assert_eq!(rig.clients[1].stage(), Stage::Lobby);
+    assert_eq!(rig.clients[1].refused_name(), Some(&taken));
+    let free = Username::parse("miriam").expect("a valid name");
+    let now = rig.now;
+    rig.clients[1].join_at(now, ours, free);
+    rig.run(0.5, &scripted);
+    assert_eq!(rig.clients[1].stage(), Stage::Playing);
+    assert_eq!(rig.clients[1].refused_name(), None);
+    // Once its ship has gone, the name is anyone's.
+    rig.clients[0].leave();
+    rig.run(0.5, &scripted);
+    let now = rig.now;
+    rig.clients[0].join_at(now, ours, taken);
+    rig.run(0.5, &scripted);
+    assert_eq!(rig.clients[0].stage(), Stage::Playing);
 }
 
 #[test]
@@ -577,6 +650,7 @@ fn a_frame_that_runs_long_does_not_silence_the_thrust_after_it() {
                 ..Input::default()
             },
             steering: Steering::Raw,
+            ..Hands::default()
         }
     };
     rig.run(3.0, &thrust(1.0));
@@ -642,6 +716,7 @@ fn thrust_is_heard_again_when_the_orbit_assist_hands_the_ship_back() {
             ..Input::default()
         },
         steering: Steering::Raw,
+        ..Hands::default()
     };
     let (mut samples, mut silent) = (0, 0);
     for step in 0..10_000 {
@@ -671,6 +746,7 @@ fn a_late_frame_still_hears_the_thrust_of_the_tick_it_is_in() {
             ..Input::default()
         },
         steering: Steering::Raw,
+        ..Hands::default()
     };
     rig.run(3.0, &thrusting);
     for late in [0.0, 0.005, 0.015, 0.02, 0.03, 0.1] {
@@ -784,6 +860,7 @@ fn lost_to_slow_frames(owd: f64, offset: f64, gap: f64, slow: u32) -> (u64, usiz
             ..Input::default()
         },
         steering: Steering::Raw,
+        ..Hands::default()
     };
     let frames = |rig: &mut Rig, seconds: f64, gap: f64, slow: u32| {
         let until = rig.now + seconds;

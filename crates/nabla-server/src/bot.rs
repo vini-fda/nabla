@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use nabla_net::client::CorrectionStats;
 use nabla_net::link::{Address, Incoming};
 use nabla_net::native::Link;
+use nabla_net::wire::Username;
 use nabla_net::{ClientMachine, Config, Kind};
 use nabla_sim::command::Command;
 use nabla_sim::rng::Rng;
@@ -98,22 +99,26 @@ impl Pilot {
     }
 }
 
-/// Connect to `address`, ask for `request`, and fly for `duration` (counted from the first
-/// moment it plays) on the runtime this is awaited in.
+/// Connect to `address`, ask for `request` under the name `username`, and fly for `duration`
+/// (counted from the first moment it plays) on the runtime this is awaited in.
+///
+/// It flies by random input from `seed`, or with its hands off the controls if there is none: the
+/// ship coasts, and its commands, which keep its place, ask for nothing.
 pub async fn fly(
     address: &Address,
     request: ShipRequest,
-    seed: u64,
+    username: Username,
+    seed: Option<u64>,
     duration: Duration,
 ) -> BotReport {
     let mut link = Link::open(&Handle::current(), address);
-    let mut machine = ClientMachine::new(Config::default(), request, "nabla-bot");
+    let mut machine = ClientMachine::new(Config::default(), request, username, "nabla-bot");
     for kind in machine.start() {
         link.send(kind);
     }
     let started = Instant::now();
     let now = || started.elapsed().as_secs_f64();
-    let mut pilot = Pilot::new(seed);
+    let mut pilot = seed.map(Pilot::new);
     let mut report = BotReport {
         outcome: Outcome::Flew,
         issued: 0,
@@ -167,7 +172,9 @@ pub async fn fly(
             let mut farthest = report.farthest;
             let issued = machine.poll(now(), &mut |stamp, predicted| {
                 farthest = farthest.max(predicted.x.abs()).max(predicted.y.abs());
-                pilot.command(stamp)
+                pilot
+                    .as_mut()
+                    .map_or_else(Command::default, |pilot| pilot.command(stamp))
             });
             report.farthest = farthest;
             for kind in issued {

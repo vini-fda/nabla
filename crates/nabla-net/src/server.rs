@@ -12,7 +12,7 @@ use nabla_sim::world::{MAX_PILOTS, World};
 
 use crate::wire::{
     ClientStream, Commands, ConnId, Lobby, MAX_COMMANDS, MAX_STREAM_FRAME, PROTOCOL, RosterEntry,
-    ServerStream, ShipId, ShipRecord, Snapshot, Tick, Welcome, decode, encode,
+    ServerStream, ShipId, ShipRecord, Snapshot, Tick, Username, Welcome, decode, encode,
 };
 use crate::{Config, Kind, Outgoing};
 
@@ -91,6 +91,10 @@ struct Slot {
     /// How early the newest command came, for the next snapshot, in microseconds.
     margin_us: i32,
     newest_stamp: Option<Tick>,
+    /// The tick of the last command that asked for something: not neutral, as a hand off is.
+    last_input: Tick,
+    /// The pilot said it has left the app.
+    away: bool,
 }
 
 pub struct ServerMachine {
@@ -247,10 +251,17 @@ impl ServerMachine {
                     });
                 }
             }
-            (Phase::Lobby, ClientStream::Join(request)) => self.join(conn, &request, &mut out),
+            (Phase::Lobby, ClientStream::Join { request, username }) => {
+                self.join(conn, &request, username, &mut out);
+            }
             (Phase::Piloting(ship), ClientStream::Leave) => {
                 self.leave(ship, &mut out);
                 out.push(self.lobby(conn));
+            }
+            (Phase::Piloting(ship), ClientStream::Away(away)) => {
+                if let Some(slot) = self.ships.get_mut(&ship) {
+                    slot.away = away;
+                }
             }
             // A message out of turn changes nothing.
             _ => {}
@@ -328,6 +339,9 @@ impl ServerMachine {
             };
             self.held += u64::from(delivered.is_none() && slot.commanded);
             slot.commanded |= delivered.is_some();
+            if delivered.is_some_and(|command| command != command.neutral()) {
+                slot.last_input = t;
+            }
             if self.config.keep_log
                 && let Some(log) = self.logs.get_mut(id)
             {
@@ -340,6 +354,7 @@ impl ServerMachine {
             }
         }
         self.tick += 1;
+        self.report_presence(&mut out);
         let records: Vec<ShipRecord> = self
             .ships
             .iter()
@@ -381,10 +396,15 @@ impl ServerMachine {
         &mut self,
         conn: ConnId,
         request: &nabla_sim::world::ShipRequest,
+        username: Username,
         out: &mut Vec<Outgoing>,
     ) {
         if self.ships.len() >= self.config.max_pilots {
             out.push(stream(conn, &ServerStream::Full));
+            return;
+        }
+        if self.roster.values().any(|entry| entry.username == username) {
+            out.push(stream(conn, &ServerStream::NameTaken));
             return;
         }
         let id = ShipId(self.next_ship);
@@ -421,6 +441,8 @@ impl ServerMachine {
                 commanded: false,
                 margin_us: 0,
                 newest_stamp: None,
+                last_input: self.tick,
+                away: false,
             },
         );
         self.set_phase(conn, Phase::Piloting(id));
@@ -429,8 +451,10 @@ impl ServerMachine {
             params,
             since: self.tick,
             until: None,
+            username,
+            active: true,
         };
-        self.roster.insert(id, entry);
+        self.roster.insert(id, entry.clone());
         out.push(stream(
             conn,
             &ServerStream::Welcome(Welcome {
@@ -445,7 +469,7 @@ impl ServerMachine {
             }),
         ));
         for existing in self.roster.values() {
-            out.push(stream(conn, &ServerStream::Roster(*existing)));
+            out.push(stream(conn, &ServerStream::Roster(existing.clone())));
         }
         let others: Vec<ConnId> = self
             .conns
@@ -453,8 +477,9 @@ impl ServerMachine {
             .filter(|&(&c, state)| c != conn && state.phase != Phase::Fresh)
             .map(|(&c, _)| c)
             .collect();
+        let message = ServerStream::Roster(entry);
         for other in others {
-            out.push(stream(other, &ServerStream::Roster(entry)));
+            out.push(stream(other, &message));
         }
     }
 
@@ -466,9 +491,39 @@ impl ServerMachine {
         self.set_phase(slot.conn, Phase::Lobby);
         if let Some(mut entry) = self.roster.remove(&ship) {
             entry.until = Some(self.tick);
+            let message = ServerStream::Roster(entry);
             for (&conn, state) in &self.conns {
                 if state.phase != Phase::Fresh {
-                    out.push(stream(conn, &ServerStream::Roster(entry)));
+                    out.push(stream(conn, &message));
+                }
+            }
+        }
+    }
+
+    /// Whether a pilot counts as active: it has not stepped away, its commands are arriving, and
+    /// it has asked for something lately. It only reads the slot: the flight never depends on it.
+    fn is_active(&self, slot: &Slot) -> bool {
+        let idle = f64::from(self.tick.saturating_sub(slot.last_input)) * self.world.h();
+        !slot.away && slot.miss < self.config.silence_ticks && idle <= self.config.input_idle
+    }
+
+    /// Tell everyone of each ship whose activity changed, once, as `leave` tells of a departure.
+    fn report_presence(&mut self, out: &mut Vec<Outgoing>) {
+        let changed: Vec<(ShipId, bool)> = self
+            .ships
+            .iter()
+            .map(|(&id, slot)| (id, self.is_active(slot)))
+            .filter(|&(id, active)| self.roster.get(&id).is_some_and(|e| e.active != active))
+            .collect();
+        for (id, active) in changed {
+            let Some(entry) = self.roster.get_mut(&id) else {
+                continue;
+            };
+            entry.active = active;
+            let message = ServerStream::Roster(entry.clone());
+            for (&conn, state) in &self.conns {
+                if state.phase != Phase::Fresh {
+                    out.push(stream(conn, &message));
                 }
             }
         }

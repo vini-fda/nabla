@@ -8,6 +8,7 @@ use crate::bot::{self, BotReport, Outcome};
 use crate::impair::{Impairment, Proxy};
 use crate::{Server, Settings};
 use nabla_net::Config;
+use nabla_net::wire::Username;
 use nabla_sim::world::{MAX_PILOTS, World};
 use wtransport::Identity;
 
@@ -29,6 +30,11 @@ pub struct Outcomes {
     pub h: f64,
     pub half_side: f64,
     pub seconds: f64,
+}
+
+/// The name bot `i` flies under, which no other bot has.
+fn bot_name(i: usize) -> Username {
+    Username::parse(&format!("bot{i}")).expect("a valid name")
 }
 
 /// Run it.
@@ -65,12 +71,19 @@ pub async fn run(soak: Soak) -> Result<Outcomes, String> {
         flights.push(tokio::spawn(async move {
             // Not all at one instant, as pilots are not.
             tokio::time::sleep(Duration::from_millis(30 * i as u64)).await;
-            bot::fly(&address, request, seed, duration).await
+            bot::fly(&address, request, bot_name(i), Some(seed), duration).await
         }));
     }
     // Everyone is in by now (the places are taken), so this one finds no room.
     tokio::time::sleep(Duration::from_secs(3)).await;
-    let extra = bot::fly(&address, request, soak.seed + 99, Duration::from_secs(2)).await;
+    let extra = bot::fly(
+        &address,
+        request,
+        bot_name(MAX_PILOTS),
+        Some(soak.seed + 99),
+        Duration::from_secs(2),
+    )
+    .await;
     let mut bots = Vec::new();
     for flight in flights {
         bots.push(flight.await.map_err(|e| e.to_string())?);

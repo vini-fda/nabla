@@ -311,6 +311,8 @@ pub struct ViewerApp {
     online_error: Option<String>,
     /// The ship the pilot asks a server for, in the lobby.
     join_request: nabla_sim::world::ShipRequest,
+    /// The name the pilot asks a server for, in the lobby, as typed.
+    username: String,
     /// Frame the camera around the ship, the next time the canvas shows.
     online_fit: bool,
     /// How hard the player holds thrust this frame, for the log.
@@ -384,6 +386,7 @@ impl Default for ViewerApp {
             server_address: online::DEFAULT_SERVER.to_owned(),
             online_error: None,
             join_request: world_default_request(),
+            username: String::new(),
             online_fit: false,
             input_thrust: 0.0,
             online_ready: false,

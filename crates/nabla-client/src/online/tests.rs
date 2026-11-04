@@ -175,7 +175,8 @@ impl Rig {
         }
         for (i, request) in requests.iter().enumerate() {
             let now = self.now;
-            self.clients[i].join_at(now, *request);
+            let username = Username::parse(&format!("pilot{i}")).expect("a valid name");
+            self.clients[i].join_at(now, *request, username);
         }
     }
 }

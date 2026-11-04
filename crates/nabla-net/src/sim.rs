@@ -21,7 +21,7 @@ use nabla_sim::world::{ShipRequest, World};
 
 use crate::client::ClientMachine;
 use crate::server::ServerMachine;
-use crate::wire::{ClientStream, Commands, ConnId, ShipId, Tick, encode};
+use crate::wire::{ClientStream, Commands, ConnId, ShipId, Tick, Username, encode};
 use crate::{Config, Kind, Outgoing};
 
 /// What a one-way path does to datagrams. Streams ride the same delay and jitter but are
@@ -89,6 +89,11 @@ impl Link {
             .map(|_| now + self.delay_at(now) + self.jitter * rng.unit())
             .collect()
     }
+}
+
+/// The name peer `peer` flies under, which no other peer has.
+fn name_of(peer: usize) -> Username {
+    Username::parse(&format!("pilot{peer}")).expect("a valid name")
 }
 
 /// What a hostile peer does.
@@ -306,7 +311,7 @@ impl Sim {
             .map(|(i, spec)| {
                 let stream = |n: u64| Rng::fork(seed, (i as u64) * 8 + n);
                 let client = (spec.behavior == Behavior::Honest)
-                    .then(|| ClientMachine::new(protocol, spec.request, "sim"));
+                    .then(|| ClientMachine::new(protocol, spec.request, name_of(i), "sim"));
                 PeerState {
                     spec,
                     client,
@@ -473,7 +478,10 @@ impl Sim {
                     };
                     let frames = vec![
                         Kind::Stream(encode(&hello)),
-                        Kind::Stream(encode(&ClientStream::Join(request))),
+                        Kind::Stream(encode(&ClientStream::Join {
+                            request,
+                            username: name_of(i),
+                        })),
                     ];
                     self.send_up(i, frames);
                 }
@@ -668,7 +676,10 @@ impl Sim {
                             protocol: crate::wire::PROTOCOL,
                             build: String::new(),
                         },
-                        1 | 2 => ClientStream::Join(request),
+                        1 | 2 => ClientStream::Join {
+                            request,
+                            username: name_of(i),
+                        },
                         _ => ClientStream::Leave,
                     };
                     frames.push(Kind::Stream(encode(&message)));

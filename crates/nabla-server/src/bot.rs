@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use nabla_net::client::CorrectionStats;
 use nabla_net::link::{Address, Incoming};
 use nabla_net::native::Link;
+use nabla_net::wire::Username;
 use nabla_net::{ClientMachine, Config, Kind};
 use nabla_sim::command::Command;
 use nabla_sim::rng::Rng;
@@ -98,16 +99,17 @@ impl Pilot {
     }
 }
 
-/// Connect to `address`, ask for `request`, and fly for `duration` (counted from the first
+/// Connect to `address`, ask for `request` under the name `username`, and fly for `duration` (counted from the first
 /// moment it plays) on the runtime this is awaited in.
 pub async fn fly(
     address: &Address,
     request: ShipRequest,
+    username: Username,
     seed: u64,
     duration: Duration,
 ) -> BotReport {
     let mut link = Link::open(&Handle::current(), address);
-    let mut machine = ClientMachine::new(Config::default(), request, "nabla-bot");
+    let mut machine = ClientMachine::new(Config::default(), request, username, "nabla-bot");
     for kind in machine.start() {
         link.send(kind);
     }

@@ -15,7 +15,7 @@ use nabla_sim::world::{ShipRequest, World};
 use crate::margin::MarginController;
 use crate::wire::{
     ClientStream, Commands, MAX_STREAM_FRAME, PROTOCOL, RosterEntry, ServerStream, ShipId,
-    ShipRecord, Snapshot, Tick, decode, encode,
+    ShipRecord, Snapshot, Tick, Username, decode, encode,
 };
 use crate::{Config, Kind};
 
@@ -230,8 +230,9 @@ pub struct ClientMachine {
     config: Config,
     request: ShipRequest,
     build: String,
-    /// Join as soon as the first lobby arrives. A client that has left waits to be told.
-    auto_join: bool,
+    /// Join under this name as soon as the first lobby arrives. A client that has left waits to
+    /// be told.
+    auto_join: Option<Username>,
     phase: Phase,
     world: Option<World>,
     lobby: Option<LobbyInfo>,
@@ -239,26 +240,27 @@ pub struct ClientMachine {
 }
 
 impl ClientMachine {
-    /// A client that will ask for the ship `request`, as soon as the lobby says it may.
-    pub fn new(config: Config, request: ShipRequest, build: &str) -> Self {
+    /// A client that will ask for the ship `request`, flown as `username`, as soon as the lobby
+    /// says it may.
+    pub fn new(config: Config, request: ShipRequest, username: Username, build: &str) -> Self {
+        let mut client = Self::waiting_in_the_lobby(config, request, build);
+        client.auto_join = Some(username);
+        client
+    }
+
+    /// A client that waits in the lobby for [`Self::join`], instead of taking a ship as soon as
+    /// the lobby comes: for a screen where the pilot picks the ship and the name.
+    pub fn waiting_in_the_lobby(config: Config, request: ShipRequest, build: &str) -> Self {
         Self {
             config,
             request,
             build: build.to_owned(),
-            auto_join: true,
+            auto_join: None,
             phase: Phase::Start,
             world: None,
             lobby: None,
             roster: BTreeMap::new(),
         }
-    }
-
-    /// This client waits in the lobby for [`Self::join`], instead of taking a ship as soon as
-    /// the lobby comes: for a screen where the pilot picks the ship.
-    #[must_use]
-    pub fn waiting_in_the_lobby(mut self) -> Self {
-        self.auto_join = false;
-        self
     }
 
     /// The first message of the connection.
@@ -270,21 +272,25 @@ impl ClientMachine {
         }))]
     }
 
-    /// Take a ship, as asked for in `request`, from the lobby, at local time `now`. A client that
-    /// is not in the lobby, or has not heard what the world is, does nothing.
-    pub fn join(&mut self, request: ShipRequest, now: f64) -> Vec<Kind> {
+    /// Take a ship, as asked for in `request` and flown as `username`, from the lobby, at local
+    /// time `now`. A client that is not in the lobby, or has not heard what the world is, does
+    /// nothing.
+    pub fn join(&mut self, request: ShipRequest, username: Username, now: f64) -> Vec<Kind> {
         if !matches!(self.phase, Phase::Lobby) || self.world.is_none() {
             return Vec::new();
         }
         self.request = request;
         self.phase = Phase::Joining { sent: now };
-        vec![Kind::Stream(encode(&ClientStream::Join(request)))]
+        vec![Kind::Stream(encode(&ClientStream::Join {
+            request,
+            username,
+        }))]
     }
 
     /// Give the ship up, and go back to the lobby, where this client stays until it joins again.
     pub fn leave(&mut self) -> Vec<Kind> {
         if matches!(self.phase, Phase::Playing(_)) {
-            self.auto_join = false;
+            self.auto_join = None;
             self.phase = Phase::Lobby;
             return vec![Kind::Stream(encode(&ClientStream::Leave))];
         }
@@ -312,18 +318,23 @@ impl ClientMachine {
                     pilots: lobby.pilots.len(),
                     max_pilots: usize::from(lobby.max_pilots),
                 });
-                if matches!(self.phase, Phase::Hello) && !self.auto_join {
-                    self.phase = Phase::Lobby;
-                }
-                if self.auto_join && matches!(self.phase, Phase::Hello) {
+                if matches!(self.phase, Phase::Hello) {
+                    let Some(username) = self.auto_join.clone() else {
+                        self.phase = Phase::Lobby;
+                        return Vec::new();
+                    };
                     self.phase = Phase::Joining { sent: now };
-                    return vec![Kind::Stream(encode(&ClientStream::Join(self.request)))];
+                    return vec![Kind::Stream(encode(&ClientStream::Join {
+                        request: self.request,
+                        username,
+                    }))];
                 }
             }
             ServerStream::Welcome(welcome) => {
-                self.auto_join = false;
+                self.auto_join = None;
                 self.welcome(&welcome, now);
             }
+            ServerStream::NameTaken => {}
             ServerStream::Full => {
                 if matches!(self.phase, Phase::Joining { .. }) {
                     self.phase = Phase::Full;

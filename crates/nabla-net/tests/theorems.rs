@@ -3,7 +3,9 @@
 
 use nabla_net::Config;
 use nabla_net::sim::{Behavior, Checks, Hostile, Link, Peer, Report, Scenario, Sim};
-use nabla_net::wire::{ClientStream, Commands, ConnId, ServerStream, ShipId, decode, encode};
+use nabla_net::wire::{
+    ClientStream, Commands, ConnId, ServerStream, ShipId, Username, decode, encode,
+};
 use nabla_net::{Kind, ServerMachine};
 use nabla_sim::command::Command;
 use nabla_sim::rng::Rng;
@@ -415,7 +417,10 @@ fn hello() -> Vec<u8> {
 }
 
 fn join(world: &World) -> Vec<u8> {
-    encode(&ClientStream::Join(ShipRequest::from(world.default_ship())))
+    encode(&ClientStream::Join {
+        request: ShipRequest::from(world.default_ship()),
+        username: Username::parse("t").expect("a valid name"),
+    })
 }
 
 #[test]

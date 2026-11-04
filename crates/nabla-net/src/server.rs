@@ -12,7 +12,7 @@ use nabla_sim::world::{MAX_PILOTS, World};
 
 use crate::wire::{
     ClientStream, Commands, ConnId, Lobby, MAX_COMMANDS, MAX_STREAM_FRAME, PROTOCOL, RosterEntry,
-    ServerStream, ShipId, ShipRecord, Snapshot, Tick, Welcome, decode, encode,
+    ServerStream, ShipId, ShipRecord, Snapshot, Tick, Username, Welcome, decode, encode,
 };
 use crate::{Config, Kind, Outgoing};
 
@@ -247,7 +247,9 @@ impl ServerMachine {
                     });
                 }
             }
-            (Phase::Lobby, ClientStream::Join(request)) => self.join(conn, &request, &mut out),
+            (Phase::Lobby, ClientStream::Join { request, username }) => {
+                self.join(conn, &request, username, &mut out);
+            }
             (Phase::Piloting(ship), ClientStream::Leave) => {
                 self.leave(ship, &mut out);
                 out.push(self.lobby(conn));
@@ -381,6 +383,7 @@ impl ServerMachine {
         &mut self,
         conn: ConnId,
         request: &nabla_sim::world::ShipRequest,
+        username: Username,
         out: &mut Vec<Outgoing>,
     ) {
         if self.ships.len() >= self.config.max_pilots {
@@ -429,8 +432,10 @@ impl ServerMachine {
             params,
             since: self.tick,
             until: None,
+            username,
+            active: true,
         };
-        self.roster.insert(id, entry);
+        self.roster.insert(id, entry.clone());
         out.push(stream(
             conn,
             &ServerStream::Welcome(Welcome {
@@ -445,7 +450,7 @@ impl ServerMachine {
             }),
         ));
         for existing in self.roster.values() {
-            out.push(stream(conn, &ServerStream::Roster(*existing)));
+            out.push(stream(conn, &ServerStream::Roster(existing.clone())));
         }
         let others: Vec<ConnId> = self
             .conns
@@ -453,8 +458,9 @@ impl ServerMachine {
             .filter(|&(&c, state)| c != conn && state.phase != Phase::Fresh)
             .map(|(&c, _)| c)
             .collect();
+        let message = ServerStream::Roster(entry);
         for other in others {
-            out.push(stream(other, &ServerStream::Roster(entry)));
+            out.push(stream(other, &message));
         }
     }
 
@@ -466,9 +472,10 @@ impl ServerMachine {
         self.set_phase(slot.conn, Phase::Lobby);
         if let Some(mut entry) = self.roster.remove(&ship) {
             entry.until = Some(self.tick);
+            let message = ServerStream::Roster(entry);
             for (&conn, state) in &self.conns {
                 if state.phase != Phase::Fresh {
-                    out.push(stream(conn, &ServerStream::Roster(entry)));
+                    out.push(stream(conn, &message));
                 }
             }
         }

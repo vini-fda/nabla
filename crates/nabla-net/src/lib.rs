@@ -36,6 +36,8 @@ pub struct Config {
     pub window: u32,
     /// `T_idle`: seconds of silence after which a ship leaves, and frees its place.
     pub idle: f64,
+    /// Seconds without a command that does anything, after which a pilot is shown as inactive.
+    pub input_idle: f64,
     /// `mu*`: the margin, in seconds, a client steers for.
     pub target_margin: f64,
     /// `B`: the largest datagram, in bytes.
@@ -53,6 +55,7 @@ impl Default for Config {
             silence_ticks: 60,
             window: 60,
             idle: 60.0,
+            input_idle: 30.0,
             target_margin: 0.017,
             max_datagram: 1150,
             max_pilots: nabla_sim::world::MAX_PILOTS,

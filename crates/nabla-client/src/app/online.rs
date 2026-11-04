@@ -8,6 +8,7 @@ use std::ops::RangeInclusive;
 
 use nabla_net::client::Stage;
 use nabla_net::link::Address;
+use nabla_net::wire::Username;
 
 use super::{
     Aim, GridStyle, Input, ViewerApp, canvas_buttons, draw_grid, fit_camera, icons, keys, palette,
@@ -305,8 +306,8 @@ impl ViewerApp {
 
     fn rejoin_online(&mut self) {
         let request = self.join_request;
-        if let Some(online) = &mut self.online {
-            online.join(request);
+        if let (Some(online), Ok(username)) = (&mut self.online, Username::parse(&self.username)) {
+            online.join(request, username);
         }
         self.online_fit = true;
     }

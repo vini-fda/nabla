@@ -12,7 +12,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 /// The version of this protocol, which `Hello` carries.
-pub const PROTOCOL: u16 = 1;
+pub const PROTOCOL: u16 = 2;
 
 /// The most a stream frame may hold: a world file is at most 1 MiB, and a `Lobby` holds one.
 pub const MAX_STREAM_FRAME: usize = 1024 * 1024 + 4096;
@@ -36,18 +36,87 @@ pub struct ShipId(pub u32);
 /// A tick number: the only time the protocol's correctness rests on.
 pub type Tick = u32;
 
+/// The longest a [`Username`] may be.
+pub const MAX_USERNAME: usize = 32;
+
+/// The name a pilot flies under: 1 to [`MAX_USERNAME`] lowercase ASCII letters and digits.
+///
+/// Every value of this type is valid, decoded ones too, so a name that breaks the rule is not a
+/// message at all. It says only what a pilot wants to be called: who sent a message is still its
+/// connection (assumption A2).
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String")]
+pub struct Username(String);
+
+impl Username {
+    /// `text` as a name.
+    ///
+    /// # Errors
+    /// If it is empty, too long, or holds anything but lowercase ASCII letters and digits.
+    pub fn parse(text: &str) -> Result<Self, InvalidUsername> {
+        Self::try_from(text.to_owned())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for Username {
+    type Error = InvalidUsername;
+
+    fn try_from(text: String) -> Result<Self, InvalidUsername> {
+        let allowed = |c: u8| c.is_ascii_lowercase() || c.is_ascii_digit();
+        if (1..=MAX_USERNAME).contains(&text.len()) && text.bytes().all(allowed) {
+            Ok(Self(text))
+        } else {
+            Err(InvalidUsername)
+        }
+    }
+}
+
+impl std::fmt::Display for Username {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Why text is not a [`Username`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InvalidUsername;
+
+impl std::fmt::Display for InvalidUsername {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "a username is 1 to {MAX_USERNAME} lowercase letters and digits"
+        )
+    }
+}
+
 /// What a client says on its stream.
+///
+/// A new variant goes last, and `Hello` stays first and as it is: a client of any version must be
+/// able to say `Hello`, and be told if the server does not speak its protocol.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ClientStream {
     /// The first message of a connection: the protocol version, and the build, for the log.
     Hello { protocol: u16, build: String },
-    /// Take a ship, as close to this request as the world allows.
-    Join(ShipRequest),
+    /// Take a ship, as close to this request as the world allows, under this name.
+    Join {
+        request: ShipRequest,
+        username: Username,
+    },
     /// Give the ship up. The connection stays, back in the lobby.
     Leave,
+    /// The pilot has left this app for another (`true`), or has come back to it (`false`). It says
+    /// only how the ship's name is shown, and nothing about its flight.
+    Away(bool),
 }
 
 /// What the server says on a stream.
+///
+/// A new variant goes last, so that a client of another version still understands `Rejected`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ServerStream {
     Lobby(Lobby),
@@ -56,8 +125,11 @@ pub enum ServerStream {
     Full,
     /// The connection cannot go on, and why.
     Rejected(String),
-    /// A ship exists for a stretch of ticks.
+    /// A ship exists for a stretch of ticks. Sent again when its pilot's activity changes.
     Roster(RosterEntry),
+    /// A ship in the world is already flying under the name asked for. The client stays in the
+    /// lobby.
+    NameTaken,
 }
 
 /// The world, as a validated world file with its tick rate, arena and allowed ships, and who is
@@ -79,13 +151,18 @@ pub struct Welcome {
     pub ships: Vec<ShipRecord>,
 }
 
-/// Ship `ship` exists for the ticks in `[since, until)`, with these parameters.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+/// Ship `ship` exists for the ticks in `[since, until)`, with these parameters, flown by the pilot
+/// named `username`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RosterEntry {
     pub ship: ShipId,
     pub params: Params,
     pub since: Tick,
     pub until: Option<Tick>,
+    pub username: Username,
+    /// Whether the pilot is at the controls, as far as the server can tell. It is for showing
+    /// beside the name, and no rule of the protocol depends on it.
+    pub active: bool,
 }
 
 /// One ship in a snapshot: `(j, s_j, eta_j, u_j)`. The control is for drawing the plume.
@@ -209,6 +286,82 @@ mod tests {
             build: "test".to_owned(),
         };
         assert_eq!(decode::<ClientStream>(&encode(&hello), 100), Ok(hello));
+        let join = ClientStream::Join {
+            request: ShipRequest {
+                mass: 1.0,
+                inertia: 2.0,
+                f_max: 3.0,
+                tau_max: 4.0,
+            },
+            username: Username::parse("miriam").expect("a valid name"),
+        };
+        assert_eq!(decode::<ClientStream>(&encode(&join), 100), Ok(join));
+        let away = ClientStream::Away(true);
+        assert_eq!(decode::<ClientStream>(&encode(&away), 100), Ok(away));
+        let taken = ServerStream::NameTaken;
+        assert_eq!(decode::<ServerStream>(&encode(&taken), 100), Ok(taken));
+    }
+
+    #[test]
+    fn a_username_is_one_to_32_lowercase_letters_and_digits() {
+        let longest = "abcdefghijklmnopqrstuvwxyz012345";
+        assert_eq!(longest.len(), MAX_USERNAME);
+        for good in ["a", "7", "bot7", "start2ep", longest] {
+            assert_eq!(Username::parse(good).expect("valid").as_str(), good);
+        }
+        let too_long = format!("{longest}6");
+        for bad in [
+            "",
+            too_long.as_str(),
+            "Miriam",
+            "two words",
+            "under_score",
+            "dash-ed",
+            "caf\u{e9}",
+            "\u{0}",
+        ] {
+            assert_eq!(Username::parse(bad), Err(InvalidUsername), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_name_that_breaks_the_rule_does_not_decode() {
+        // What a client outside this codebase could send: the same bytes as a valid name's.
+        for bad in ["", "Miriam", "under_score", "caf\u{e9}"] {
+            let bytes = encode(&bad.to_owned());
+            assert_eq!(
+                decode::<Username>(&bytes, 100),
+                Err(CodecError::Malformed),
+                "{bad:?}"
+            );
+        }
+        let too_long = encode(&"a".repeat(MAX_USERNAME + 1));
+        assert_eq!(
+            decode::<Username>(&too_long, 100),
+            Err(CodecError::Malformed)
+        );
+        let good = encode(&"miriam".to_owned());
+        assert_eq!(
+            decode::<Username>(&good, 100),
+            Ok(Username::parse("miriam").expect("a valid name"))
+        );
+    }
+
+    #[test]
+    fn a_client_of_another_version_is_still_understood_and_told() {
+        // An older client's Hello, byte for byte: variant 0, protocol 1, a build of one byte.
+        assert_eq!(
+            decode::<ClientStream>(&[0, 1, 1, b'x'], 100),
+            Ok(ClientStream::Hello {
+                protocol: 1,
+                build: "x".to_owned(),
+            })
+        );
+        // And the answer it can read: variant 3 of what it knows of the server, as always.
+        assert_eq!(
+            encode(&ServerStream::Rejected("x".to_owned())),
+            [3, 1, b'x']
+        );
     }
 
     #[test]

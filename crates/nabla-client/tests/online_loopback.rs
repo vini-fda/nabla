@@ -10,10 +10,15 @@ use nabla_client::online::{Hands, Online};
 use nabla_core::solutions::SOLUTIONS;
 use nabla_net::Config;
 use nabla_net::client::{SNAP_POSITION, Stage};
+use nabla_net::wire::Username;
 use nabla_server::impair::{Impairment, Proxy};
 use nabla_server::{Identity, Metrics, Server, Settings};
 use nabla_sim::steering::{Input, Steering};
 use nabla_sim::world::{Preset, ShipRequest};
+
+fn name(text: &str) -> Username {
+    Username::parse(text).expect("a valid name")
+}
 
 fn hands(who: usize, seconds: f64) -> Hands {
     let phase = ((seconds + who as f64 * 0.7) / 1.3).floor() as i64;
@@ -91,8 +96,8 @@ fn two_pilots(
             client.frame(hands(who, t));
         }
         if !joined && clients.iter().all(|c| c.stage() == Stage::Lobby) {
-            clients[0].join(ours);
-            clients[1].join(stronger);
+            clients[0].join(ours, name("ours"));
+            clients[1].join(stronger, name("stronger"));
             joined = true;
         }
         if joined && clients.iter().all(|c| c.stage() == Stage::Playing) {
@@ -231,7 +236,7 @@ fn a_client_that_is_dropped_frees_its_ship_at_once() {
         assert!(started.elapsed() < Duration::from_secs(5), "the ship came");
         client.frame(hands(0, started.elapsed().as_secs_f64()));
         if !joined && client.stage() == Stage::Lobby {
-            client.join(ship);
+            client.join(ship, name("solo"));
             joined = true;
         }
         std::thread::sleep(Duration::from_millis(4));

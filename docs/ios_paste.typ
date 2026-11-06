@@ -120,10 +120,11 @@ Rows marked _device_ still need a check on a real iPhone.
     differs,
 
     [Double-tap an unfocused field],
-    [One run: the first tap focused the field and the second opened the caret's menu
-      (_device_: may select the word on a phone).],
+    [The first tap focuses the field and puts the caret at a word boundary. The second fires
+      `dblclick` but *selects nothing*, and no menu opens. Same in three runs (E5). A double
+      tap selects a word only once the field has the focus.],
     [Focus, then egui selects the word.],
-    partly,
+    differs,
 
     [Touch and hold on text],
     [A *magnifier* appears above the finger, with a caret that follows it. The menu opens on
@@ -174,7 +175,8 @@ The menu's items follow from the DOM's state, and nothing else:
     [Empty, caret], [Paste | AutoFill],
     [Text, collapsed caret], [Paste | Select | Select All | AutoFill],
     [Text, a selection], [Cut | Copy | Paste | AutoFill | › (or Replace… when spelling is checked)],
-    [Password, caret], [_device_: no Copy or Cut for a password],
+    [Password, caret], [Paste | Select All | AutoFill],
+    [Password, all selected], [Paste | AutoFill | Find: *no Copy or Cut* (E4)],
   ),
   caption: [The edit menu by state. The agent is always "empty", so it always shows the first row.],
 ) <fig-menu>
@@ -279,7 +281,9 @@ the agent's caret at $u(i)$, both in CSS pixels.
       takes egui's own font (its bytes, as a `FontFace`), its size times the zoom (not
       eframe's fixed 16 px), no ligatures, the same letter spacing and padding, and
       `scrollLeft` set to egui's horizontal scroll. E2 measured 0.17 px for Nabla's
-      address field (@results).], [must],
+      address field (@results). Below 16 px, the agent is laid out at 16 px and scaled down
+      with a `transform`, so that a page which allows zooming doesn't zoom in on focus (E8).],
+      [must],
     [P3], [*One owner per touch.* On a touch screen, touches inside the focused field belong
       to the browser: tap, double tap, hold and handles. egui hears only the outcome, as text
       and selection changes (P4). Touches elsewhere, and mouse input everywhere, stay
@@ -303,8 +307,11 @@ the agent's caret at $u(i)$, both in CSS pixels.
     [P7], [*Clipboard.* Copy and Cut put exactly the selected text on the clipboard,
       outside a secure context too, by the browser's own default action on the mirror or
       by `clipboardData`. Paste inserts at $D$.], [must],
-    [P8], [*Passwords.* A password's text doesn't sit copyable in the DOM. The menu offers no
-      Copy or Cut, and a double tap selects no words, as natively (@keyboard).], [must],
+    [P8], [*Passwords.* A password's text can't be copied out of the DOM. The menu offers no
+      Copy or Cut, and a double tap selects no words, as natively (@keyboard). The agent
+      gets `type="password"` (and `autocomplete="current-password"`) while it mirrors a
+      password field, and goes back to `text` after. `-webkit-text-security` is not enough
+      (E4).], [must],
     [P9], [*Keyboard hints.* Each field says what it is for: `inputmode`, `autocorrect`,
       `spellcheck`, `autocapitalize`, `enterkeyhint`. For Nabla: a URL keyboard, no
       autocorrection and "Go" for the server address. This needs more from egui than
@@ -355,13 +362,17 @@ and E2 found it small (@results).
     [E3], [Can `setSelectionRange`, called while the menu or a handle drag is active, leave
       them alone? It must not echo P4's own changes back.], [no (@results)],
     [E4], [Passwords: `type="password"` on the agent only while it covers a field (eframe
-      avoids it because of Chrome's password manager), or no mirror at all?], [open],
-    [E5], [On a phone, does a double tap on an unfocused field select the word?], [open],
-    [E6], [Does Copy fail over `http://<LAN address>` today, as the code suggests?], [open],
+      avoids it because of Chrome's password manager), or no mirror at all?],
+      [`type="password"` (@results-2)],
+    [E5], [On a phone, does a double tap on an unfocused field select the word?],
+      [no (@results-2)],
+    [E6], [Does Copy fail over `http://<LAN address>` today, as the code suggests?],
+      [open (@e6)],
     [E7], [Does a write during a *handle* drag end the drag? (E3 caught only a caret
-      drag.)], [open],
+      drag.)], [no, but it moves the anchor (@results-2)],
     [E8], [Without `user-scalable=no`, does an agent smaller than 16 px zoom the page on
-      focus, and does a 16 px agent scaled down with a `transform` keep P2?], [open],
+      focus, and does a 16 px agent scaled down with a `transform` keep P2?],
+      [yes, and yes (@results-2)],
   ),
   caption: [What to find out before building.],
 ) <fig-experiments>
@@ -416,8 +427,8 @@ rounds a range's rectangle to the pixel grid.
   removes this, if egui keeps drawing them. It doesn't affect Nabla's address field.
 - *No zoom.* A 12.5 px input took the focus without the page zooming in, under
   `user-scalable=no`. eframe's fixed 16 px, there to prevent that zoom, isn't needed in that
-  case, and the agent can be egui's size (P2). Without `user-scalable=no` this is
-  untested (E8).
+  case, and the agent can be egui's size (P2). Without `user-scalable=no` the page does
+  zoom, and E8 has the way around it.
 
 P2 holds with a margin of about 6× for the address field, and for proportional text outside
 ligatures.
@@ -460,8 +471,104 @@ ligatures.
 So no, a write doesn't leave iOS alone. It closes the menu, and a write during a gesture beats
 the gesture. eframe must write only when egui has a change of its own to make, compare
 against the last value and selection it read rather than trust a flag, and wait until no
-finger is down on the agent. That is P4a. A handle drag interrupted by a write is untested
-(E7).
+finger is down on the agent. That is P4a. E7 tried the same with a handle drag.
+
+= Results of E4–E8 <results-2>
+
+Run on 6 November 2026, in the same Simulator, with the same kind of page. E8's page
+dropped `user-scalable=no`; the others kept it.
+
+== E4: passwords
+
+Two fields held "hunter2 secret word": one `type="password"`, the other `type="text"` with
+`-webkit-text-security: disc`. Both draw dots.
+
+#figure(
+  rules(
+    columns: (auto, 1fr, 1fr),
+    ([], [`type="password"`], [`-webkit-text-security`]),
+    [Tap the caret], [Paste | Select All | AutoFill: no Select.], [–],
+    [Double tap], [Selects nothing (@keyboard).], [Selects *the whole value* (`[0, 19]`):
+      the dots hide the spaces, so the word is everything.],
+    [Menu with a selection], [Paste | AutoFill | Find. *No Copy or Cut.*],
+      [*Cut | Copy* | Paste | AutoFill | ›.],
+    [Copy], [Not offered.], [Fires `copy`, and the clipboard holds 19 "●" characters: the
+      dots, not the password.],
+    [Passwords], [A "Passwords" key in the bar above the keyboard.], [Safari treats it as a
+      password field as well.],
+  ),
+  caption: [The two ways to draw a password, on iOS Safari.],
+) <fig-e4>
+
+- *`type="password"` behaves natively,* and `-webkit-text-security` doesn't: it offers a
+  Copy that copies dots, and a double tap that selects the whole field. The agent takes
+  `type="password"` while it mirrors a password field (P8).
+- *"Use Strong Password?"* With the two fields on one page, focusing either brought up
+  Safari's sheet for a generated password. Accepting it filled both fields through `input`
+  (`insertText`) events. A single `type="password"` field, with or without
+  `autocomplete="current-password"`, showed only the "Passwords" key and no sheet. The agent
+  is one field, so it would get the key and no sheet. Whatever iOS's password AutoFill types
+  arrives as `input`, which P4 already sends to egui.
+- *Not tested:* Chrome's password manager on the desktop, the reason eframe avoids
+  `type="password"`. Setting the type only while the agent mirrors a password field on a
+  touch screen keeps desktop Chrome as it is (P11).
+
+== E5: a double tap on an unfocused field
+
+On a field without the focus, a double tap on "unfocused" put the caret at the end of the
+word (`[25, 25]`), and a double tap on "this" put it at `[15, 15]`. In both, `dblclick`
+fired, but no word was selected and no menu opened. With the field focused, the same double
+tap selected "unfocused" (`[16, 25]`) and opened Cut | Copy | Paste | Replace… | ›.
+
+So the agent need not cover fields without the focus. egui's tap focuses the field, as now,
+and moves the agent over it. The next double tap is then the browser's (P3). egui selecting
+the word on the first double tap is a difference from native. Check on a device, since the
+Simulator taps with a mouse.
+
+== E6: Copy over plain HTTP <e6>
+
+Not run. It needs the page served over `http://<LAN address>`, which is not a secure
+context, and the run could only bind to `127.0.0.1`. `localhost` counts as a secure context,
+so it can't stand in. The page is ready: three fields that copy the way eframe does
+(`preventDefault` and `writeText`), with `clipboardData.setData`, and by the browser's
+default. Serve it on the LAN and open it on an iPhone. P7 doesn't depend on the answer: it
+leaves Copy to the browser.
+
+== E7: a write during a handle drag
+
+A double tap selected "handle" (`[9, 15]`). The page then waited for the next change of
+selection, which means a handle was moving, and called `setSelectionRange(0, 4)`. The finger
+dragged the end handle on to the right.
+
+- *The drag went on.* After the write, `selectionchange` kept coming: `[0, 20]`, `[0, 22]`,
+  … `[0, 33]`. The handle stayed under the finger, and the menu came back on release.
+- *But the anchor moved.* The other end took the write: the selection ended as `[0, 33]`, not
+  `[9, 33]`. The user dragged one end, and the other end jumped.
+
+A caret drag (E3) loses to a write. A handle drag survives it, but it keeps the page's anchor
+instead of the user's. Either way the user doesn't get what they did, so P4a stands: no writes
+while a finger is down.
+
+== E8: the zoom on focus, and a scaled agent
+
+Two fields held the server address in Lilex: one at 12.5 px, and one at 16 px with
+`transform: scale(0.78125)` (16 × 0.78125 = 12.5).
+
+- *12.5 px zooms.* Focusing it zoomed the page to 1.281 (`visualViewport.scale`), which is
+  16 / 12.5. The zoom stayed after the keyboard went away. For Nabla's canvas, that would
+  leave the game zoomed in.
+- *16 px scaled down doesn't.* The scale stayed at 1.000. A double tap on "4433" put the
+  highlight and both handles exactly on the scaled text. The handles kept their full size,
+  and the menu was the usual one.
+- *P2 holds.* WebKit rounds a range's rectangle to whole pixels *before* the transform. So
+  the scaled field measured 10, 20, 29, 39 px × 0.78125, which is up to 0.95 px from egui
+  (0.78 px of it rounding). Measured at 1600 px instead, and brought down to 12.5 px, the
+  16 px layout is within 0.17 px of egui, as in E2. A transform scales the layout linearly,
+  so this is where the caret is.
+
+eframe can't know whether the page allows zooming. So the agent always uses at least 16 px,
+and a `transform` scales it down to egui's size (P2). This works with or without
+`user-scalable=no`.
 
 = Test plan <tests>
 

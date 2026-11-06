@@ -232,6 +232,23 @@ all = "warn"
 broken_intra_doc_links = "warn"
 missing_crate_level_docs = "warn"
 
+# ----------------------------------------------------------------------------------------
+# egui from a fork, until eframe lets iOS Safari paste into a text field
+# (https://github.com/emilk/egui/issues/501): on a touch screen, its hidden text input lies over
+# the focused text, for the browser's own Paste menu. All of egui's crates, lest two copies of
+# egui meet; egui_plot, from its own repository, takes these. Cargo.lock pins the commit.
+[patch.crates-io]
+ecolor = { git = "https://github.com/vini-fda/egui", branch = "ios-paste" }
+eframe = { git = "https://github.com/vini-fda/egui", branch = "ios-paste" }
+egui = { git = "https://github.com/vini-fda/egui", branch = "ios-paste" }
+egui_extras = { git = "https://github.com/vini-fda/egui", branch = "ios-paste" }
+egui_glow = { git = "https://github.com/vini-fda/egui", branch = "ios-paste" }
+egui-wgpu = { git = "https://github.com/vini-fda/egui", branch = "ios-paste" }
+egui-winit = { git = "https://github.com/vini-fda/egui", branch = "ios-paste" }
+emath = { git = "https://github.com/vini-fda/egui", branch = "ios-paste" }
+epaint = { git = "https://github.com/vini-fda/egui", branch = "ios-paste" }
+epaint_default_fonts = { git = "https://github.com/vini-fda/egui", branch = "ios-paste" }
+
 # Optimize all dependencies even in debug builds:
 [profile.dev.package."*"]
 opt-level = 2
@@ -300,20 +317,3 @@ codegen-units = 256
 
 [profile.fast.package.nabla-synth]
 codegen-units = 256
-
-# ----------------------------------------------------------------------------------------
-# egui from a fork, until eframe lets iOS Safari paste into a text field
-# (https://github.com/emilk/egui/issues/501): on a touch screen, its hidden text input lies over
-# the focused text, for the browser's own Paste menu. All of egui's crates, lest two copies of
-# egui meet; egui_plot, from its own repository, takes these. Cargo.lock pins the commit.
-[patch.crates-io]
-ecolor = { git = "https://github.com/vini-fda/egui", branch = "ios-paste" }
-eframe = { git = "https://github.com/vini-fda/egui", branch = "ios-paste" }
-egui = { git = "https://github.com/vini-fda/egui", branch = "ios-paste" }
-egui-wgpu = { git = "https://github.com/vini-fda/egui", branch = "ios-paste" }
-egui-winit = { git = "https://github.com/vini-fda/egui", branch = "ios-paste" }
-egui_extras = { git = "https://github.com/vini-fda/egui", branch = "ios-paste" }
-egui_glow = { git = "https://github.com/vini-fda/egui", branch = "ios-paste" }
-emath = { git = "https://github.com/vini-fda/egui", branch = "ios-paste" }
-epaint = { git = "https://github.com/vini-fda/egui", branch = "ios-paste" }
-epaint_default_fonts = { git = "https://github.com/vini-fda/egui", branch = "ios-paste" }

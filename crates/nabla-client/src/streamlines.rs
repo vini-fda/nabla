@@ -24,7 +24,8 @@
 //! - The pulses' phase is the log-potential at each fragment, so they are wavefronts on the
 //!   equipotentials, whatever the tessellation under them.
 //!
-//! The lines are tessellated into ribbons with miter joins, wide enough for their glow, and
+//! The lines are tessellated into ribbons with miter joins (`ribbon.rs`), wide enough for
+//! their glow, and
 //! the arrowheads into triangles, both in device pixels and both carrying the distances their
 //! fragments are anti-aliased by. One wgpu pass draws them, depth-tested against the planets
 //! and ships of the 3D view like the contour lines.
@@ -452,41 +453,25 @@ impl Mesh<'_> {
         self.vertices.push(opacity);
     }
 
-    /// The ribbon along `run`, a stretch of a line as its world points and where they are on
-    /// screen: two vertices a point, `reach` to each side along the miter of the segments
-    /// that meet there, so the ribbon's sides run parallel to each segment and the distance
-    /// across, interpolated, is exactly each fragment's distance to the segment's line; and
-    /// no two segments' quads overlap, to blend twice.
+    /// The ribbon (`crate::ribbon`) along `run`, a stretch of a line as its world points and
+    /// where they are on screen, `reach` to each side: wide enough for the glow, each vertex
+    /// with its distance across.
     fn ribbon(&mut self, run: &[(Vec3, egui::Pos2)]) {
-        let mut points: Vec<(Vec3, Vec2)> = Vec::with_capacity(run.len());
-        for &(world, screen) in run {
-            let p = self.pixels(screen);
-            // Not a point so near the last that the pixels' rounding would turn the
-            // segment between them.
-            if points.last().is_none_or(|(_, q)| (p - *q).length() > 0.1) {
-                points.push((world, p));
-            }
-        }
+        let points = crate::ribbon::distinct(
+            run.iter()
+                .map(|&(world, screen)| (self.pixels(screen), world)),
+            false,
+        );
         if points.len() < 2 {
             return;
         }
-        let normal = |a: Vec2, b: Vec2| (b - a).normalized().rot90();
+        let places: Vec<Vec2> = points.iter().map(|(p, _)| *p).collect();
+        let offsets = crate::ribbon::offsets(&places, self.reach, false);
         // Each point's two vertices: where, and the rest of what they share.
-        let sides: Vec<(Vec2, Vec2, f32, [f32; 3])> = (0..points.len())
-            .map(|i| {
-                let (world, p) = points[i];
-                let before = (i > 0).then(|| normal(points[i - 1].1, p));
-                let after = (i + 1 < points.len()).then(|| normal(p, points[i + 1].1));
-                let offset = match (before, after) {
-                    (Some(a), Some(b)) if (a + b).length() > 1e-3 => {
-                        // The miter, no longer than twice the reach where the line doubles
-                        // back on itself.
-                        let miter = (a + b).normalized();
-                        miter * (self.reach / miter.dot(a).max(0.5))
-                    }
-                    (Some(n), _) | (None, Some(n)) => n * self.reach,
-                    (None, None) => Vec2::ZERO,
-                };
+        let sides: Vec<(Vec2, Vec2, f32, [f32; 3])> = points
+            .iter()
+            .zip(offsets)
+            .map(|(&(p, world), offset)| {
                 (
                     p + offset,
                     p - offset,

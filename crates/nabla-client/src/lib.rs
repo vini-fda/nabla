@@ -31,6 +31,7 @@ mod planets;
 mod plots;
 mod plume;
 pub mod replay;
+mod ribbon;
 mod ship3d;
 mod sound;
 mod sprites;

@@ -33,8 +33,8 @@ pub const LEVEL_BASE: f64 = std::f64::consts::SQRT_2;
 
 /// How squarely the plane must face the viewer for the field to be drawn at all, and at full
 /// strength, as for the grid. Below it the plane is edge on and the field unreadable.
-const MIN_FACING: f32 = 0.05;
-const FULL_FACING: f32 = 0.30;
+pub(crate) const MIN_FACING: f32 = 0.05;
+pub(crate) const FULL_FACING: f32 = 0.30;
 
 /// How many cells span the view's longer side, roughly, and the bounds on the grid's side.
 const TARGET_CELLS: f64 = 256.0;
@@ -616,7 +616,7 @@ fn quad(a: Vec2, b: Vec2, half: f32, feather: f32, depth_a: f32, depth_b: f32) -
 // The contour lines: marching squares over the potential on a world-space grid.
 
 /// The gravitational potential at `p`, matching the simulation's acceleration field.
-fn potential(gravity: f64, bodies: &[CelestialBody], p: [f64; 2]) -> f64 {
+pub(crate) fn potential(gravity: f64, bodies: &[CelestialBody], p: [f64; 2]) -> f64 {
     let mut phi = 0.0;
     for body in bodies {
         let d = [
@@ -638,7 +638,7 @@ fn potential(gravity: f64, bodies: &[CelestialBody], p: [f64; 2]) -> f64 {
 /// The part of the plane `z = 0` to cover, as a square's `(min, max)` corners, padded: in
 /// orthographic, what is on screen; in perspective, a square around the view's focus, as the
 /// plane's far side may be beyond the horizon. `None` when the view is edge on.
-fn region(camera: &Camera, rect: Rect) -> Option<([f64; 2], [f64; 2])> {
+pub(crate) fn region(camera: &Camera, rect: Rect) -> Option<([f64; 2], [f64; 2])> {
     if camera.eye_distance(rect).is_none() {
         let corners = [
             rect.left_top(),

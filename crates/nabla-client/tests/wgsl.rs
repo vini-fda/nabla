@@ -7,6 +7,7 @@ fn shaders_parse_and_validate() {
         include_str!("../src/planets.wgsl"),
         include_str!("../src/ship3d.wgsl"),
         include_str!("../src/sprites.wgsl"),
+        include_str!("../src/streamlines.wgsl"),
     ];
     for source in sources {
         let module = naga::front::wgsl::parse_str(source).expect("parses");

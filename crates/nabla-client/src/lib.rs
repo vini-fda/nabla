@@ -34,6 +34,7 @@ pub mod replay;
 mod ship3d;
 mod sound;
 mod sprites;
+mod streamlines;
 pub mod theme;
 mod version;
 mod world_io;

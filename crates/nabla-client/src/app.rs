@@ -240,6 +240,10 @@ pub struct ViewerApp {
     field_line_width: f32,
     /// Cached contour lines of the gravity field, recomputed as the view moves.
     field_contours: Option<crate::field::Contours>,
+    /// Overlay the gravity field's lines: glowing streamlines with arrowheads.
+    show_streamlines: bool,
+    /// The field lines of the world, traced again when it changes.
+    streamlines: Option<crate::streamlines::Streamlines>,
     /// Show the thrusters' plumes in the 3D view.
     show_plume: bool,
     follow_ship: bool,
@@ -363,6 +367,8 @@ impl Default for ViewerApp {
             show_field: false,
             field_line_width: 0.5,
             field_contours: None,
+            show_streamlines: false,
+            streamlines: None,
             show_plume: true,
             follow_ship: true,
             show_help: false,
@@ -445,6 +451,7 @@ impl ViewerApp {
                 let depth = eframe::egui_wgpu::depth_format_from_bits(crate::DEPTH_BUFFER, 0);
                 crate::planets::init(render_state, samples, depth);
                 crate::field::init(render_state, samples, depth);
+                crate::streamlines::init(render_state, samples, depth);
                 Ok((
                     ShipRenderer::new(render_state, &model, samples, depth),
                     Plume::new(render_state, samples, depth),
@@ -920,6 +927,11 @@ impl ViewerApp {
                 )
                 .on_hover_text("Thickness of the contour lines, in points");
             }
+            ui.checkbox(&mut self.show_streamlines, "Field lines (red)")
+                .on_hover_text(
+                    "Streamlines of the gravitational field, with arrowheads and a glow \
+                     falling along them the way the field points",
+                );
         }
         ui.checkbox(&mut self.show_path, "Path");
         if ui
@@ -1586,6 +1598,18 @@ impl ViewerApp {
                 &mut self.field_contours,
             );
         }
+        // The field's lines likewise: traced here, when the world has changed, and drawn at
+        // once in the flat view, under the grid, where nothing hides them.
+        if self.show_streamlines && self.game.world.gravity_constant > 0.0 {
+            crate::streamlines::streamlines(
+                &self.game.world.bodies,
+                self.game.world.gravity_constant,
+                &mut self.streamlines,
+            );
+            if debug {
+                self.draw_streamlines(ui, painter, rect, None);
+            }
+        }
         if self.show_grid {
             draw_grid(painter, &self.camera, rect, &style);
         }
@@ -1631,6 +1655,9 @@ impl ViewerApp {
                 // are tested against.
                 if self.show_field {
                     self.draw_field_lines_3d(ui, painter, rect, &depth);
+                }
+                if self.show_streamlines {
+                    self.draw_streamlines(ui, painter, rect, Some(&depth));
                 }
                 // After the ship, whose depth they are tested against.
                 if self.show_plume {
@@ -1698,6 +1725,37 @@ impl ViewerApp {
             return;
         };
         painter.add(callback);
+    }
+
+    /// The gravity field's lines, traced by `draw_scene` beforehand: glowing streamlines with
+    /// arrowheads, and pulses falling along them. In the 3D view they are drawn after the
+    /// planets and ships, and tested against their depth through the scene's own `depth`
+    /// map; the flat view has none. The pulses move by the UI's clock, whether or not the
+    /// flight does, so the canvas keeps repainting while they show.
+    fn draw_streamlines(
+        &self,
+        ui: &egui::Ui,
+        painter: &egui::Painter,
+        rect: egui::Rect,
+        depth: Option<&DepthMap>,
+    ) {
+        let Some(streamlines) = &self.streamlines else {
+            return;
+        };
+        if self.game.world.gravity_constant == 0.0 {
+            return;
+        }
+        if let Some(callback) = crate::streamlines::paint(
+            &self.camera,
+            rect,
+            streamlines,
+            depth,
+            ui.ctx().pixels_per_point(),
+            ui.input(|i| i.time),
+        ) {
+            painter.add(callback);
+            ui.ctx().request_repaint();
+        }
     }
 
     /// Whether the canvas shows the debug view: when chosen, or when there is no 3D view.

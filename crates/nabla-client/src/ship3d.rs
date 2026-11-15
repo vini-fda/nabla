@@ -464,8 +464,8 @@ impl DepthMap {
             });
         Self::with_reach(camera, canvas, center, reach)
     }
-    /// Centered on the camera's view, to a distance of `reach` from it, for a test.
-    #[cfg(test)]
+    /// Centered on the camera's view, to a distance of `reach` from it: for drawing that
+    /// covers the canvas's plane, as the gravity field does.
     pub(crate) fn for_camera(camera: &Camera, canvas: egui::Rect, reach: f32) -> Self {
         let center = egui::vec2(camera.center.x, camera.center.y);
         Self::with_reach(camera, canvas, center, reach)

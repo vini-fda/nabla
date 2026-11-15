@@ -13,6 +13,7 @@ mod controller_shape;
 mod controller_view;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod dev_log;
+mod field;
 mod formula;
 mod game;
 mod gamepad;

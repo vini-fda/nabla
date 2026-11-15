@@ -105,3 +105,6 @@ winit = "0.30.13"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+naga = "30"

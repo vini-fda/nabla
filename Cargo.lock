@@ -2087,6 +2087,7 @@ dependencies = [
  "nabla-server",
  "nabla-sim",
  "nabla-synth",
+ "naga",
  "rfd",
  "tokio",
  "wasm-bindgen",

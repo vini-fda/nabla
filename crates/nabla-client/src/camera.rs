@@ -275,6 +275,20 @@ impl Camera {
         points: impl IntoIterator<Item = Vec3>,
         rect: Rect,
     ) -> Vec<Vec<Pos2>> {
+        self.project_polyline_with_world(points, rect)
+            .into_iter()
+            .map(|run| run.into_iter().map(|(_, p)| p).collect())
+            .collect()
+    }
+
+    /// `project_polyline`, each screen point alongside the world point it came from: for
+    /// drawing that needs more than where a point lands, such as how deep it sits against
+    /// what has already been drawn (`ship3d`'s `DepthMap::depth`).
+    pub fn project_polyline_with_world(
+        &self,
+        points: impl IntoIterator<Item = Vec3>,
+        rect: Rect,
+    ) -> Vec<Vec<(Vec3, Pos2)>> {
         // Deepest view depth in front of the near plane, a hair inside it.
         let limit = self.eye_distance(rect).map(|d| d * (1.0 - NEAR * 1.001));
         let inside = |z: f32| limit.is_none_or(|limit| z < limit);
@@ -287,13 +301,13 @@ impl Camera {
                 && inside(z) != inside(zq)
             {
                 let crossing = q + (p - q) * ((limit - zq) / (z - zq));
-                run.extend(self.project(crossing, rect));
+                run.extend(self.project(crossing, rect).map(|point| (crossing, point)));
                 if inside(zq) {
                     runs.push(std::mem::take(&mut run));
                 }
             }
             if inside(z) {
-                run.extend(self.project(p, rect));
+                run.extend(self.project(p, rect).map(|point| (p, point)));
             }
             previous = Some((p, z));
         }

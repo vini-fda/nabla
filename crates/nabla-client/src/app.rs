@@ -234,6 +234,12 @@ pub struct ViewerApp {
     show_collision_meshes: bool,
     /// Draw the background grid.
     show_grid: bool,
+    /// Overlay the bodies' gravity field: potential bands and contour lines.
+    show_field: bool,
+    /// The gravity field's contour lines' width, in points.
+    field_line_width: f32,
+    /// Cached contour lines of the gravity field, recomputed as the view moves.
+    field_contours: Option<crate::field::Contours>,
     /// Show the thrusters' plumes in the 3D view.
     show_plume: bool,
     follow_ship: bool,
@@ -354,6 +360,9 @@ impl Default for ViewerApp {
             prediction: orbits::Forecast::default(),
             show_collision_meshes: false,
             show_grid: true,
+            show_field: true,
+            field_line_width: 0.5,
+            field_contours: None,
             show_plume: true,
             follow_ship: true,
             show_help: false,
@@ -435,6 +444,7 @@ impl ViewerApp {
                 };
                 let depth = eframe::egui_wgpu::depth_format_from_bits(crate::DEPTH_BUFFER, 0);
                 crate::planets::init(render_state, samples, depth);
+                crate::field::init(render_state, samples, depth);
                 Ok((
                     ShipRenderer::new(render_state, &model, samples, depth),
                     Plume::new(render_state, samples, depth),
@@ -896,6 +906,19 @@ impl ViewerApp {
         )
         .on_hover_text("Ship size and collision radius; set before starting a flight");
         ui.checkbox(&mut self.show_grid, "Grid");
+        if self.game.world.gravity_constant > 0.0 {
+            ui.checkbox(&mut self.show_field, "Gravity field")
+                .on_hover_text(
+                    "Bands and contour lines of the celestial bodies' gravitational potential",
+                );
+            if self.show_field {
+                ui.add(
+                    egui::Slider::new(&mut self.field_line_width, 0.5..=4.0)
+                        .text("contour line width"),
+                )
+                .on_hover_text("Thickness of the contour lines, in points");
+            }
+        }
         ui.checkbox(&mut self.show_path, "Path");
         if ui
             .checkbox(&mut self.show_prediction, "Controller prediction (red)")
@@ -1546,6 +1569,21 @@ impl ViewerApp {
             self.camera.center = Vec3::plane(world(state.x, state.y));
         }
 
+        if self.show_field {
+            self.draw_field(ui, painter, rect, debug);
+        }
+        // Warm the field's contour cache while the update can still touch it: the 3D view
+        // draws the lines after the planets and ships, which test their depth, reading the
+        // cache then.
+        if self.show_field && !debug && self.game.world.gravity_constant > 0.0 {
+            crate::field::contours(
+                &self.camera,
+                rect,
+                &self.game.world.bodies,
+                self.game.world.gravity_constant,
+                &mut self.field_contours,
+            );
+        }
         if self.show_grid {
             draw_grid(painter, &self.camera, rect, &style);
         }
@@ -1587,6 +1625,11 @@ impl ViewerApp {
                 ) {
                     painter.add(callback);
                 }
+                // The field's contour lines, after the planets and ships: the depth they
+                // are tested against.
+                if self.show_field {
+                    self.draw_field_lines_3d(ui, painter, rect, &depth);
+                }
                 // After the ship, whose depth they are tested against.
                 if self.show_plume {
                     let t = replay.time(k) + offset;
@@ -1624,9 +1667,67 @@ impl ViewerApp {
         }
     }
 
+    /// The bodies' gravity field's contour lines in the 3D view, drawn after the planets and
+    /// ships: the depth they are tested against, through the scene's own `depth` map.
+    fn draw_field_lines_3d(
+        &self,
+        ui: &egui::Ui,
+        painter: &egui::Painter,
+        rect: egui::Rect,
+        depth: &DepthMap,
+    ) {
+        let Some(callback) = crate::field::paint_lines(
+            &self.camera,
+            rect,
+            &self.field_contours,
+            self.field_line_width,
+            depth,
+            ui.ctx().pixels_per_point(),
+            ui.visuals(),
+        ) else {
+            return;
+        };
+        painter.add(callback);
+    }
+
     /// Whether the canvas shows the debug view: when chosen, or when there is no 3D view.
     fn debug_view(&self) -> bool {
         self.view == CanvasView::Debug || self.ship3d.is_none()
+    }
+
+    /// The bodies' gravity field on the canvas, under everything else: soft potential bands
+    /// from the wgpu pass, then crisp equipotential contour lines, which the 3D view draws
+    /// itself, depth-tested, after the planets and ships (see `draw_scene`). Only in a world
+    /// with gravity.
+    fn draw_field(
+        &mut self,
+        ui: &egui::Ui,
+        painter: &egui::Painter,
+        rect: egui::Rect,
+        debug: bool,
+    ) {
+        if self.game.world.gravity_constant == 0.0 {
+            return;
+        }
+        if let Some(callback) = crate::field::paint(
+            &self.camera,
+            rect,
+            &self.game.world.bodies,
+            self.game.world.gravity_constant,
+        ) {
+            painter.add(callback);
+        }
+        if debug {
+            crate::field::draw_contours(
+                painter,
+                &self.camera,
+                rect,
+                &self.game.world,
+                self.field_line_width,
+                &mut self.field_contours,
+                ui.visuals(),
+            );
+        }
     }
 
     /// The path held (a flight's last minute), that up to the ship's current (possibly

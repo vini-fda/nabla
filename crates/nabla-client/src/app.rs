@@ -855,25 +855,27 @@ impl ViewerApp {
                 ui.monospace(value);
                 ui.end_row();
             };
+            // The `+` in the formats keeps each number's width when its sign changes, so the
+            // values hold still across frames.
             row(
                 &formula::POSITION,
                 "position",
-                format!("({:.3}, {:.3}) m", s.x, s.y),
+                format!("({:+.3}, {:+.3}) m", s.x, s.y),
             );
             row(
                 &formula::VELOCITY,
                 "velocity",
-                format!("({:.3}, {:.3}) m/s", s.vx, s.vy),
+                format!("({:+.3}, {:+.3}) m/s", s.vx, s.vy),
             );
             row(
                 &formula::THETA,
                 "heading angle",
-                format!("{:.3} rad", s.theta),
+                format!("{:+.3} rad", s.theta),
             );
             row(
                 &formula::OMEGA,
                 "angular velocity",
-                format!("{:.3} rad/s", s.omega),
+                format!("{:+.3} rad/s", s.omega),
             );
             if self.game.objective() == Objective::ReachB {
                 row(
@@ -889,7 +891,7 @@ impl ViewerApp {
             );
             let control = replay.control(k).map_or_else(
                 || "- (final state)".to_owned(),
-                |u| format!("({:.3} N, {:.3} N m)", u.thrust, u.torque),
+                |u| format!("({:+.3} N, {:+.3} N m)", u.thrust, u.torque),
             );
             row(&formula::CONTROL, "control: thrust and torque", control);
         });

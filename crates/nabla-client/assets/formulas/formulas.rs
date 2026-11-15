@@ -64,11 +64,11 @@ pub const INITIAL_OMEGA: Formula = Formula {
     width: 1.0763,
 };
 
-/// `$B$`
+/// `$mathbf(p)_"target"$`
 pub const GOAL: Formula = Formula {
     uri: "bytes://formula/goal.svg",
     svg: include_bytes!("goal.svg"),
-    width: 0.7840,
+    width: 2.5248,
 };
 
 /// `$t$`
@@ -113,11 +113,11 @@ pub const OMEGA: Formula = Formula {
     width: 0.6320,
 };
 
-/// `$norm(mathbf(p) - B)$`
+/// `$norm(mathbf(p) - mathbf(p)_"target")$`
 pub const DISTANCE: Formula = Formula {
     uri: "bytes://formula/distance.svg",
     svg: include_bytes!("distance.svg"),
-    width: 3.4414,
+    width: 5.4962,
 };
 
 /// `$norm(mathbf(v))$`

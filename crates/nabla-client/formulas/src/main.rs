@@ -30,7 +30,7 @@ const FORMULAS: &[(&str, &str)] = &[
     ("INITIAL_VELOCITY", "mathbf(v)_0"),
     ("INITIAL_THETA", "theta_0"),
     ("INITIAL_OMEGA", "omega_0"),
-    ("GOAL", "B"),
+    ("GOAL", "mathbf(p)_\"target\""),
     // Current state and state plots
     ("T", "t"),
     ("K", "k"),
@@ -38,7 +38,7 @@ const FORMULAS: &[(&str, &str)] = &[
     ("VELOCITY", "mathbf(v)"),
     ("THETA", "theta"),
     ("OMEGA", "omega"),
-    ("DISTANCE", "norm(mathbf(p) - B)"),
+    ("DISTANCE", "norm(mathbf(p) - mathbf(p)_\"target\")"),
     ("SPEED", "norm(mathbf(v))"),
     ("CONTROL", "mathbf(u)_k = (F, tau)"),
     ("THRUST", "F"),

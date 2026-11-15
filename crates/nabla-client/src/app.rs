@@ -244,8 +244,6 @@ pub struct ViewerApp {
     show_streamlines: bool,
     /// The field lines of the world, traced again when it changes.
     streamlines: Option<crate::streamlines::Streamlines>,
-    /// Show the thrusters' plumes in the 3D view.
-    show_plume: bool,
     follow_ship: bool,
     /// Show the keyboard and mouse help over the canvas.
     show_help: bool,
@@ -365,11 +363,10 @@ impl Default for ViewerApp {
             show_collision_meshes: false,
             show_grid: true,
             show_field: false,
-            field_line_width: 0.5,
+            field_line_width: 2.0,
             field_contours: None,
             show_streamlines: false,
             streamlines: None,
-            show_plume: true,
             follow_ship: true,
             show_help: false,
             slow_frame_logged_at: f64::NEG_INFINITY,
@@ -503,15 +500,15 @@ impl ViewerApp {
         let restarting = self.screen == Screen::Flight;
         let previous = self.game.objective();
         let engage = if restarting {
-            previous == Objective::ReachB && self.assisted()
+            previous == Objective::ReachTarget && self.assisted()
         } else {
             self.autopilot_on_start
         };
         self.game = Game::in_world(self.selected_case(), self.selected_world());
         log::info!("Flight started in {}", self.game.world.name);
         self.reset_orbit_controls();
-        if restarting && previous == Objective::ReachB {
-            self.choose_objective(Objective::ReachB);
+        if restarting && previous == Objective::ReachTarget {
+            self.choose_objective(Objective::ReachTarget);
         }
         if engage {
             self.engage_objective();
@@ -535,9 +532,9 @@ impl ViewerApp {
     fn notify_landing(&mut self, n: usize) {
         let time = self.game.replay.time(n);
         let text = if self.game.autopiloted() {
-            format!("The autopilot landed at B in {n} steps ({time:.2} s)")
+            format!("The autopilot landed at the target in {n} steps ({time:.2} s)")
         } else {
-            format!("Landed at B in {n} steps ({time:.2} s)")
+            format!("Landed at the target in {n} steps ({time:.2} s)")
         };
         self.notifications.post(text, palette::GREEN);
     }
@@ -657,7 +654,7 @@ impl ViewerApp {
     /// The autopilot: the policy it flies with, its switch, its source, and its sampling period.
     fn autopilot_ui(&mut self, ui: &mut egui::Ui) {
         ui.heading("Autopilot");
-        if self.game.objective() == Objective::ReachB {
+        if self.game.objective() == Objective::ReachTarget {
             self.policy_ui(ui);
         } else {
             ui.label("Circular-orbit capture and hold");
@@ -675,7 +672,7 @@ impl ViewerApp {
             if toggle.changed() {
                 self.toggle_autopilot();
             }
-            if self.game.objective() == Objective::ReachB {
+            if self.game.objective() == Objective::ReachTarget {
                 ui.checkbox(&mut self.show_code, "Show code");
             }
         });
@@ -726,7 +723,7 @@ impl ViewerApp {
         if let Some(solution) = picked {
             self.policy = solution;
             self.score_policy();
-            if self.assisted() && self.game.objective() == Objective::ReachB {
+            if self.assisted() && self.game.objective() == Objective::ReachTarget {
                 self.engage_objective();
             }
         }
@@ -805,15 +802,15 @@ impl ViewerApp {
                 "initial angular velocity",
                 format!("{:.2} rad/s", s.omega),
             );
-            if self.game.objective() == Objective::ReachB {
+            if self.game.objective() == Objective::ReachTarget {
                 row(
                     &formula::GOAL,
-                    "goal",
+                    "target",
                     format!("({:.2}, {:.2}) m", task.goal.x, task.goal.y),
                 );
             }
         });
-        if self.game.objective() != Objective::ReachB {
+        if self.game.objective() != Objective::ReachTarget {
             return;
         }
         let name = self.policy.name;
@@ -855,30 +852,32 @@ impl ViewerApp {
                 ui.monospace(value);
                 ui.end_row();
             };
+            // The `+` in the formats keeps each number's width when its sign changes, so the
+            // values hold still across frames.
             row(
                 &formula::POSITION,
                 "position",
-                format!("({:.3}, {:.3}) m", s.x, s.y),
+                format!("({:+.3}, {:+.3}) m", s.x, s.y),
             );
             row(
                 &formula::VELOCITY,
                 "velocity",
-                format!("({:.3}, {:.3}) m/s", s.vx, s.vy),
+                format!("({:+.3}, {:+.3}) m/s", s.vx, s.vy),
             );
             row(
                 &formula::THETA,
                 "heading angle",
-                format!("{:.3} rad", s.theta),
+                format!("{:+.3} rad", s.theta),
             );
             row(
                 &formula::OMEGA,
                 "angular velocity",
-                format!("{:.3} rad/s", s.omega),
+                format!("{:+.3} rad/s", s.omega),
             );
-            if self.game.objective() == Objective::ReachB {
+            if self.game.objective() == Objective::ReachTarget {
                 row(
                     &formula::DISTANCE,
-                    "distance to the goal B",
+                    "distance to the target",
                     format!("{:.4} m", (s.x - goal.x).hypot(s.y - goal.y)),
                 );
             }
@@ -889,7 +888,7 @@ impl ViewerApp {
             );
             let control = replay.control(k).map_or_else(
                 || "- (final state)".to_owned(),
-                |u| format!("({:.3} N, {:.3} N m)", u.thrust, u.torque),
+                |u| format!("({:+.3} N, {:+.3} N m)", u.thrust, u.torque),
             );
             row(&formula::CONTROL, "control: thrust and torque", control);
         });
@@ -943,9 +942,6 @@ impl ViewerApp {
         }
         ui.checkbox(&mut self.show_collision_meshes, "Collision meshes")
             .on_hover_text("Orange outlines of the ship, planet and moon collision shapes");
-        ui.add_enabled_ui(!self.debug_view(), |ui| {
-            ui.checkbox(&mut self.show_plume, "Thruster plumes");
-        });
         ui.add_enabled_ui(self.debug_view(), |ui| {
             ui.checkbox(&mut self.show_velocity, "Velocity (green)");
             ui.checkbox(&mut self.show_acceleration, "Acceleration (red)");
@@ -1617,7 +1613,7 @@ impl ViewerApp {
         if self.show_path {
             self.draw_path(painter, rect, replay, k, &state);
         }
-        if self.game.objective() == Objective::ReachB {
+        if self.game.objective() == Objective::ReachTarget {
             self.draw_goal(painter, rect, replay, &state);
         }
         if debug {
@@ -1660,13 +1656,11 @@ impl ViewerApp {
                     self.draw_streamlines(ui, painter, rect, Some(&depth));
                 }
                 // After the ship, whose depth they are tested against.
-                if self.show_plume {
-                    let t = replay.time(k) + offset;
-                    if let Some(callback) =
-                        plume.paint(&self.camera, rect, [(replay, t)], self.circumradius, &depth)
-                    {
-                        painter.add(callback);
-                    }
+                let t = replay.time(k) + offset;
+                if let Some(callback) =
+                    plume.paint(&self.camera, rect, [(replay, t)], self.circumradius, &depth)
+                {
+                    painter.add(callback);
                 }
             }
             _ => {
@@ -1868,7 +1862,11 @@ impl ViewerApp {
         painter.text(
             goal + egui::vec2(GOAL_LABEL_OFFSET_PX, -GOAL_LABEL_OFFSET_PX),
             egui::Align2::LEFT_BOTTOM,
-            if reached { "B (reached)" } else { "B" },
+            if reached {
+                "Target (reached)"
+            } else {
+                "Target"
+            },
             egui::FontId::monospace(12.0),
             color,
         );
@@ -1893,7 +1891,7 @@ impl ViewerApp {
         {
             self.draw_sas_heading(painter, rect, &state, heading);
         }
-        if game.objective() == Objective::ReachB {
+        if game.objective() == Objective::ReachTarget {
             self.draw_goal_marker(painter, rect, marker_area, &game.replay, &state);
         }
         if pads {
@@ -2003,7 +2001,7 @@ impl ViewerApp {
         painter.text(
             label,
             egui::Align2::CENTER_CENTER,
-            format!("B {distance:.1} m"),
+            format!("Target {distance:.1} m"),
             egui::FontId::monospace(12.0),
             GOAL_COLOR,
         );
@@ -2119,12 +2117,6 @@ impl ViewerApp {
                 ui.label(format!(" = {}", self.game.world.gravity_constant));
             });
             self.world_files_ui(ui);
-            if !self.game.world.bodies.is_empty() {
-                ui.label(
-                    "Orbit assist accounts for gravity. For Reach B, mpc_bounded learns it in flight; \
-                     the other policies use the vacuum model.",
-                );
-            }
             ui.separator();
             ui.heading("Initial conditions");
             self.case_info_ui(ui);

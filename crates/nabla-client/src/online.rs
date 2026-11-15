@@ -247,7 +247,7 @@ impl Online {
             plots: None,
             playout: Playout::default(),
             engaged: None,
-            objective: Objective::ReachB,
+            objective: Objective::ReachTarget,
             fault: None,
             landed: false,
         }
@@ -367,7 +367,10 @@ impl Online {
             return Err("no ship to fly".to_owned());
         };
         let (controller, prediction) = match objective {
-            Objective::ReachB => (FlightController::ReachB(Autopilot::new(solution)), None),
+            Objective::ReachTarget => (
+                FlightController::ReachTarget(Autopilot::new(solution)),
+                None,
+            ),
             Objective::Orbit(target) => {
                 let prediction = orbit::predict(world, start, target)?;
                 (
@@ -387,7 +390,7 @@ impl Online {
     pub fn orbit_pilot(&self) -> Option<&Pilot> {
         match &self.engaged.as_ref()?.controller {
             FlightController::Orbit(pilot) => Some(pilot),
-            FlightController::ReachB(_) => None,
+            FlightController::ReachTarget(_) => None,
         }
     }
 
@@ -522,7 +525,7 @@ impl Online {
             let keep_from = newest.saturating_sub(TRAIL);
             self.trail = self.trail.split_off(&keep_from);
             if let Some(flying) = &self.engaged
-                && self.objective == Objective::ReachB
+                && self.objective == Objective::ReachTarget
                 && let Some(step) = self.trail.get(&newest)
                 && flying.task.reached(&step.state)
             {

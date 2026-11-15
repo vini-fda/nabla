@@ -240,7 +240,7 @@ fn rows() -> Vec<Row> {
                 dpad(DPAD_LEFT, Button::DPadLeft),
                 dpad(DPAD_RIGHT, Button::DPadRight),
             ],
-            "Select Reach B / Orbit objective".into(),
+            "Select Reach stationary target / Orbit objective".into(),
             Input::EitherHeld(Button::DPadLeft, Button::DPadRight),
             LINE,
             left(220.0, 82.0, 187.0, [187.5, 187.0]),

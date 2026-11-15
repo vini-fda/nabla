@@ -208,9 +208,10 @@ impl ViewerApp {
             .as_ref()
             .is_some_and(|o| o.stage() == Stage::Playing && o.next_state().is_some());
         if playing && !self.online_ready {
-            // The ship is new: its nearest body is the orbit to offer, and B is the objective.
+            // The ship is new: its nearest body is the orbit to offer, and the stationary
+            // target is the objective.
             self.reset_orbit_controls();
-            self.choose_objective(super::Objective::ReachB);
+            self.choose_objective(super::Objective::ReachTarget);
         }
         self.online_ready = playing;
         let Some(online) = &mut self.online else {
@@ -224,7 +225,7 @@ impl ViewerApp {
         }
         if online.take_landed() {
             self.notifications
-                .post("The autopilot landed at B", palette::GREEN);
+                .post("The autopilot landed at the target", palette::GREEN);
         }
         let stage = online.stage();
         let closed = online.closed().map(str::to_owned);
@@ -516,9 +517,6 @@ impl ViewerApp {
                 });
             });
             ui.checkbox(&mut self.show_grid, "Grid");
-            ui.add_enabled_ui(!self.debug_view(), |ui| {
-                ui.checkbox(&mut self.show_plume, "Thruster plumes");
-            });
             ui.horizontal(|ui| {
                 if ui.button("Fit view").clicked() {
                     self.online_fit = true;
@@ -852,15 +850,13 @@ impl ViewerApp {
             painter.add(callback);
         }
         // After the ships, whose depth they are tested against.
-        if self.show_plume
-            && let Some(callback) = plume.paint(
-                &self.camera,
-                rect,
-                views.iter().map(|view| (&view.replay, view.t)),
-                hull,
-                &depth,
-            )
-        {
+        if let Some(callback) = plume.paint(
+            &self.camera,
+            rect,
+            views.iter().map(|view| (&view.replay, view.t)),
+            hull,
+            &depth,
+        ) {
             painter.add(callback);
         }
     }

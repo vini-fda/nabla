@@ -393,7 +393,7 @@ fn an_autopilot_lands_while_another_pilot_flies_by_hand() {
     rig.join_all(&[ours, ours]);
     rig.run(3.0, &scripted);
     rig.clients[1]
-        .engage(Objective::ReachB, policy)
+        .engage(Objective::ReachTarget, policy)
         .expect("a ship to fly");
     assert!(rig.clients[1].assisted());
     let mut landed_at = None;

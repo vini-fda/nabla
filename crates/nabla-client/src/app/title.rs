@@ -412,7 +412,7 @@ impl ViewerApp {
                 row(
                     ui,
                     &formula::GOAL,
-                    "the goal B",
+                    "the target",
                     &mut [&mut goal.x, &mut goal.y],
                     position,
                     "m",

@@ -121,7 +121,8 @@ impl Autopilot {
 }
 
 /// The one objective of a flight. Manual control does not change what the ship is aiming for.
-/// Point B and its tolerances come from the flight's case; an orbit carries its own target.
+/// The stationary target and its tolerances come from the flight's case; an orbit carries its
+/// own target.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum Objective {
     #[default]
@@ -132,7 +133,7 @@ pub enum Objective {
 impl Objective {
     pub fn label(self) -> &'static str {
         match self {
-            Self::ReachB => "Reach B",
+            Self::ReachB => "Reach stationary target",
             Self::Orbit(_) => "Orbit",
         }
     }

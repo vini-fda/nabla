@@ -208,7 +208,8 @@ impl ViewerApp {
             .as_ref()
             .is_some_and(|o| o.stage() == Stage::Playing && o.next_state().is_some());
         if playing && !self.online_ready {
-            // The ship is new: its nearest body is the orbit to offer, and B is the objective.
+            // The ship is new: its nearest body is the orbit to offer, and the stationary
+            // target is the objective.
             self.reset_orbit_controls();
             self.choose_objective(super::Objective::ReachB);
         }
@@ -224,7 +225,7 @@ impl ViewerApp {
         }
         if online.take_landed() {
             self.notifications
-                .post("The autopilot landed at B", palette::GREEN);
+                .post("The autopilot landed at the target", palette::GREEN);
         }
         let stage = online.stage();
         let closed = online.closed().map(str::to_owned);

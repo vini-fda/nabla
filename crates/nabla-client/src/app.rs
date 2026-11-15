@@ -535,9 +535,9 @@ impl ViewerApp {
     fn notify_landing(&mut self, n: usize) {
         let time = self.game.replay.time(n);
         let text = if self.game.autopiloted() {
-            format!("The autopilot landed at B in {n} steps ({time:.2} s)")
+            format!("The autopilot landed at the target in {n} steps ({time:.2} s)")
         } else {
-            format!("Landed at B in {n} steps ({time:.2} s)")
+            format!("Landed at the target in {n} steps ({time:.2} s)")
         };
         self.notifications.post(text, palette::GREEN);
     }
@@ -808,7 +808,7 @@ impl ViewerApp {
             if self.game.objective() == Objective::ReachB {
                 row(
                     &formula::GOAL,
-                    "goal",
+                    "target",
                     format!("({:.2}, {:.2}) m", task.goal.x, task.goal.y),
                 );
             }
@@ -878,7 +878,7 @@ impl ViewerApp {
             if self.game.objective() == Objective::ReachB {
                 row(
                     &formula::DISTANCE,
-                    "distance to the goal B",
+                    "distance to the target",
                     format!("{:.4} m", (s.x - goal.x).hypot(s.y - goal.y)),
                 );
             }
@@ -1868,7 +1868,11 @@ impl ViewerApp {
         painter.text(
             goal + egui::vec2(GOAL_LABEL_OFFSET_PX, -GOAL_LABEL_OFFSET_PX),
             egui::Align2::LEFT_BOTTOM,
-            if reached { "B (reached)" } else { "B" },
+            if reached {
+                "Target (reached)"
+            } else {
+                "Target"
+            },
             egui::FontId::monospace(12.0),
             color,
         );
@@ -2003,7 +2007,7 @@ impl ViewerApp {
         painter.text(
             label,
             egui::Align2::CENTER_CENTER,
-            format!("B {distance:.1} m"),
+            format!("Target {distance:.1} m"),
             egui::FontId::monospace(12.0),
             GOAL_COLOR,
         );
@@ -2119,12 +2123,6 @@ impl ViewerApp {
                 ui.label(format!(" = {}", self.game.world.gravity_constant));
             });
             self.world_files_ui(ui);
-            if !self.game.world.bodies.is_empty() {
-                ui.label(
-                    "Orbit assist accounts for gravity. For Reach B, mpc_bounded learns it in flight; \
-                     the other policies use the vacuum model.",
-                );
-            }
             ui.separator();
             ui.heading("Initial conditions");
             self.case_info_ui(ui);

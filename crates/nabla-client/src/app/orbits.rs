@@ -348,7 +348,11 @@ impl ViewerApp {
             egui::ComboBox::from_id_salt("flight-objective")
                 .selected_text(objective.label())
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut objective, Objective::ReachB, "Reach B");
+                    ui.selectable_value(
+                        &mut objective,
+                        Objective::ReachB,
+                        "Reach stationary target",
+                    );
                     if let Some(target) = self.orbit_controls.target {
                         let selected = matches!(objective, Objective::Orbit(_));
                         if ui.selectable_label(selected, "Orbit").clicked() && !selected {
@@ -361,7 +365,7 @@ impl ViewerApp {
             }
             match self.flight_objective() {
                 Objective::ReachB => {
-                    ui.label("Reach B and stop.");
+                    ui.label("Reach the stationary target and stop.");
                     controls_grid(ui, |ui| {
                         objective_control_row(ui);
                         input_row(

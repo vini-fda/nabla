@@ -1,4 +1,4 @@
-//! The steps of a release (see the README): `bump` sets the workspace version, and `tag` checks
+//! The steps of a release (see docs/releasing.md): `bump` sets the workspace version, and `tag` checks
 //! that the checkout is ready, tags it and pushes the tag, which publishes the release. Merging a
 //! bump runs `tag --ci` (.github/workflows/tag.yml); `cargo tag` is the same task by hand.
 

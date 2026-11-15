@@ -2,7 +2,7 @@
 //!
 //! A [`Scenario`] says who connects when, over what links, flying how, and which of them are
 //! hostile. [`Sim::run`] plays it out in simulated time, with one event queue, and checks the
-//! theorems of `docs/multiplayer.typ` as assertions along the way: that the log holds exactly one
+//! theorems of `specs/multiplayer.typ` as assertions along the way: that the log holds exactly one
 //! command per tick and never changes (`thm-once`), that a ship depends only on its own
 //! connection (`thm-contain`, which the tests check by comparing two runs), and that a
 //! prediction made with the commands that were applied is exact (`thm-exact`).

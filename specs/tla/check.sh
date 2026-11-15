@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Run SANY and TLC on NablaNet.tla, the module that docs/multiplayer.typ embeds.
+# Run SANY and TLC on NablaNet.tla, the module that specs/multiplayer.typ embeds.
 # Needs java and tla2tools.jar (TLA2TOOLS, default ~/tla/tla2tools.jar).
-# Usage: docs/tla/check.sh [small|two-ships|large ...]   (default: all three)
+# Usage: specs/tla/check.sh [small|two-ships|large ...]   (default: all three)
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)

@@ -16,7 +16,7 @@ use nabla_core::State as State2;
 use nabla_sim::span;
 
 /// How long a frame gives the preview's capture check. At once, the check makes a frame late
-/// enough to lose commands to the server (`docs/multiplayer.typ`, "Autopilots").
+/// enough to lose commands to the server (`specs/multiplayer.typ`, "Autopilots").
 const CHECK_BUDGET: Duration = Duration::from_millis(2);
 
 #[derive(Default)]

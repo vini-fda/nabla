@@ -3,7 +3,7 @@
 //!
 //! The machine predicts the own ship, `Pred(k)`, and takes in snapshots. This turns that into
 //! things to draw. The own ship is drawn between its last two predicted ticks, and moved by a
-//! smoothing offset that absorbs a correction and then decays (`docs/multiplayer.typ`,
+//! smoothing offset that absorbs a correction and then decays (`specs/multiplayer.typ`,
 //! "Hiding corrections"). Other ships are drawn in the past, between two snapshots, by cubic
 //! Hermite interpolation (`prop-hermite`). An autopilot flies by the prediction and sends
 //! `Direct` commands (`Autopilots`).

@@ -1,6 +1,6 @@
 # Multiplayer
 
-Nabla's online mode has pilots share a world on a server, from the native app or a browser. How it works is in `docs/multiplayer.typ`; this file is about running it.
+Nabla's online mode has pilots share a world on a server, from the native app or a browser. How it works is in `specs/multiplayer.typ`; this file is about running it.
 
 ## Hosting on a LAN
 
@@ -42,7 +42,7 @@ It logs the address to share, with the certificate's hash after the `#`:
 connect to https://192.168.1.50:4433#sha256=dea539c5...
 ```
 
-Add `--world vacuum`, `planet` or a world file to fly elsewhere than the default planet and moon. [Running a server](README.md#running-a-server) lists all the flags.
+Add `--world vacuum`, `planet` or a world file to fly elsewhere than the default planet and moon. All the flags are listed under [Running it on its own](#running-it-on-its-own) below.
 
 The server listens on UDP, so a firewall on the host must allow that port:
 
@@ -51,6 +51,36 @@ sudo ufw allow 4433/udp    # Linux with ufw
 ```
 
 With the macOS firewall on, allow incoming connections if it asks.
+
+### Running it on its own
+
+`nabla-server` runs on its own, without the app or `xtask`. Each [GitHub Release](https://github.com/vini-fda/nabla/releases) has it for Linux x86-64 and macOS on Apple silicon, or build it from the code. You need [rustup](https://rustup.rs), which installs the toolchain of `rust-toolchain.toml`, and a C compiler (on Linux, also `mold` and `clang`):
+
+```sh
+cargo build --release -p nabla-server --bin nabla-server
+./target/release/nabla-server --world planet-moon --name play.example.com
+```
+
+The worlds are built into the binary, so `target/release/nabla-server` can be copied anywhere and run from there. `cargo run --release -p nabla-server --bin nabla-server -- <flags>` does both steps at once.
+
+| Flag | Default | |
+|---|---|---|
+| `--bind ADDR` | `0.0.0.0:4433` | The address and UDP port to listen on |
+| `--world NAME` | `planet-moon` | `vacuum`, `planet`, `planet-moon`, or a world file |
+| `--tick-rate N` | `60` | Ticks per second |
+| `--arena S` | `1000` | The arena's half side |
+| `--max-pilots N` | `16` | How many ships may fly at once |
+| `--name HOST` | `localhost`, `127.0.0.1`, `::1` | A name for the self-signed certificate; repeat it for more |
+| `--cert PEM --key PEM` | | A certificate to use instead of a self-signed one |
+| `--password-file FILE` | | Let in only pilots who know the password this file holds |
+
+It logs the address to connect to, and how the flight is going every ten seconds, until Ctrl-C. `RUST_LOG=debug` logs more.
+
+```text
+connect to https://localhost:4433#sha256=dea539c5...
+```
+
+When listening on every interface, as by default, that address says `localhost`: give other pilots your host instead, keeping the rest, as in `https://play.example.com:4433#sha256=dea539c5...`.
 
 ### 4. Connect
 
@@ -64,6 +94,8 @@ Use the web app at that address and not a copy served from the host. Browsers on
 A username is 1 to 32 lowercase letters and digits, and no two pilots flying at once can share one. Each ship shows its pilot's name beside it, with a dot that is green while they are flying and gray when the app has lost focus, the connection has gone quiet, or they have touched nothing for 30 seconds.
 
 The world comes from the server, so pilots need nothing but the address. Up to 16 can fly at once (`--max-pilots` lowers that), and a ship that goes silent for a minute leaves and frees its place.
+
+To have company without other people, run a headless pilot against the server: `cargo run --release -p nabla-server --bin nabla-bot -- --server '<address>'`. The soak test `cargo run --release -p nabla-server --bin nabla-soak` flies sixteen bots through a lossy, delaying proxy for ten minutes, and fails if the expectations of `specs/multiplayer.typ`, M4, are not met (`--help` there lists the flags).
 
 ### Asking for a password
 

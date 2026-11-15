@@ -1,6 +1,6 @@
 # Optimization task: stop the ship at a point in the fewest steps
 
-This is a finite, discretized version of the ship control problem (`docs/main.typ`).
+This is a finite, discretized version of the ship control problem (`specs/main.typ`).
 
 ## The problem
 

@@ -1,4 +1,4 @@
-//! The platform-dependent measurements of `docs/multiplayer.typ`, natively:
+//! The platform-dependent measurements of `specs/multiplayer.typ`, natively:
 //! `cargo run --release -p nabla-sim --example measure`. The browser runs the same code.
 
 #![expect(clippy::print_stdout, reason = "the report is this program's output")]

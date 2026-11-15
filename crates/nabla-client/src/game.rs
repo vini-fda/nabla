@@ -19,7 +19,7 @@
 //!
 //! The player can also point instead, with the mouse or a finger, while the camera follows the
 //! ship: an [`Aim`] turns the ship toward the pointer and thrusts once it faces it, within a
-//! cone. Both the assist and the aim use the attitude law of `docs/main.typ` ("Problem:
+//! cone. Both the assist and the aim use the attitude law of `specs/main.typ` ("Problem:
 //! pointing").
 //!
 //! Engaged, the [`Autopilot`] takes over from the player: at every sample, the policy's

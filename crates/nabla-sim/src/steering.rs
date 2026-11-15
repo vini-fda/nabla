@@ -4,7 +4,7 @@
 //! [`steer`], which applies them to a state. The client flies one ship by them, and a server
 //! flies many.
 //!
-//! Both the assist and the aim use the attitude law of `docs/main.typ` ("Problem: pointing").
+//! Both the assist and the aim use the attitude law of `specs/main.typ` ("Problem: pointing").
 
 use std::f64::consts::TAU;
 

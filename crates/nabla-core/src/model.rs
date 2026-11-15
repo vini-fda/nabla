@@ -1,6 +1,6 @@
 //! Ship model and its exact sampled-data discretization.
 //!
-//! Continuous dynamics (see `docs/main.typ`):
+//! Continuous dynamics (see `specs/main.typ`):
 //!
 //! ```text
 //! ẋ = vx,  ẏ = vy,  v̇x = F/m cos θ,  v̇y = F/m sin θ,  θ̇ = ω,  ω̇ = τ/I
@@ -101,7 +101,7 @@ const MAX_PANELS: usize = 4096;
 
 /// Advance the state by one sampling period `p.h` under the constant control `u`.
 ///
-/// This is the sampled-data map `Φ_h` of the write-up (`docs/main.typ`). It does not check admissibility.
+/// This is the sampled-data map `Φ_h` of the write-up (`specs/main.typ`). It does not check admissibility.
 pub fn step(p: &Params, s: &State, u: &Control) -> State {
     flow(p, s, u, p.h)
 }
@@ -269,7 +269,7 @@ mod tests {
 
     #[test]
     fn spinning_thrust_matches_closed_form() {
-        // τ = 0, ω ≠ 0: c and d have closed forms (docs/main.typ).
+        // τ = 0, ω ≠ 0: c and d have closed forms (specs/main.typ).
         let (th, w, h) = (0.4_f64, 3.0_f64, P.h);
         let s = State {
             x: 0.0,

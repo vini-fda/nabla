@@ -4,7 +4,7 @@
 //! The owner task alternates between its tick timer and an inbox. Connection tasks decode
 //! nothing and touch no game state: they turn what a session delivers into events for the
 //! inbox, and what the owner sends into writes, so an `.await` is the only place another task may
-//! run, and the owner holds nothing borrowed across one (`docs/multiplayer.typ`,
+//! run, and the owner holds nothing borrowed across one (`specs/multiplayer.typ`,
 //! "Atomicity, and the owner task").
 
 use std::collections::BTreeMap;

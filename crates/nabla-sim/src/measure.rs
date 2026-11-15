@@ -1,4 +1,4 @@
-//! The measurements of `docs/multiplayer.typ` that depend on the platform.
+//! The measurements of `specs/multiplayer.typ` that depend on the platform.
 //!
 //! They are code that runs the same on every platform: natively
 //! (`cargo run --release -p nabla-sim --example measure`) and in a browser (`measure_report`

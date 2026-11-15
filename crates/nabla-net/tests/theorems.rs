@@ -1,4 +1,4 @@
-//! The theorems of `docs/multiplayer.typ` as assertions on a simulated network: `thm-once`,
+//! The theorems of `specs/multiplayer.typ` as assertions on a simulated network: `thm-once`,
 //! `thm-contain`, `thm-exact` and `thm-margin`, and what holds against hostile clients.
 
 use nabla_net::Config;

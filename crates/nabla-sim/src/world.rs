@@ -12,7 +12,7 @@ pub const MAX_GRAVITY_CONSTANT: f64 = 1e4;
 /// The most pilots a world can hold at once (`N_max`): a whole snapshot then fits one datagram.
 pub const MAX_PILOTS: usize = 16;
 /// The largest half side `S` of a world's arena. Beyond it `f32` positions are too coarse for
-/// Rapier to move a slow ship (`docs/multiplayer.typ`, "The arena").
+/// Rapier to move a slow ship (`specs/multiplayer.typ`, "The arena").
 pub const MAX_ARENA_HALF_SIDE: f64 = 2048.0;
 /// The slowest and the fastest tick a version 2 world may have, in ticks per second: `h` is
 /// then in `[0.01, 0.1]`, as in version 1.

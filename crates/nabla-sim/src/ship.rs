@@ -1,4 +1,4 @@
-//! One ship's map from tick to tick, `f_i` of `docs/multiplayer.typ`: the command is made safe,
+//! One ship's map from tick to tick, `f_i` of `specs/multiplayer.typ`: the command is made safe,
 //! becomes a control, the physics advances one tick, and the arena's wall stops the ship.
 //!
 //! The map depends on this ship's state, parameters and command, and on the world's constants,

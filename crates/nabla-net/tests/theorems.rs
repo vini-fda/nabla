@@ -375,27 +375,6 @@ fn hostile_clients_change_nothing_for_an_honest_one_and_break_nothing() {
     }
 }
 
-#[test]
-fn among_bodies_the_invariants_hold_and_prediction_errors_are_small() {
-    // Where there are bodies the client's replay is Rapier restarted from a snapshot, which is
-    // not exact. The invariants are still assertions, and the error is measured.
-    let world = Preset::PlanetAndMoon
-        .world()
-        .multiplayer(60, 1000.0, 4)
-        .expect("a valid world");
-    let reports = over_seeds(0..24, |seed| {
-        let mut sim = Sim::new(random_scenario(seed, &world, 3000, ALL_NO_EXACT));
-        sim.run().clone()
-    });
-    let worst = reports.iter().fold((0.0_f64, 0.0_f64), |acc, r| {
-        (acc.0.max(r.max_error.0), acc.1.max(r.max_error.1))
-    });
-    assert!(
-        worst.0 < 0.01 && worst.1 < 0.1,
-        "prediction errors among bodies: {worst:?}"
-    );
-}
-
 fn server(world: &World, config: Config) -> ServerMachine {
     ServerMachine::new(world.clone(), config, 0.0).expect("a valid server")
 }

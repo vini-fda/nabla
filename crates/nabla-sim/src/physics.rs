@@ -7,6 +7,7 @@ use rapier2d::prelude::{
     ColliderBuilder, MassProperties, PhysicsWorld, RigidBodyBuilder, RigidBodyHandle, Vector,
 };
 
+use crate::hull;
 use crate::span;
 use crate::world::{CelestialBody, World};
 
@@ -65,7 +66,8 @@ impl Physics {
     }
 
     /// The physics of one ship in `save`'s world, starting in state `s`: with the world's bodies
-    /// and gravity, and the ship's own `params` and hull `radius`. A world with many ships has
+    /// and gravity, and the ship's own `params` and hull `radius`, through which its collider
+    /// is built (see [`hull::points`]). A world with many ships has
     /// one `Physics` for each, as ships do not touch.
     pub fn for_ship(save: &World, s: State, params: &Params, radius: f32) -> Self {
         let _span = span!(Level::Debug, "physics of {} bodies", save.bodies.len());
@@ -93,10 +95,16 @@ impl Physics {
                 ))
                 .ccd_enabled(true)
                 .can_sleep(false),
-            ColliderBuilder::ball(radius)
-                .density(0.0)
-                .friction(0.5)
-                .restitution(0.0),
+            ColliderBuilder::convex_hull(
+                &hull::points(radius)
+                    .into_iter()
+                    .map(|[x, y]| Vector::new(x, y))
+                    .collect::<Vec<_>>(),
+            )
+            .expect("the hull is a convex polygon")
+            .density(0.0)
+            .friction(0.5)
+            .restitution(0.0),
         );
         // Rapier normally updates mass during its first step; gravity needs it beforehand.
         world.bodies[player].recompute_mass_properties_from_colliders(&world.colliders);
@@ -222,8 +230,12 @@ mod tests {
         );
     }
 
+    /// A hull crashes head-on at CCD-testing speed: it never goes inside the planet, the crash
+    /// bleeds the speed of the incoming flier (whose leftovers slide it around the surface, as
+    /// the corner impacts of a pointy convex body spin and scatter it), and the planet, which
+    /// the impulses push against, does not move.
     #[test]
-    fn collision_stops_a_fast_ship_and_leaves_the_planet_fixed() {
+    fn a_fast_hull_will_not_tunnel_into_a_fixed_planet() {
         let mut save = Preset::Planet.world();
         save.bodies[0].position = [0.0, 0.0];
         save.players[0].state = State {
@@ -232,12 +244,21 @@ mod tests {
             ..State::default()
         };
         let mut physics = Physics::new(&save);
+        let mut states = Vec::new();
         for _ in 0..100 {
-            physics.step(0.02, Control::default());
+            states.extend(physics.step(0.02, Control::default()));
         }
-        let state = physics.state();
-        assert!(state.x <= -7.95, "CCD prevents tunneling: {state:?}");
-        assert!(state.vx.abs() < 0.1, "collision stops inward motion");
+        for s in &states {
+            assert!(
+                s.x.hypot(s.y) >= 6.99,
+                "no sample sinks into the planet: {s:?}"
+            );
+        }
+        let last = states.last().copied().unwrap_or_default();
+        assert!(
+            last.vx.hypot(last.vy) < 300.0,
+            "the crash bleeds the speed: {last:?}"
+        );
         let (_, planet) = physics
             .world
             .bodies
@@ -245,6 +266,41 @@ mod tests {
             .find(|(_, b)| b.is_fixed())
             .expect("fixed planet");
         assert_eq!(planet.translation(), Vector::ZERO, "planet stays static");
+    }
+
+    /// The collider is the ship's hull, not a ball of the hull radius: a sideways ship slides
+    /// its side against the planet, reaching where a ball would have stopped it a ship's width
+    /// short: along its side the hull reaches 0.279 of the hull radius, not the whole radius.
+    #[test]
+    fn a_sideways_ship_touches_the_planet_with_its_hull_not_a_ball() {
+        let mut save = Preset::Planet.world();
+        save.bodies[0].position = [0.0, 0.0];
+        save.gravity_constant = 0.0;
+        save.players[0].state = State {
+            x: -20.0,
+            vx: 2.0,
+            theta: std::f64::consts::FRAC_PI_2,
+            ..State::default()
+        };
+        let mut physics = Physics::new(&save);
+        let closest = (0..600)
+            .map(|_| {
+                let mut closest = f64::INFINITY;
+                for s in physics.step(0.02, Control::default()) {
+                    closest = closest.min(s.x.hypot(s.y));
+                }
+                closest
+            })
+            .fold(f64::INFINITY, f64::min);
+        assert!(
+            (7.05..=7.4).contains(&closest),
+            "the side, not a ball of the hull radius, touches: {closest}"
+        );
+        assert!(
+            physics.state().vx.hypot(physics.state().vy) < 2.0,
+            "the scrape slows the ship: {:?}",
+            physics.state()
+        );
     }
 
     #[test]

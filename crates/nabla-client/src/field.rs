@@ -528,7 +528,7 @@ fn stroke(camera: &Camera, width: f32, visuals: &egui::Visuals) -> Option<Stroke
     let fade = ((facing - MIN_FACING) / (FULL_FACING - MIN_FACING)).min(1.0);
     Some(Stroke::new(
         width,
-        visuals.text_color().gamma_multiply(0.4 * fade),
+        visuals.text_color().gamma_multiply(0.8 * fade),
     ))
 }
 
@@ -1269,7 +1269,7 @@ mod tests {
         // are as translucent as the stroke, not opaque white.
         let [r, g, b, a] = stroke.color.to_array().map(|c| f32::from(c) / 255.0);
         assert_eq!(uniforms[4..], [r, g, b, a]);
-        assert!(a > 0.0 && a < 0.5 && r <= a && g <= a && b <= a);
+        assert!(a > 0.5 && a < 1.0 && r <= a && g <= a && b <= a);
         // Half the stroke's width in device pixels, and a pixel of feathering.
         assert_eq!(uniforms[..4], [1600.0, 1200.0, 1.5, 1.0]);
         // Every vertex is the ribbon's reach across: the half width and half the feather.

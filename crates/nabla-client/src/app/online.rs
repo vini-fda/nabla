@@ -517,9 +517,6 @@ impl ViewerApp {
                 });
             });
             ui.checkbox(&mut self.show_grid, "Grid");
-            ui.add_enabled_ui(!self.debug_view(), |ui| {
-                ui.checkbox(&mut self.show_plume, "Thruster plumes");
-            });
             ui.horizontal(|ui| {
                 if ui.button("Fit view").clicked() {
                     self.online_fit = true;
@@ -853,15 +850,13 @@ impl ViewerApp {
             painter.add(callback);
         }
         // After the ships, whose depth they are tested against.
-        if self.show_plume
-            && let Some(callback) = plume.paint(
-                &self.camera,
-                rect,
-                views.iter().map(|view| (&view.replay, view.t)),
-                hull,
-                &depth,
-            )
-        {
+        if let Some(callback) = plume.paint(
+            &self.camera,
+            rect,
+            views.iter().map(|view| (&view.replay, view.t)),
+            hull,
+            &depth,
+        ) {
             painter.add(callback);
         }
     }

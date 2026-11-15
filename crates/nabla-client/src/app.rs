@@ -244,8 +244,6 @@ pub struct ViewerApp {
     show_streamlines: bool,
     /// The field lines of the world, traced again when it changes.
     streamlines: Option<crate::streamlines::Streamlines>,
-    /// Show the thrusters' plumes in the 3D view.
-    show_plume: bool,
     follow_ship: bool,
     /// Show the keyboard and mouse help over the canvas.
     show_help: bool,
@@ -365,11 +363,10 @@ impl Default for ViewerApp {
             show_collision_meshes: false,
             show_grid: true,
             show_field: false,
-            field_line_width: 0.5,
+            field_line_width: 2.0,
             field_contours: None,
             show_streamlines: false,
             streamlines: None,
-            show_plume: true,
             follow_ship: true,
             show_help: false,
             slow_frame_logged_at: f64::NEG_INFINITY,
@@ -945,9 +942,6 @@ impl ViewerApp {
         }
         ui.checkbox(&mut self.show_collision_meshes, "Collision meshes")
             .on_hover_text("Orange outlines of the ship, planet and moon collision shapes");
-        ui.add_enabled_ui(!self.debug_view(), |ui| {
-            ui.checkbox(&mut self.show_plume, "Thruster plumes");
-        });
         ui.add_enabled_ui(self.debug_view(), |ui| {
             ui.checkbox(&mut self.show_velocity, "Velocity (green)");
             ui.checkbox(&mut self.show_acceleration, "Acceleration (red)");
@@ -1662,13 +1656,11 @@ impl ViewerApp {
                     self.draw_streamlines(ui, painter, rect, Some(&depth));
                 }
                 // After the ship, whose depth they are tested against.
-                if self.show_plume {
-                    let t = replay.time(k) + offset;
-                    if let Some(callback) =
-                        plume.paint(&self.camera, rect, [(replay, t)], self.circumradius, &depth)
-                    {
-                        painter.add(callback);
-                    }
+                let t = replay.time(k) + offset;
+                if let Some(callback) =
+                    plume.paint(&self.camera, rect, [(replay, t)], self.circumradius, &depth)
+                {
+                    painter.add(callback);
                 }
             }
             _ => {

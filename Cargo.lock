@@ -807,7 +807,7 @@ checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 [[package]]
 name = "ecolor"
 version = "0.37.0"
-source = "git+https://github.com/vini-fda/egui?branch=ios-paste#35182136a50ccf098f34e0ecabbf74e28a09cdfe"
+source = "git+https://github.com/vini-fda/egui?branch=ios-paste#12e22a0fd4e3586bf246122883cde31a739c47c7"
 dependencies = [
  "bytemuck",
  "emath",
@@ -816,7 +816,7 @@ dependencies = [
 [[package]]
 name = "eframe"
 version = "0.37.0"
-source = "git+https://github.com/vini-fda/egui?branch=ios-paste#35182136a50ccf098f34e0ecabbf74e28a09cdfe"
+source = "git+https://github.com/vini-fda/egui?branch=ios-paste#12e22a0fd4e3586bf246122883cde31a739c47c7"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -851,7 +851,7 @@ dependencies = [
 [[package]]
 name = "egui"
 version = "0.37.0"
-source = "git+https://github.com/vini-fda/egui?branch=ios-paste#35182136a50ccf098f34e0ecabbf74e28a09cdfe"
+source = "git+https://github.com/vini-fda/egui?branch=ios-paste#12e22a0fd4e3586bf246122883cde31a739c47c7"
 dependencies = [
  "accesskit",
  "ahash",
@@ -870,7 +870,7 @@ dependencies = [
 [[package]]
 name = "egui-wgpu"
 version = "0.37.0"
-source = "git+https://github.com/vini-fda/egui?branch=ios-paste#35182136a50ccf098f34e0ecabbf74e28a09cdfe"
+source = "git+https://github.com/vini-fda/egui?branch=ios-paste#12e22a0fd4e3586bf246122883cde31a739c47c7"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -889,7 +889,7 @@ dependencies = [
 [[package]]
 name = "egui-winit"
 version = "0.37.0"
-source = "git+https://github.com/vini-fda/egui?branch=ios-paste#35182136a50ccf098f34e0ecabbf74e28a09cdfe"
+source = "git+https://github.com/vini-fda/egui?branch=ios-paste#12e22a0fd4e3586bf246122883cde31a739c47c7"
 dependencies = [
  "arboard",
  "block2 0.6.2",
@@ -911,7 +911,7 @@ dependencies = [
 [[package]]
 name = "egui_extras"
 version = "0.37.0"
-source = "git+https://github.com/vini-fda/egui?branch=ios-paste#35182136a50ccf098f34e0ecabbf74e28a09cdfe"
+source = "git+https://github.com/vini-fda/egui?branch=ios-paste#12e22a0fd4e3586bf246122883cde31a739c47c7"
 dependencies = [
  "ahash",
  "egui",
@@ -925,7 +925,7 @@ dependencies = [
 [[package]]
 name = "egui_glow"
 version = "0.37.0"
-source = "git+https://github.com/vini-fda/egui?branch=ios-paste#35182136a50ccf098f34e0ecabbf74e28a09cdfe"
+source = "git+https://github.com/vini-fda/egui?branch=ios-paste#12e22a0fd4e3586bf246122883cde31a739c47c7"
 dependencies = [
  "bytemuck",
  "egui",
@@ -956,7 +956,7 @@ checksum = "0e9c71c2167ca323c882b99918929403426e2373ea17242ff5653e0d5e1058be"
 [[package]]
 name = "emath"
 version = "0.37.0"
-source = "git+https://github.com/vini-fda/egui?branch=ios-paste#35182136a50ccf098f34e0ecabbf74e28a09cdfe"
+source = "git+https://github.com/vini-fda/egui?branch=ios-paste#12e22a0fd4e3586bf246122883cde31a739c47c7"
 dependencies = [
  "bytemuck",
 ]
@@ -1027,7 +1027,7 @@ dependencies = [
 [[package]]
 name = "epaint"
 version = "0.37.0"
-source = "git+https://github.com/vini-fda/egui?branch=ios-paste#35182136a50ccf098f34e0ecabbf74e28a09cdfe"
+source = "git+https://github.com/vini-fda/egui?branch=ios-paste#12e22a0fd4e3586bf246122883cde31a739c47c7"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -1052,7 +1052,7 @@ dependencies = [
 [[package]]
 name = "epaint_default_fonts"
 version = "0.37.0"
-source = "git+https://github.com/vini-fda/egui?branch=ios-paste#35182136a50ccf098f34e0ecabbf74e28a09cdfe"
+source = "git+https://github.com/vini-fda/egui?branch=ios-paste#12e22a0fd4e3586bf246122883cde31a739c47c7"
 
 [[package]]
 name = "equivalent"

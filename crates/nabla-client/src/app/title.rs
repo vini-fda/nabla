@@ -107,38 +107,46 @@ impl ViewerApp {
                     COLUMN_WIDTH
                 };
             let width = (window.x * self.title_fit - margins.x).min(column);
-            let margin = (ui.available_width() - width) / 2.0;
-            ui.horizontal(|ui| {
-                ui.add_space(margin);
-                ui.vertical(|ui| {
-                    ui.set_width(width);
-                    // No wider than usual, for the guide's sake, so they stay put.
-                    let buttons = width.min(COLUMN_WIDTH);
-                    ui.horizontal(|ui| {
-                        ui.add_space((width - buttons) / 2.0);
-                        play |= self.title_buttons(ui, buttons);
-                    });
-                    ui.add_space(12.0);
-                    egui::Frame::new()
-                        .fill(palette::SURFACE0)
-                        .stroke(egui::Stroke::new(1.0, palette::BORDER))
-                        .corner_radius(10)
-                        .inner_margin(CARD_MARGIN)
-                        .show(ui, |ui| {
-                            ui.set_width(ui.available_width());
-                            match self.title_page {
-                                TitlePage::Start => self.setup_ui(ui),
-                                TitlePage::Online => self.online_page_ui(ui),
-                                TitlePage::Settings => self.settings_ui(ui),
-                                TitlePage::Help => self.help_page_ui(ui),
-                            }
+            // Centered as wide as it came out last time, which the scale makes room for.
+            let margin = ((ui.available_width() - width.max(self.title_wide)) / 2.0).max(0.0);
+            let wide = ui
+                .horizontal(|ui| {
+                    ui.add_space(margin);
+                    ui.vertical(|ui| {
+                        ui.set_width(width);
+                        // No wider than usual, for the guide's sake, so they stay put.
+                        let buttons = width.min(COLUMN_WIDTH);
+                        ui.horizontal(|ui| {
+                            ui.add_space((width - buttons) / 2.0);
+                            play |= self.title_buttons(ui, buttons);
                         });
-                });
-            });
+                        ui.add_space(12.0);
+                        egui::Frame::new()
+                            .fill(palette::SURFACE0)
+                            .stroke(egui::Stroke::new(1.0, palette::BORDER))
+                            .corner_radius(10)
+                            .inner_margin(CARD_MARGIN)
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                match self.title_page {
+                                    TitlePage::Start => self.setup_ui(ui),
+                                    TitlePage::Online => self.online_page_ui(ui),
+                                    TitlePage::Settings => self.settings_ui(ui),
+                                    TitlePage::Help => self.help_page_ui(ui),
+                                }
+                            });
+                    })
+                    .response
+                    .rect
+                    .width()
+                })
+                .inner;
             if !play {
                 let rest = ui.cursor().top() - below_title;
                 let needed = margins.y + MIN_TOP_SPACE + MIN_TITLE_SIZE * line + spacing + rest;
-                self.fit_title(ui.ctx(), rest, window.y * self.title_fit / needed);
+                let fits_down = window.y * self.title_fit / needed;
+                let fits_across = window.x * self.title_fit / (margins.x + wide);
+                self.fit_title(ui.ctx(), rest, wide, fits_down.min(fits_across));
             }
             // In the corner it has during a flight, unless a narrow window's page reaches it; the
             // banners still tell.
@@ -169,17 +177,21 @@ impl ViewerApp {
     }
 
     /// Scales the title screen for the next pass, given the height `rest` of what's below the
-    /// title and the scale `fits` at which it all just fits, without showing this pass if its
-    /// layout is out of date. The scale is on top of the player's own zoom (Cmd and +).
-    fn fit_title(&mut self, ctx: &egui::Context, rest: f32, fits: f32) {
+    /// title, the width `wide` of the column there and the scale `fits` at which it all just
+    /// fits, without showing this pass if its layout is out of date. The scale is on top of the
+    /// player's own zoom (Cmd and +).
+    fn fit_title(&mut self, ctx: &egui::Context, rest: f32, wide: f32, fits: f32) {
         let fit = self.title_fit;
         let target = if fits < fit || fits >= fit + FIT_MARGIN / FIT_STEPS {
             ((fits * FIT_STEPS).floor() / FIT_STEPS).clamp(MIN_FIT, 1.0)
         } else {
             fit
         };
-        let stale = target != fit || (rest - self.title_rest).abs() > 0.5;
+        let stale = target != fit
+            || (rest - self.title_rest).abs() > 0.5
+            || (wide - self.title_wide).abs() > 0.5;
         self.title_rest = rest;
+        self.title_wide = wide;
         if stale {
             ctx.set_zoom_factor(ctx.zoom_factor() / fit * target);
             self.title_fit = target;
@@ -595,9 +607,13 @@ mod tests {
     use super::*;
 
     /// Draws the title screen in a window of `size`, as eframe does: its size in points depends on
-    /// the zoom. Returns the bottom of what was drawn, and the window's height, both in points.
-    fn show_title(app: &mut ViewerApp, ctx: &egui::Context, size: egui::Vec2) -> (f32, f32) {
-        let mut result = (0.0, 0.0);
+    /// the zoom. Returns the bounds of what was drawn, and the window's size, both in points.
+    fn show_title(
+        app: &mut ViewerApp,
+        ctx: &egui::Context,
+        size: egui::Vec2,
+    ) -> (egui::Rect, egui::Vec2) {
+        let mut result = (egui::Rect::NOTHING, egui::Vec2::ZERO);
         // Scaling takes a few frames at most.
         for _ in 0..4 {
             let window = size / ctx.zoom_factor();
@@ -607,13 +623,13 @@ mod tests {
             };
             let mut output = ctx.run_ui(input, |ui| app.title_ui(ui));
             output.textures_delta.clear();
-            let bottom = output
+            let drawn = output
                 .shapes
                 .iter()
-                .map(|clipped| clipped.shape.visual_bounding_rect().max.y)
-                .filter(|y| y.is_finite())
-                .fold(0.0, f32::max);
-            result = (bottom, window.y);
+                .map(|clipped| clipped.shape.visual_bounding_rect())
+                .filter(|rect| rect.is_finite())
+                .fold(egui::Rect::NOTHING, |a, b| a.union(b));
+            result = (drawn, window);
         }
         result
     }
@@ -643,10 +659,18 @@ mod tests {
                 let (mut app, ctx) = title_app();
                 app.title_page = page;
                 app.help_tab = Some(tab);
-                let (bottom, window) = show_title(&mut app, &ctx, egui::vec2(width, height));
+                let (drawn, window) = show_title(&mut app, &ctx, egui::vec2(width, height));
                 assert!(
-                    bottom <= window + 0.5,
-                    "{page:?} in {width}x{height}: drawn down to {bottom}, window ends at {window}"
+                    drawn.bottom() <= window.y + 0.5,
+                    "{page:?} in {width}x{height}: drawn down to {}, window ends at {}",
+                    drawn.bottom(),
+                    window.y
+                );
+                assert!(
+                    drawn.left() >= -0.5 && drawn.right() <= window.x + 0.5,
+                    "{page:?} in {width}x{height}: drawn across {:?}, window is {} wide",
+                    drawn.x_range(),
+                    window.x
                 );
             }
         }

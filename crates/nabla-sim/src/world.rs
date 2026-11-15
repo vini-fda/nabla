@@ -27,7 +27,8 @@ fn default_body_mass() -> f64 {
 pub struct Player {
     pub state: State,
     pub task: Task,
-    /// Circular collision envelope, in world units, also used to size the ship.
+    /// The ship's size, in world units: the distance from its center to its nose, which its
+    /// collision hull (see [`crate::hull`]) scales with.
     pub radius: f32,
 }
 

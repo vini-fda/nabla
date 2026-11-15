@@ -904,7 +904,9 @@ impl ViewerApp {
                 .logarithmic(true)
                 .text("ship size (world units)"),
         )
-        .on_hover_text("Ship size and collision radius; set before starting a flight");
+        .on_hover_text(
+            "Ship size, which its collision hull scales with; set before starting a flight",
+        );
         ui.checkbox(&mut self.show_grid, "Grid");
         if self.game.world.gravity_constant > 0.0 {
             ui.checkbox(&mut self.show_field, "Gravity field")
@@ -1648,23 +1650,31 @@ impl ViewerApp {
         self.draw_orbits(painter, rect);
         self.draw_prediction(painter, rect);
         if self.show_collision_meshes {
-            // Use the same radii as the colliders, at the displayed (between-sample)
-            // position, and draw last so meshes remain visible through the 3D models.
-            let bodies = self
-                .game
-                .world
-                .bodies
-                .iter()
-                .map(|body| (egui::vec2(body.position[0], body.position[1]), body.radius));
-            let player = (world(state.x, state.y), self.game.world.players[0].radius);
-            crate::planets::draw_circles(
-                painter,
-                &self.camera,
-                rect,
-                bodies.chain([player]),
-                egui::Stroke::new(2.0, palette::PEACH),
-            );
+            self.draw_collision_meshes(painter, rect, &state);
         }
+    }
+
+    /// The colliders' own shapes, at the displayed (between-sample) position, drawn last so
+    /// meshes remain visible through the 3D models: the bodies as the balls their colliders
+    /// are, the ship as its hull, at the displayed heading.
+    fn draw_collision_meshes(&self, painter: &egui::Painter, rect: egui::Rect, state: &State) {
+        let stroke = egui::Stroke::new(2.0, palette::PEACH);
+        let bodies = self
+            .game
+            .world
+            .bodies
+            .iter()
+            .map(|body| (egui::vec2(body.position[0], body.position[1]), body.radius));
+        crate::planets::draw_circles(painter, &self.camera, rect, bodies, stroke);
+        draw_collision_hull(
+            painter,
+            &self.camera,
+            rect,
+            world(state.x, state.y),
+            state.theta as f32,
+            self.game.world.players[0].radius,
+            stroke,
+        );
     }
 
     /// The bodies' gravity field's contour lines in the 3D view, drawn after the planets and
@@ -2615,6 +2625,29 @@ fn toggled(steering: Steering) -> Steering {
 
 fn world(x: f64, y: f64) -> egui::Vec2 {
     egui::vec2(x as f32, y as f32)
+}
+
+/// The ship's own collision mesh, over the canvas among the display options' collision
+/// meshes: the collision hull shared with the physics, turned to the displayed heading
+/// `theta` and scaled to the world's hull radius `rho`.
+fn draw_collision_hull(
+    painter: &egui::Painter,
+    camera: &Camera,
+    rect: egui::Rect,
+    position: egui::Vec2,
+    theta: f32,
+    rho: f32,
+    stroke: egui::Stroke,
+) {
+    let (sin, cos) = theta.sin_cos();
+    let count = nabla_sim::hull::HULL.len();
+    let points = (0..=count).map(|i| {
+        let [x, y] = nabla_sim::hull::HULL[i % count];
+        Vec3::plane(position + egui::vec2(cos * x - sin * y, sin * x + cos * y) * rho)
+    });
+    for run in camera.project_polyline(points, rect) {
+        painter.add(egui::Shape::line(run, stroke));
+    }
 }
 
 /// The polyline through world points `points` on screen, as the runs of it in front of the

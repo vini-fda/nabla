@@ -1033,6 +1033,56 @@ mod tests {
         assert_eq!(model.base_color.pixels.len(), 2048 * 2048 * 4);
     }
 
+    /// Every point where an edge of the mesh crosses the plane of the ship's trajectory
+    /// (`z = 0`, where `MODEL_AXIS_HEIGHT` moves the hull's axis), in the ship's own frame
+    /// used by `nabla_sim`'s hull (nose along +x, `half_length` 1).
+    fn trajectory_slice(model: &ShipModel) -> Vec<[f32; 2]> {
+        let positions: Vec<[f32; 3]> = model
+            .vertices
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|v| [v[0], v[1], v[2]])
+            .collect();
+        let mut slice = Vec::new();
+        for &[a, b, c] in model.indices.as_chunks::<3>().0 {
+            for (i, j) in [(a, b), (b, c), (c, a)] {
+                let ([px, py, za], [qx, qy, zb]) = (positions[i as usize], positions[j as usize]);
+                if (za <= 0.0 && zb > 0.0) || (zb <= 0.0 && za > 0.0) {
+                    let t = za / (za - zb);
+                    let [sx, sy] = [px + t * (qx - px), py + t * (qy - py)];
+                    slice.push([sy / model.half_length, -sx / model.half_length]);
+                }
+            }
+        }
+        slice
+    }
+
+    /// The collision hull of `nabla_sim` still matches this model: it contains every point
+    /// of the model's slice at the plane of the trajectory, tight around it, so a replaced
+    /// model cannot quietly depart from the collider.
+    #[test]
+    fn the_collision_hull_is_this_models_slice() {
+        let model = ShipModel::load(SHIP_GLB).expect("the embedded model loads");
+        let slice = trajectory_slice(&model);
+        let hull: &[[f32; 2]] = &nabla_sim::hull::HULL;
+        for &p in &slice {
+            let inside = hull.iter().enumerate().all(|(i, &[x, y])| {
+                let [qx, qy] = hull[(i + 1) % hull.len()];
+                (qx - x) * (p[1] - y) - (qy - y) * (p[0] - x) >= -1e-3
+            });
+            assert!(inside, "the hull contains the slice at {p:?}");
+        }
+        for &p in hull {
+            let [x, y] = p;
+            let nearest = slice
+                .iter()
+                .map(|&q| (q[0] - x).hypot(q[1] - y))
+                .fold(f32::INFINITY, f32::min);
+            assert!(nearest < 1e-3, "the hull's every point is on the slice");
+        }
+    }
+
     /// The three reaction control pods at the corners of the tail, 120 degrees apart round
     /// the axis, stick out equally far from it: the model is centered on its axis.
     #[test]

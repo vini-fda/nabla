@@ -947,18 +947,30 @@ mod tests {
             vx: 100.0,
             ..State::default()
         };
+        let body = world.bodies[0].position;
         let mut game = Game::in_world(world.case(), world.clone());
         let (lo, hi) = game.view_bounds();
         assert!(
             lo[1] <= -19.0 && hi[0] >= 14.5,
             "initial view includes planet and moon"
         );
+        // The crash's claims: the hull reaches the planet's surface (a center distance of
+        // ~7.1), and no sample of the flight, crashed and scraping as it tumbles, sinks
+        // into it.
+        let mut closest = f64::INFINITY;
         for _ in 0..30 {
             game.advance(0.017, Input::default(), Steering::Raw);
+            let s = game.state();
+            closest = closest.min((s.x - f64::from(body[0])).hypot(s.y - f64::from(body[1])));
         }
         assert!(
-            game.state().x <= -7.95,
-            "visible ship does not pass into the planet"
+            closest < 7.4 && closest > 6.99,
+            "the hull scrapes the surface without passing into the planet: {closest}"
+        );
+        assert!(
+            game.state().vx.hypot(game.state().vy) < 100.0,
+            "the crash bleeds the incoming speed: {:?}",
+            game.state()
         );
         let saved = World::from_toml(&game.save().to_toml().expect("save")).expect("load");
         assert_eq!(
@@ -984,17 +996,22 @@ mod tests {
         resumed.advance(0.1, Input::default(), Steering::Raw);
         assert_eq!(resumed.save(), saved, "pause leaves save state unchanged");
         resumed.paused = false;
-        resumed.advance(
-            0.1,
-            Input {
-                thrust: 1.0,
-                ..Input::default()
-            },
-            Steering::Raw,
-        );
+        let mut closest = f64::INFINITY;
+        for _ in 0..10 {
+            resumed.advance(
+                0.017,
+                Input {
+                    thrust: 1.0,
+                    ..Input::default()
+                },
+                Steering::Raw,
+            );
+            let s = resumed.state();
+            closest = closest.min((s.x - f64::from(body[0])).hypot(s.y - f64::from(body[1])));
+        }
         assert!(
-            resumed.state().x <= -7.95,
-            "rebuilt colliders stop thrust into the planet"
+            closest > 6.99,
+            "rebuilt colliders stop thrust into the planet: {closest}"
         );
         let restarted = Game::in_world(world.case(), world.clone());
         assert_eq!(

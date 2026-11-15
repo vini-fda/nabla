@@ -100,7 +100,7 @@ pub enum Outcome {
 impl Outcome {
     pub fn steps(&self) -> Option<usize> {
         match self {
-            Outcome::Reached(n) => Some(*n),
+            Self::Reached(n) => Some(*n),
             _ => None,
         }
     }

@@ -33,7 +33,7 @@ pub const NOMINAL: Params = Params {
 
 fn case(name: &str, params: Params, goal: (f64, f64), start: State) -> Case {
     Case {
-        name: name.to_string(),
+        name: name.to_owned(),
         task: Task {
             params,
             goal: Goal {
@@ -162,7 +162,7 @@ fn hand_picked() -> Vec<Case> {
     ]
 }
 
-/// SplitMix64: a small, portable, seeded generator.
+/// `SplitMix64`: a small, portable, seeded generator.
 struct Rng(u64);
 
 impl Rng {
@@ -181,9 +181,10 @@ impl Rng {
     }
 }
 
-/// Random cases: varied ships, goals within 20 of the origin, starts within 30 of the goal,
-/// speeds up to 5, any heading and angular speeds up to 3. Useful for stress-testing a solution
-/// beyond the two suites.
+/// Random cases, for stress-testing a solution beyond the two suites.
+///
+/// They have varied ships, goals within 20 of the origin, starts within 30 of the goal, speeds
+/// up to 5, any heading and angular speeds up to 3.
 pub fn random(prefix: &str, seed: u64, count: usize) -> Vec<Case> {
     let mut rng = Rng(seed);
     (0..count)

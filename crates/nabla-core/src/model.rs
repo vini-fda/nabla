@@ -68,7 +68,7 @@ impl Control {
 }
 
 /// 8-point Gauss–Legendre nodes on `[-1, 1]` (standard published digits).
-#[allow(clippy::excessive_precision)]
+#[expect(clippy::excessive_precision)]
 const GL_NODES: [f64; 8] = [
     -0.960_289_856_497_536_3,
     -0.796_666_477_413_626_7,
@@ -81,7 +81,7 @@ const GL_NODES: [f64; 8] = [
 ];
 
 /// 8-point Gauss–Legendre weights, matching `GL_NODES`.
-#[allow(clippy::excessive_precision)]
+#[expect(clippy::excessive_precision)]
 const GL_WEIGHTS: [f64; 8] = [
     0.101_228_536_290_376_3,
     0.222_381_034_453_374_5,
@@ -106,9 +106,10 @@ pub fn step(p: &Params, s: &State, u: &Control) -> State {
     flow(p, s, u, p.h)
 }
 
-/// The state `duration` seconds on under the constant control `u`, for any `duration >= 0`: the
-/// exact flow that [`step`] follows for one sampling period, and that shows the ship between
-/// samples. It reads no `p.h`, and does not check admissibility.
+/// The state `duration` seconds on under the constant control `u`, for any `duration >= 0`.
+///
+/// This is the exact flow that [`step`] follows for one sampling period, and that shows the ship
+/// between samples. It reads no `p.h`, and does not check admissibility.
 pub fn flow(p: &Params, s: &State, u: &Control, duration: f64) -> State {
     let alpha = u.torque / p.inertia;
     let theta = s.theta + duration * s.omega + 0.5 * alpha * duration * duration;

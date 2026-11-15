@@ -72,7 +72,7 @@ const RELATIVE_DEADBAND: f64 = 1.1397686269921878;
 const MIN_AVAILABLE: f64 = 0.2;
 
 /// Gauss–Legendre nodes and weights on `[-1, 1]`, as in `src/model.rs`.
-#[allow(clippy::excessive_precision)]
+#[expect(clippy::excessive_precision)]
 const GL_NODES: [f64; 8] = [
     -0.960_289_856_497_536_3,
     -0.796_666_477_413_626_7,
@@ -83,7 +83,7 @@ const GL_NODES: [f64; 8] = [
     0.796_666_477_413_626_7,
     0.960_289_856_497_536_3,
 ];
-#[allow(clippy::excessive_precision)]
+#[expect(clippy::excessive_precision)]
 const GL_WEIGHTS: [f64; 8] = [
     0.101_228_536_290_376_3,
     0.222_381_034_453_374_5,
@@ -97,7 +97,7 @@ const GL_WEIGHTS: [f64; 8] = [
 
 /// `√(x² + y²)`, without libm's `hypot`.
 fn norm(x: f64, y: f64) -> f64 {
-    (x * x + y * y).sqrt()
+    x.hypot(y)
 }
 
 /// `x` rounded to 32 significant bits, so that states that differ only in their last bits (as
@@ -319,7 +319,7 @@ struct Track {
 
 impl Track {
     fn new(cap: usize) -> Self {
-        Track {
+        Self {
             u: vec![Control::default(); cap],
             s: vec![State::default(); cap + 1],
             sens: vec![[[0.0; 4]; 4]; cap],
@@ -338,7 +338,7 @@ struct Law {
 impl Law {
     fn new(task: &Task) -> Self {
         let p = &task.params;
-        Law {
+        Self {
             task: *task,
             accel: p.f_max / p.mass,
             alpha: p.tau_max / p.inertia,
@@ -513,6 +513,38 @@ impl Solution {
         outcome
     }
 
+    /// Fill `jac` with the Jacobian columns of the residual of `cand` over `n` steps, in scaled
+    /// controls, by a backward pass.
+    fn linearize(&mut self, n: usize) {
+        let p = self.task.params;
+        let (h, scale) = (p.h, [p.f_max, p.tau_max]);
+        let (b4, b5) = (0.5 * h * h / p.inertia, h / p.inertia);
+        let (_, mut lam) = residual(&self.task, &self.cand.s[n]);
+        for k in (0..n).rev() {
+            let sn = &self.cand.sens[k];
+            for (i, l) in lam.iter().enumerate() {
+                let gf = l[0] * sn[0][2] + l[1] * sn[1][2] + l[2] * sn[2][2] + l[3] * sn[3][2];
+                let gt = l[0] * sn[0][3]
+                    + l[1] * sn[1][3]
+                    + l[2] * sn[2][3]
+                    + l[3] * sn[3][3]
+                    + l[4] * b4
+                    + l[5] * b5;
+                self.jac[k][0][i] = gf * scale[0];
+                self.jac[k][1][i] = gt * scale[1];
+            }
+            // λ ← λ A.
+            for row in &mut lam {
+                let [l0, l1, l2, l3, l4, l5] = *row;
+                row[2] = l2 + h * l0;
+                row[3] = l3 + h * l1;
+                row[4] = l4 + l0 * sn[0][0] + l1 * sn[1][0] + l2 * sn[2][0] + l3 * sn[3][0];
+                row[5] =
+                    l5 + h * l4 + l0 * sn[0][1] + l1 * sn[1][1] + l2 * sn[2][1] + l3 * sn[3][1];
+            }
+        }
+    }
+
     /// Correct `cand` over `n` steps from the model state `s0` by projected Gauss–Newton, as far
     /// as this sample's work goes. The first control stays fixed if `fix_first`. The caller makes
     /// sure the work left pays for the first prediction.
@@ -524,8 +556,7 @@ impl Solution {
         };
         let mut merit = norm2(&r);
         let scale = [p.f_max, p.tau_max];
-        let (h, first) = (p.h, fix_first as usize);
-        let (b4, b5) = (0.5 * h * h / p.inertia, h / p.inertia);
+        let first = fix_first as usize;
         loop {
             // An iteration: the linearization, charged as a rollout, and at least one trial.
             if self.work_left < 2 * n {
@@ -536,31 +567,7 @@ impl Solution {
             }
             self.iters += 1;
             self.spend(n);
-            // Backward pass: Jacobian columns of the residual, in scaled controls.
-            let (_, mut lam) = residual(&self.task, &self.cand.s[n]);
-            for k in (0..n).rev() {
-                let sn = &self.cand.sens[k];
-                for (i, l) in lam.iter().enumerate() {
-                    let gf = l[0] * sn[0][2] + l[1] * sn[1][2] + l[2] * sn[2][2] + l[3] * sn[3][2];
-                    let gt = l[0] * sn[0][3]
-                        + l[1] * sn[1][3]
-                        + l[2] * sn[2][3]
-                        + l[3] * sn[3][3]
-                        + l[4] * b4
-                        + l[5] * b5;
-                    self.jac[k][0][i] = gf * scale[0];
-                    self.jac[k][1][i] = gt * scale[1];
-                }
-                // λ ← λ A.
-                for row in lam.iter_mut() {
-                    let [l0, l1, l2, l3, l4, l5] = *row;
-                    row[2] = l2 + h * l0;
-                    row[3] = l3 + h * l1;
-                    row[4] = l4 + l0 * sn[0][0] + l1 * sn[1][0] + l2 * sn[2][0] + l3 * sn[3][0];
-                    row[5] =
-                        l5 + h * l4 + l0 * sn[0][1] + l1 * sn[1][1] + l2 * sn[2][1] + l3 * sn[3][1];
-                }
-            }
+            self.linearize(n);
 
             // Free set: controls not at a bound, or at one with the unconstrained step pointing
             // inward. `y` solves (J_f J_fᵀ + λ) y = r over the free set; the step is −J_fᵀ y.
@@ -764,7 +771,7 @@ impl Solution {
 impl Controller for Solution {
     fn new(task: &Task) -> Self {
         let cap = task.max_steps.min(HORIZON);
-        Solution {
+        Self {
             task: *task,
             law: Law::new(task),
             plan: vec![Control::default(); cap],

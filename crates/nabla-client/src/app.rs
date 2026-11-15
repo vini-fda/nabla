@@ -360,7 +360,7 @@ impl Default for ViewerApp {
             prediction: orbits::Forecast::default(),
             show_collision_meshes: false,
             show_grid: true,
-            show_field: true,
+            show_field: false,
             field_line_width: 0.5,
             field_contours: None,
             show_plume: true,

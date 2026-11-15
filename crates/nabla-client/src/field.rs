@@ -5,9 +5,9 @@
 //! - crisp equipotential contour lines, extracted in world space by marching squares and
 //!   chained into polylines: per-pixel bands alias where the field changes within one
 //!   pixel (near a body, zoomed out), while world-space lines stay sub-cell accurate at any
-//!   zoom. In the flat 2D view they are drawn as plain egui strokes; in the 3D view, by a
-//!   wgpu pass that tests them against the depth of the planets and ships drawn before
-//!   them, so what stands in front of the plane hides them.
+//!   zoom. In the flat 2D view they are drawn as plain egui strokes; in the 3D view, as
+//!   the same stroke by a wgpu pass that tests them against the depth of the planets and
+//!   ships drawn before them, so what stands in front of the plane hides them.
 //!
 //! Both use the potential whose negative gradient is the simulation's acceleration
 //! (`nabla_sim::physics::gravity_acceleration`): `-G M / r` outside a body, and the uniform
@@ -33,8 +33,8 @@ pub const LEVEL_BASE: f64 = std::f64::consts::SQRT_2;
 
 /// How squarely the plane must face the viewer for the field to be drawn at all, and at full
 /// strength, as for the grid. Below it the plane is edge on and the field unreadable.
-const MIN_FACING: f32 = 0.05;
-const FULL_FACING: f32 = 0.30;
+pub(crate) const MIN_FACING: f32 = 0.05;
+pub(crate) const FULL_FACING: f32 = 0.30;
 
 /// How many cells span the view's longer side, roughly, and the bounds on the grid's side.
 const TARGET_CELLS: f64 = 256.0;
@@ -390,9 +390,9 @@ impl LinesResources {
     }
 }
 
-/// The lines pass's pipeline: like the bands', but each vertex one corner of a segment's
-/// screen-space quad (in device pixels, with the plane's depth), from which the fragment
-/// shader distances itself from the segment.
+/// The lines pass's pipeline: like the bands', but each vertex one of a ribbon's
+/// (`crate::ribbon`), in device pixels with the plane's depth, carrying its distance across
+/// the ribbon, which the fragment shader fences itself in by.
 fn lines_pipeline(
     device: &wgpu::Device,
     shader: &wgpu::ShaderModule,
@@ -415,9 +415,9 @@ fn lines_pipeline(
             entry_point: Some("lines_vs"),
             compilation_options: Default::default(),
             buffers: &[Some(wgpu::VertexBufferLayout {
-                array_stride: 28,
+                array_stride: LINE_VERTEX_BYTES,
                 step_mode: wgpu::VertexStepMode::Vertex,
-                attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32x2],
+                attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32],
             })],
         },
         primitive: wgpu::PrimitiveState::default(),
@@ -434,10 +434,11 @@ fn lines_pipeline(
         },
         fragment: Some(wgpu::FragmentState {
             module: shader,
+            // As egui's own shader picks its output, and the bands' above.
             entry_point: Some(if render.target_format.is_srgb() {
-                "lines_fs_gamma_framebuffer"
-            } else {
                 "lines_fs_linear_framebuffer"
+            } else {
+                "lines_fs_gamma_framebuffer"
             }),
             compilation_options: Default::default(),
             targets: &[Some(wgpu::ColorTargetState {
@@ -462,9 +463,13 @@ fn lines_pipeline(
     })
 }
 
-/// The paint callback of one frame's contour lines in the 3D view: the quads of the chains'
-/// segments in the canvas's device pixels, each vertex also carrying the segment's endpoints
-/// for the fragment distance fence and the depth the plane lies at there.
+/// Floats and bytes per vertex of the lines pass: `LinesVertexIn` of `field.wgsl`.
+const LINE_VERTEX_FLOATS: usize = 4;
+const LINE_VERTEX_BYTES: u64 = 4 * LINE_VERTEX_FLOATS as u64;
+
+/// The paint callback of one frame's contour lines in the 3D view: the chains' ribbons in the
+/// canvas's device pixels, each vertex with the depth the plane lies at there and its
+/// distance across the ribbon, for the fragment distance fence.
 struct LinesCallback {
     uniforms: Vec<u8>,
     vertices: Vec<f32>,
@@ -482,7 +487,7 @@ impl CallbackTrait for LinesCallback {
         if let Some(res) = resources.get_mut::<LinesResources>() {
             queue.write_buffer(&res.uniforms, 0, &self.uniforms);
             let bytes = to_bytes(&self.vertices);
-            res.count = (bytes.len() / 28) as u32;
+            res.count = (bytes.len() as u64 / LINE_VERTEX_BYTES) as u32;
             res.bound = bytes.len() as u64;
             if res.bound > res.capacity {
                 res.capacity = res.bound.next_power_of_two();
@@ -513,11 +518,37 @@ impl CallbackTrait for LinesCallback {
     }
 }
 
+/// The contour lines' stroke in either view, `width` points thick, fading out as the view
+/// turns edge on to the plane; `None` once it has.
+fn stroke(camera: &Camera, width: f32, visuals: &egui::Visuals) -> Option<Stroke> {
+    let facing = camera.orbit.toward_viewer().z.abs();
+    if facing < MIN_FACING {
+        return None;
+    }
+    let fade = ((facing - MIN_FACING) / (FULL_FACING - MIN_FACING)).min(1.0);
+    Some(Stroke::new(
+        width,
+        visuals.text_color().gamma_multiply(0.4 * fade),
+    ))
+}
+
+/// A chain's points, and whether it is a ring: one that closes back on its first point, which
+/// is then left off its end.
+fn ring(chain: &[[f32; 2]]) -> (bool, &[[f32; 2]]) {
+    match (chain.first(), chain.last()) {
+        (Some(first), Some(last)) if chain.len() > 2 && first == last => {
+            (true, &chain[..chain.len() - 1])
+        }
+        _ => (false, chain),
+    }
+}
+
 /// The contour lines on the canvas in the 3D view, from `cache` (`contours`, warmed by the
 /// caller) as a paint callback to add after the planets and ships: drawn over the bands,
-/// with analytic anti-aliasing, depth-tested against the 3D content through the scene's own
-/// `depth` map, so what stands in front of the plane hides them; `width` points thick. The
-/// callback is recreated every frame, as the view's device pixels move.
+/// depth-tested against the 3D content through the scene's own `depth` map, so what stands
+/// in front of the plane hides them. They are the stroke `draw_contours` gives egui in the
+/// flat view, the same color and `width` points thick, with the same pixel of anti-aliasing.
+/// The callback is recreated every frame, as the view's device pixels move.
 pub fn paint_lines(
     camera: &Camera,
     rect: Rect,
@@ -527,44 +558,82 @@ pub fn paint_lines(
     pixels_per_point: f32,
     visuals: &egui::Visuals,
 ) -> Option<egui::PaintCallback> {
-    let facing = camera.orbit.toward_viewer().z.abs();
-    if facing < MIN_FACING {
-        return None;
-    }
-    let fade = ((facing - MIN_FACING) / (FULL_FACING - MIN_FACING)).min(1.0);
-    let color = visuals.text_color().gamma_multiply(0.4 * fade);
-    let half = 0.5 * width * pixels_per_point;
-    // One device pixel of feathering, about as egui feathers its lines.
-    let feather = pixels_per_point;
-    let on_screen = rect.expand(width + 8.0);
+    let stroke = stroke(camera, width, visuals)?;
+    let (vertices, uniforms) = line_vertices(
+        camera,
+        rect,
+        cache.as_ref()?,
+        stroke,
+        depth,
+        pixels_per_point,
+    )?;
+    Some(egui_wgpu::Callback::new_paint_callback(
+        rect,
+        LinesCallback {
+            uniforms: to_bytes(&uniforms),
+            vertices,
+        },
+    ))
+}
+
+/// What `paint_lines` draws: the vertices of the chains' ribbons, and the floats of the
+/// shader's uniforms. Each vertex is its place in the canvas's device pixels, the depth the
+/// plane lies at there, and its distance across the ribbon.
+fn line_vertices(
+    camera: &Camera,
+    rect: Rect,
+    contours: &Contours,
+    stroke: Stroke,
+    depth: &DepthMap,
+    pixels_per_point: f32,
+) -> Option<(Vec<f32>, [f32; 8])> {
+    // In device pixels: half the stroke, and one pixel of feathering centered on its edge,
+    // as egui feathers its own strokes. The ribbon covers both.
+    let half = 0.5 * stroke.width * pixels_per_point;
+    let feather = 1.0;
+    let reach = half + 0.5 * feather;
+    let on_screen = rect.expand(stroke.width + 8.0);
     let mut vertices: Vec<f32> = Vec::new();
-    let cache = cache.as_ref()?;
-    for chain in &cache.chains {
-        let points = chain.iter().map(|p| Vec3::plane(Vec2::from(*p)));
-        for run in camera.project_polyline_with_world(points, rect) {
+    for chain in &contours.chains {
+        let (closed, points) = ring(chain);
+        let count = points.len();
+        let points = points.iter().map(|p| Vec3::plane(Vec2::from(*p)));
+        let runs = camera.project_polyline_with_world(points, rect);
+        // A ring is still one when the near plane has cut nothing from it.
+        let closed = closed && runs.len() == 1 && runs[0].len() == count;
+        for run in runs {
             if run.len() < 2 || !run.iter().any(|(_, p)| on_screen.contains(*p)) {
                 continue;
             }
-            for pair in run.windows(2) {
-                let ((world_a, screen_a), (world_b, screen_b)) = (pair[0], pair[1]);
-                if !on_screen.contains(screen_a) && !on_screen.contains(screen_b) {
+            // From the canvas rect's corner, in device pixels like the shader wants, with
+            // each point's depth and whether it is in sight.
+            let points = crate::ribbon::distinct(
+                run.iter().map(|&(world, screen)| {
+                    (
+                        (screen - rect.min) * pixels_per_point,
+                        (depth.depth(world, 0.0), on_screen.contains(screen)),
+                    )
+                }),
+                closed,
+            );
+            let places: Vec<Vec2> = points.iter().map(|(p, _)| *p).collect();
+            let offsets = crate::ribbon::offsets(&places, reach, closed);
+            for (i, j) in crate::ribbon::segments(points.len(), closed) {
+                let ((a, (depth_a, seen_a)), (b, (depth_b, seen_b))) = (points[i], points[j]);
+                if !seen_a && !seen_b {
                     continue;
                 }
-                // From the canvas rect's corner, in device pixels like the shader wants.
-                let a = Vec2::new(
-                    (screen_a.x - rect.left()) * pixels_per_point,
-                    (screen_a.y - rect.top()) * pixels_per_point,
-                );
-                let b = Vec2::new(
-                    (screen_b.x - rect.left()) * pixels_per_point,
-                    (screen_b.y - rect.top()) * pixels_per_point,
-                );
-                if (b - a).length() < 1e-6 {
-                    continue;
-                }
-                let (depth_a, depth_b) = (depth.depth(world_a, 0.0), depth.depth(world_b, 0.0));
-                for vertex in quad(a, b, half, feather, depth_a, depth_b) {
-                    vertices.extend(vertex);
+                let (a_plus, a_minus) = (a + offsets[i], a - offsets[i]);
+                let (b_plus, b_minus) = (b + offsets[j], b - offsets[j]);
+                for (at, depth, across) in [
+                    (a_plus, depth_a, reach),
+                    (a_minus, depth_a, -reach),
+                    (b_minus, depth_b, -reach),
+                    (a_plus, depth_a, reach),
+                    (b_minus, depth_b, -reach),
+                    (b_plus, depth_b, reach),
+                ] {
+                    vertices.extend([at.x, at.y, depth, across]);
                 }
             }
         }
@@ -572,51 +641,27 @@ pub fn paint_lines(
     if vertices.is_empty() {
         return None;
     }
-    let mut uniforms = to_bytes(&[
+    // The color as the shader and egui's own have it: gamma channels from 0 to 1,
+    // premultiplied by their alpha.
+    let [r, g, b, a] = stroke.color.to_normalized_gamma_f32();
+    let uniforms = [
         rect.width() * pixels_per_point,
         rect.height() * pixels_per_point,
         half,
         feather,
-    ]);
-    let [r, g, bl, alpha] = color.to_array();
-    uniforms.extend(to_bytes(&[
-        f32::from(r),
-        f32::from(g),
-        f32::from(bl),
-        f32::from(alpha),
-    ]));
-    Some(egui_wgpu::Callback::new_paint_callback(
-        rect,
-        LinesCallback { uniforms, vertices },
-    ))
-}
-
-/// The six vertices of the segment `a`-`b`'s quad, in the viewport's device pixels: its ends
-/// extended by the cap, its sides by the feather, so every fragment whose distance fence is
-/// not yet zero is covered. Each vertex also carries the segment's endpoints, for that
-/// fence, and the depth of the end it sits at.
-fn quad(a: Vec2, b: Vec2, half: f32, feather: f32, depth_a: f32, depth_b: f32) -> [[f32; 7]; 6] {
-    let length = (b - a).length();
-    let dir = (b - a) / length;
-    let normal = Vec2::new(-dir.y, dir.x);
-    let reach = half + feather;
-    let (cap_a, cap_b) = (a - dir * reach, b + dir * reach);
-    let corner = |p: Vec2, d: f32| [p.x, p.y, d, a.x, a.y, b.x, b.y];
-    [
-        corner(cap_a - normal * reach, depth_a),
-        corner(cap_b - normal * reach, depth_b),
-        corner(cap_b + normal * reach, depth_b),
-        corner(cap_a - normal * reach, depth_a),
-        corner(cap_b + normal * reach, depth_b),
-        corner(cap_a + normal * reach, depth_a),
-    ]
+        r,
+        g,
+        b,
+        a,
+    ];
+    Some((vertices, uniforms))
 }
 
 // ---------------------------------------------------------------------------------------------
 // The contour lines: marching squares over the potential on a world-space grid.
 
 /// The gravitational potential at `p`, matching the simulation's acceleration field.
-fn potential(gravity: f64, bodies: &[CelestialBody], p: [f64; 2]) -> f64 {
+pub(crate) fn potential(gravity: f64, bodies: &[CelestialBody], p: [f64; 2]) -> f64 {
     let mut phi = 0.0;
     for body in bodies {
         let d = [
@@ -638,7 +683,7 @@ fn potential(gravity: f64, bodies: &[CelestialBody], p: [f64; 2]) -> f64 {
 /// The part of the plane `z = 0` to cover, as a square's `(min, max)` corners, padded: in
 /// orthographic, what is on screen; in perspective, a square around the view's focus, as the
 /// plane's far side may be beyond the horizon. `None` when the view is edge on.
-fn region(camera: &Camera, rect: Rect) -> Option<([f64; 2], [f64; 2])> {
+pub(crate) fn region(camera: &Camera, rect: Rect) -> Option<([f64; 2], [f64; 2])> {
     if camera.eye_distance(rect).is_none() {
         let corners = [
             rect.left_top(),
@@ -1012,26 +1057,18 @@ pub fn draw_contours(
     cache: &mut Option<Contours>,
     visuals: &egui::Visuals,
 ) {
-    let facing = camera.orbit.toward_viewer().z.abs();
-    if facing < MIN_FACING {
+    let Some(stroke) = stroke(camera, width, visuals) else {
         return;
-    }
-    let fade = ((facing - MIN_FACING) / (FULL_FACING - MIN_FACING)).min(1.0);
-    let stroke = Stroke::new(width, visuals.text_color().gamma_multiply(0.4 * fade));
+    };
     let on_screen = rect.expand(width + 8.0);
     let chains = contours(camera, rect, &world.bodies, world.gravity_constant, cache);
     for chain in chains {
-        // A chain that closes back on its first point is a ring; a chain clipped apart by
-        // the near plane in perspective comes out open, chain by run.
-        let (closed, points) = match (chain.first(), chain.last()) {
-            (Some(&first), Some(&last)) if chain.len() > 2 && first == last => {
-                (true, &chain[..chain.len() - 1])
-            }
-            _ => (false, &chain[..]),
-        };
+        // A ring the near plane cuts in perspective comes out open, run by run.
+        let (closed, points) = ring(chain);
         let points: Vec<Vec3> = points.iter().map(|p| Vec3::plane(Vec2::from(*p))).collect();
+        let count = points.len();
         let runs = camera.project_polyline(points, rect);
-        let close_runs = closed && runs.len() == 1;
+        let close_runs = closed && runs.len() == 1 && runs[0].len() == count;
         for run in runs {
             if run.len() < 2 || !run.iter().any(|p| on_screen.contains(*p)) {
                 continue;
@@ -1210,6 +1247,86 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn the_3d_views_lines_are_the_flat_views_stroke() {
+        let bodies = [body(0.0, 0.0, 2.0, 8.0)];
+        let rect = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
+        let camera = Camera {
+            scale: 20.0,
+            ..Camera::default()
+        };
+        let mut cache = None;
+        contours(&camera, rect, &bodies, 1.0, &mut cache);
+        let contours = cache.as_ref().expect("warmed");
+        let visuals = egui::Visuals::dark();
+        let depth = DepthMap::for_camera(&camera, rect, 100.0);
+        let stroke = stroke(&camera, 1.5, &visuals).expect("facing the plane");
+        let (vertices, uniforms) =
+            line_vertices(&camera, rect, contours, stroke, &depth, 2.0).expect("lines");
+        // The shader's color is egui's: channels from 0 to 1, premultiplied, so the lines
+        // are as translucent as the stroke, not opaque white.
+        let [r, g, b, a] = stroke.color.to_array().map(|c| f32::from(c) / 255.0);
+        assert_eq!(uniforms[4..], [r, g, b, a]);
+        assert!(a > 0.0 && a < 0.5 && r <= a && g <= a && b <= a);
+        // Half the stroke's width in device pixels, and a pixel of feathering.
+        assert_eq!(uniforms[..4], [1600.0, 1200.0, 1.5, 1.0]);
+        // Every vertex is the ribbon's reach across: the half width and half the feather.
+        let vertices = vertices.as_chunks::<LINE_VERTEX_FLOATS>().0;
+        assert!(vertices.len() > 600 && vertices.len().is_multiple_of(6));
+        assert!(vertices.iter().all(|v| v[3].abs() == 2.0));
+        // Consecutive segments' quads share their vertices where they join, so no pixel
+        // of a line is blended twice: the second triangle's last vertex, and the first
+        // triangle's last, are the next quad's first two.
+        let place = |v: &[f32; LINE_VERTEX_FLOATS]| [v[0], v[1]];
+        let joined = vertices
+            .chunks(6)
+            .zip(vertices.chunks(6).skip(1))
+            .filter(|(quad, next)| {
+                place(&quad[5]) == place(&next[0]) && place(&quad[2]) == place(&next[1])
+            })
+            .count();
+        // All but where one ring's quads end and the next ring's begin.
+        let rings = contours.chains.len();
+        assert!(
+            joined + rings >= vertices.len() / 6,
+            "{joined} joins among {} quads of {rings} rings",
+            vertices.len() / 6
+        );
+    }
+
+    #[test]
+    fn a_ring_closes_on_itself() {
+        // The ring's last quad ends where its first began.
+        let ring_chain = vec![[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0], [0.0, 0.0]];
+        assert_eq!(ring(&ring_chain), (true, &ring_chain[..4]));
+        let open = vec![[0.0, 0.0], [4.0, 0.0], [4.0, 4.0]];
+        assert_eq!(ring(&open), (false, &open[..]));
+        let rect = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
+        let camera = Camera {
+            scale: 20.0,
+            ..Camera::default()
+        };
+        let contours = Contours {
+            chains: vec![ring_chain],
+            bodies: Vec::new(),
+            gravity: 1.0,
+            center: camera.center,
+            scale: camera.scale,
+            orbit: camera.orbit,
+            rect,
+            cell: 1.0,
+        };
+        let depth = DepthMap::for_camera(&camera, rect, 100.0);
+        let stroke = Stroke::new(2.0, egui::Color32::WHITE);
+        let (vertices, _) =
+            line_vertices(&camera, rect, &contours, stroke, &depth, 1.0).expect("lines");
+        let vertices = vertices.as_chunks::<LINE_VERTEX_FLOATS>().0;
+        // Four sides, four quads, the last back to the first.
+        assert_eq!(vertices.len(), 24);
+        assert_eq!(vertices[23][..2], vertices[0][..2]);
+        assert_eq!(vertices[20][..2], vertices[1][..2]);
     }
 
     #[test]

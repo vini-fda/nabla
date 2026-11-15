@@ -1,5 +1,5 @@
 //! Sixteen bots against a server over loopback, through a proxy that impairs the path, and what
-//! to expect of them (`docs/multiplayer.typ`, M4).
+//! to expect of them (`specs/multiplayer.typ`, M4).
 
 use std::net::SocketAddr;
 use std::time::Duration;

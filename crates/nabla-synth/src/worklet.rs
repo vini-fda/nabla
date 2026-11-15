@@ -7,7 +7,7 @@
 //! address passed out is the output's. Natively they are ordinary functions, for the tests.
 //!
 //! [`synth_set`] and [`synth_render`] are the actions `Receive` and `Render` of the
-//! specification in `docs/audio_worklet.typ`. When no message has come for [`QUIET_SECONDS`]
+//! specification in `specs/audio_worklet.typ`. When no message has come for [`QUIET_SECONDS`]
 //! (the page's main thread stopped drawing frames: a hidden tab, a minimized window), the
 //! thrusters go quiet. A slow frame, however slow, does not interrupt the sound.
 //!

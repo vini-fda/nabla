@@ -1,7 +1,7 @@
 name: Release
 
 # Publishes a GitHub Release with native builds of the app and the multiplayer server for every
-# version tag `vX.Y.Z`. To release, merge a version bump (see README.md): tag.yml then tags it and
+# version tag `vX.Y.Z`. To release, merge a version bump (see docs/releasing.md): tag.yml then tags it and
 # starts this workflow on the tag.
 on:
   push:
@@ -180,7 +180,7 @@ jobs:
           if-no-files-found: error
 
   # Developer ID signing and notarization of the macOS build, when the `release` environment
-  # has the secrets (see README.md). The environment only deploys version tags, and this job runs
+  # has the secrets (see docs/releasing.md). The environment only deploys version tags, and this job runs
   # no repository code: it checks nothing out, builds nothing, and uses only actions/*.
   # Without the secrets, the ad-hoc build ships as is and Gatekeeper blocks its first launch.
   sign-macos:

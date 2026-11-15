@@ -1,7 +1,7 @@
 name: Tag release
 
 # Merging a version bump publishes it: this tags the new version and starts release.yml on the
-# tag. A push that changes Cargo.toml but not the version does nothing. See README.md.
+# tag. A push that changes Cargo.toml but not the version does nothing. See docs/releasing.md.
 on:
   push:
     branches: [main]

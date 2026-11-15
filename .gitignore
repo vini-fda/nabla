@@ -2,6 +2,6 @@
 .DS_Store
 *.pdf
 
-# Signing keys: never commit them (see README.md, "Signing the macOS app").
+# Signing keys: never commit them (see docs/releasing.md, "Signing the macOS app").
 *.p12
 *.p8

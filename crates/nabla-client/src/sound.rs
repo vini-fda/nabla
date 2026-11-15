@@ -6,7 +6,7 @@
 //! (`sound/native.rs`). In the browser, an `AudioWorklet` runs it on the browser's audio
 //! rendering thread (`sound/web.rs`): the page's main thread, which also draws the frames,
 //! only posts it the controls, so slow frames cannot starve the audio. See
-//! `docs/audio_worklet.typ`.
+//! `specs/audio_worklet.typ`.
 //!
 //! Everything it logs begins with `audio:`, so that `RUST_LOG=nabla_client::sound=debug` and a
 //! `grep audio:` show what the sound is doing: changes at `debug` (sound on or off, the output

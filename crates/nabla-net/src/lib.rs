@@ -1,4 +1,4 @@
-//! The multiplayer protocol of `docs/multiplayer.typ`, as sans-IO state machines.
+//! The multiplayer protocol of `specs/multiplayer.typ`, as sans-IO state machines.
 //!
 //! A [`ServerMachine`] holds the world and runs its ticks. A [`ClientMachine`] holds one pilot's
 //! view: the commands issued, the newest snapshot, and the prediction folded forward from it.
@@ -25,7 +25,7 @@ pub use client::ClientMachine;
 pub use server::ServerMachine;
 use wire::ConnId;
 
-/// The constants of the protocol (`docs/multiplayer.typ`, "Plan"), which are to be tuned.
+/// The constants of the protocol (`specs/multiplayer.typ`, "Plan"), which are to be tuned.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Config {
     /// `K`: how many commands a datagram carries, the newest and `K - 1` before it.

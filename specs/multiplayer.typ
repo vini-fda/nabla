@@ -208,7 +208,7 @@ and where each one is justified.
 
 A ship has state $s = (p, v, theta, omega)$ with $p, v in RR^2$ and $theta, omega in RR$, and
 parameters $(m, I, F_max, tau_max)$. Under a control $u = (F, tau)$ in the admissible set
-$U = [0, F_max] times [-tau_max, tau_max]$ it obeys the equations of `docs/main.typ`, to which the
+$U = [0, F_max] times [-tau_max, tau_max]$ it obeys the equations of `specs/main.typ`, to which the
 worlds with celestial bodies add a gravity field $g$:
 
 #numbered[$
@@ -1326,7 +1326,7 @@ Each milestone's acceptance test is a theorem of this paper, checked on a runnin
   rules(
     columns: (auto, 1fr, 1fr, auto),
     ([], [Work], [Accepted when], [Done?]),
-    [M0], [Done for the bounds of @tla (`docs/tla/check.sh`). Run the module of @tla through SANY and TLC again whenever it changes.], [The invariants of @thm-once hold. Fix the spec first if not.], [Yes],
+    [M0], [Done for the bounds of @tla (`specs/tla/check.sh`). Run the module of @tla through SANY and TLC again whenever it changes.], [The invariants of @thm-once hold. Fix the spec first if not.], [Yes],
     [M1], [Extract `nabla-sim`. No behavior changes.], [All existing tests pass. `cargo tree -p nabla-sim` has no egui, wgpu or cpal. It builds for WASM.], [Yes],
     [M2], [World version 2 (tick rate, arena, allowed ships), `Command`, $Sanitize$, $Wall$, $Grant$. Fix the NaN of @steering.], [@lem-total and @lem-grant as property tests over arbitrary bit patterns. @lem-arena against adversarial pilots.], [Yes],
     [M3], [`nabla-net` and a seeded simulated network with delay, jitter, loss, reordering, duplication, and hostile clients.], [@thm-once, @thm-contain and @thm-exact as assertions in the simulator, over $10^6$ ticks of seeds. @thm-margin: margins settle as predicted. Speeds in worlds with bodies measured, where @lem-arena gives no bound.], [Yes],
@@ -1409,7 +1409,7 @@ The order is deliberate. Everything through M3 runs without a network, and is de
 
 This module states the machine of @protocol for a fixed set of ships, without $Join$ and $Leave$ or the hold rule's per-command neutral form. The ship state is the free monoid: `x[i]` is the sequence of commands applied so far. Any deterministic $f$ factors through this sequence, so an equality of sequences proved here is an equality of states for every $f$. That includes the tick rate, the wall and each ship's parameters, which all live inside $f$. $Grant$ and $N_max$ are not modeled.
 
-*Status of this module.* SANY parses it and TLC finds no violation of any invariant or of the two action properties, with $"Cmds" = {a, b}$, $"Window" = 3$, $"Drop" = 2$ unless stated: 256,105 distinct states (one ship, `MaxTick` = 3), 100,193 (two ships, `MaxTick` = 1), and 5,488,697 (one ship, `Window` = 4, `MaxTick` = 4). The first two counts equal those of the throwaway Python enumeration that preceded the module. SANY found two syntax errors in the first draft, bounds that depended on an earlier bound variable, which are fixed. `docs/tla/check.sh` runs both tools on `docs/tla/NablaNet.tla`, the file this section embeds. Mutants, to see that the invariants can fail: accepting late commands violates `HistoryStable`, removing the monotone guard violates `BaseMonotone`, and removing Advance violates `Lead`. Last-write-wins violates nothing, as @thm-once discusses. Liveness was not checked, as the bounded model has no infinite behaviors of interest, and @thm-live rests on its proof alone. The deadlock check is off, because the bounded model ends when the clock reaches `MaxTick`.
+*Status of this module.* SANY parses it and TLC finds no violation of any invariant or of the two action properties, with $"Cmds" = {a, b}$, $"Window" = 3$, $"Drop" = 2$ unless stated: 256,105 distinct states (one ship, `MaxTick` = 3), 100,193 (two ships, `MaxTick` = 1), and 5,488,697 (one ship, `Window` = 4, `MaxTick` = 4). The first two counts equal those of the throwaway Python enumeration that preceded the module. SANY found two syntax errors in the first draft, bounds that depended on an earlier bound variable, which are fixed. `specs/tla/check.sh` runs both tools on `specs/tla/NablaNet.tla`, the file this section embeds. Mutants, to see that the invariants can fail: accepting late commands violates `HistoryStable`, removing the monotone guard violates `BaseMonotone`, and removing Advance violates `Lead`. Last-write-wins violates nothing, as @thm-once discusses. Liveness was not checked, as the bounded model has no infinite behaviors of interest, and @thm-live rests on its proof alone. The deadlock check is off, because the bounded model ends when the clock reaches `MaxTick`.
 
 #text(size: 0.88em)[#raw(read("tla/NablaNet.tla"), lang: "tla", block: true)]
 

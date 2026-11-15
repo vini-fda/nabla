@@ -1,4 +1,4 @@
-//! What goes over the wire: the messages of `docs/multiplayer.typ`, and their codec.
+//! What goes over the wire: the messages of `specs/multiplayer.typ`, and their codec.
 //!
 //! Every message is a value of a type here, encoded with `postcard`. A decoder is handed bytes
 //! from a client it cannot trust, so [`decode`] is total: it returns an error for anything that

@@ -4,7 +4,7 @@
 //! *margin* `mu` is by how much. Too small, and commands miss their tick. Too large, and the
 //! pilot's input waits for nothing. The client has no clock of the server's and needs none: the
 //! server reports the margin it saw in each snapshot, and the client steers it by stretching its
-//! own tick a little (`docs/multiplayer.typ`, "Keeping the margin").
+//! own tick a little (`specs/multiplayer.typ`, "Keeping the margin").
 //!
 //! With `e_n = mu_n - mu*` and a client tick that lasts `h + gamma e_(n - n_f)`, where `n_f` is
 //! the feedback delay in ticks, `e_(n+1) = e_n - gamma e_(n - n_f) + w_n` for a disturbance `w`.

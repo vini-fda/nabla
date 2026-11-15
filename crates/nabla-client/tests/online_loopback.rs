@@ -1,5 +1,5 @@
 //! Two pilots fly through a real server, over QUIC and WebTransport on loopback, with a proxy
-//! that makes the path 100 ms there and back (M5 of `docs/multiplayer.typ`).
+//! that makes the path 100 ms there and back (M5 of `specs/multiplayer.typ`).
 
 #![cfg(not(target_arch = "wasm32"))]
 

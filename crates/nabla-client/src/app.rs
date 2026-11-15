@@ -278,6 +278,10 @@ pub struct ViewerApp {
     title_fit: f32,
     /// The height of what's below the title on the title screen, in points, last time it showed.
     title_rest: f32,
+    /// The width of the column below the title, in points, last time it showed: wider than it
+    /// was laid out at when a row in it can't wrap, as the page's buttons can't in a narrow
+    /// window.
+    title_wide: f32,
     /// The starting conditions picked on the title screen: a preset's, named after it, or the
     /// player's own.
     setup: Case,
@@ -371,6 +375,7 @@ impl Default for ViewerApp {
             help_tab: None,
             title_fit: 1.0,
             title_rest: 0.0,
+            title_wide: 0.0,
             setup: case,
             show_code: false,
             sound: Sound::default(),

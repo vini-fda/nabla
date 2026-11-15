@@ -62,7 +62,7 @@ impl Controller for Solution {
 
     fn new(task: &Task) -> Self {
         let p = &task.params;
-        Solution {
+        Self {
             task: *task,
             accel: p.f_max / p.mass,
             alpha: p.tau_max / p.inertia,

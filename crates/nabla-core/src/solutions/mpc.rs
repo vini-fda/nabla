@@ -61,7 +61,7 @@ impl Gains {
     /// Tuned by coordinate descent on the standard suite, accepting only
     /// improvements that also solve 300 random validation cases (seed 12345); the result solves
     /// 2000 cases it never saw (seed 777).
-    pub const DEFAULT: Gains = Gains {
+    pub const DEFAULT: Self = Self {
         margin: 0.6336000000000002,
         damping: 7.182000000000001e-10,
         init_iters: 30.0,
@@ -87,7 +87,7 @@ const LINE_SEARCH: usize = 4;
 
 /// `(sin x, cos x)`, within a few ulps: fdlibm's kernels on `[−π/4, π/4]` after a Cody–Waite
 /// reduction by `π/2` (exact for `|x| < 2²⁰ π/2`).
-#[allow(clippy::excessive_precision)]
+#[expect(clippy::excessive_precision)]
 pub fn sin_cos(x: f64) -> (f64, f64) {
     // π/2 in three 33-bit parts, so that `n · PIO2_i` is exact.
     const PIO2_1: f64 = 1.570_796_326_734_125_614_17;
@@ -104,7 +104,7 @@ pub fn sin_cos(x: f64) -> (f64, f64) {
     }
 }
 
-#[allow(clippy::excessive_precision)]
+#[expect(clippy::excessive_precision)]
 fn kernel_sin(x: f64) -> f64 {
     const S1: f64 = -1.666_666_666_666_663_243_48e-01;
     const S2: f64 = 8.333_333_333_322_489_461_24e-03;
@@ -117,7 +117,7 @@ fn kernel_sin(x: f64) -> f64 {
     x + z * x * (S1 + z * r)
 }
 
-#[allow(clippy::excessive_precision)]
+#[expect(clippy::excessive_precision)]
 fn kernel_cos(x: f64) -> f64 {
     const C1: f64 = 4.166_666_666_666_660_190_37e-02;
     const C2: f64 = -1.388_888_888_887_410_957_49e-03;
@@ -133,7 +133,7 @@ fn kernel_cos(x: f64) -> f64 {
 }
 
 /// `atan x`, within an ulp or so: fdlibm's reduction to `|x| < 7/16` and odd polynomial.
-#[allow(clippy::excessive_precision)]
+#[expect(clippy::excessive_precision)]
 fn atan(x: f64) -> f64 {
     const HI: [f64; 4] = [
         4.636_476_090_008_060_935_15e-01,
@@ -210,7 +210,7 @@ pub fn atan2(y: f64, x: f64) -> f64 {
 
 /// `√(x² + y²)`, without libm's `hypot`.
 fn norm(x: f64, y: f64) -> f64 {
-    (x * x + y * y).sqrt()
+    x.hypot(y)
 }
 
 /// `x` rounded to 32 significant bits, so that states that differ only in their last bits (as
@@ -308,7 +308,7 @@ struct Baseline {
 impl Baseline {
     fn new(task: &Task) -> Self {
         let p = &task.params;
-        Baseline {
+        Self {
             task: *task,
             accel: p.f_max / p.mass,
             alpha: p.tau_max / p.inertia,
@@ -386,7 +386,7 @@ impl Baseline {
 // Sensitivities of the exact step.
 
 /// 8-point Gauss–Legendre nodes and weights on `[-1, 1]`, as in `src/model.rs`.
-#[allow(clippy::excessive_precision)]
+#[expect(clippy::excessive_precision)]
 const GL_NODES: [f64; 8] = [
     -0.960_289_856_497_536_3,
     -0.796_666_477_413_626_7,
@@ -397,7 +397,7 @@ const GL_NODES: [f64; 8] = [
     0.796_666_477_413_626_7,
     0.960_289_856_497_536_3,
 ];
-#[allow(clippy::excessive_precision)]
+#[expect(clippy::excessive_precision)]
 const GL_WEIGHTS: [f64; 8] = [
     0.101_228_536_290_376_3,
     0.222_381_034_453_374_5,
@@ -509,7 +509,7 @@ struct Track {
 
 impl Track {
     fn new(cap: usize) -> Self {
-        Track {
+        Self {
             u: vec![Control::default(); cap],
             s: vec![State::default(); cap + 1],
             sens: vec![[[0.0; 4]; 4]; cap],
@@ -704,7 +704,7 @@ fn solve5(m: &[[f64; 5]; 5], r: &[f64; 5]) -> Option<[f64; 5]> {
 impl Solution {
     pub fn with_gains(task: &Task, gains: Gains) -> Self {
         let cap = task.max_steps;
-        Solution {
+        Self {
             task: *task,
             model: Model {
                 task: *task,
@@ -775,7 +775,7 @@ impl Solution {
                     self.jac[k][1][i] = gt * scale[1];
                 }
                 // λ ← λ A.
-                for row in lam.iter_mut() {
+                for row in &mut lam {
                     let [l0, l1, l2, l3, l4, l5] = *row;
                     row[2] = l2 + h * l0;
                     row[3] = l3 + h * l1;
@@ -1013,7 +1013,7 @@ impl Controller for Solution {
     }
 
     fn new(task: &Task) -> Self {
-        Solution::with_gains(task, Gains::DEFAULT)
+        Self::with_gains(task, Gains::DEFAULT)
     }
 
     fn control(&mut self, k: usize, s: &State) -> Control {

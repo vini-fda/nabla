@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "nabla-web",
+      "runtimeExecutable": "trunk",
+      "runtimeArgs": ["serve", "--config", "crates/nabla-client/Trunk.toml", "--port", "8080"],
+      "port": 8080
+    }
+  ]
+}

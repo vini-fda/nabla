@@ -42,6 +42,9 @@ rfd = "0.17.2"
 # `std::time::Instant` on the web too, where the standard one panics (src/span.rs).
 web-time = "1.1.0"
 
+[dev-dependencies]
+naga = "30"
+
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Audio output. On the web, an AudioWorklet plays the sounds instead (src/sound/web.rs).
@@ -105,6 +108,3 @@ winit = "0.30.13"
 
 [lints]
 workspace = true
-
-[dev-dependencies]
-naga = "30"

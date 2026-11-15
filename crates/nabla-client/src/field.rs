@@ -1185,7 +1185,7 @@ mod tests {
                 continue;
             }
             let chains = extract(&grid, &[level]);
-            // Wholely in view, the level set is one closed ring, not a stub soup.
+            // Wholly in view, the level set is one closed ring, not a stub soup.
             assert_eq!(
                 chains.len(),
                 1,
@@ -1275,11 +1275,11 @@ mod tests {
         // A lattice point both grids cover, from opposite sides: the same sample value.
         let n1 = home.n + 1;
         let at = |g: &ScalarGrid, x: f64, y: f64| {
-            let (ix, iy) = (
+            let (col, row) = (
                 ((x - g.min[0]) / g.cell).round() as usize,
                 ((y - g.min[1]) / g.cell).round() as usize,
             );
-            g.values[iy * n1 + ix]
+            g.values[row * n1 + col]
         };
         assert_eq!(at(&home, 0.0, 3.09375), at(&panned, 0.0, 3.09375));
         // The levels are the shader's band boundaries, whatever the view: -LEVEL_BASE^n.

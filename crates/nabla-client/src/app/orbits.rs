@@ -159,7 +159,7 @@ impl ViewerApp {
         let objective = self
             .orbit_controls
             .target
-            .map_or(Objective::ReachB, Objective::Orbit);
+            .map_or(Objective::ReachTarget, Objective::Orbit);
         self.choose_objective(objective);
     }
 
@@ -204,7 +204,7 @@ impl ViewerApp {
 
     pub(super) fn engage_objective(&mut self) {
         let objective = match self.flight_objective() {
-            Objective::ReachB => Objective::ReachB,
+            Objective::ReachTarget => Objective::ReachTarget,
             Objective::Orbit(_) => {
                 let Some(target) = self.orbit_controls.target else {
                     return;
@@ -251,9 +251,9 @@ impl ViewerApp {
         }
         let objective = self.flight_objective();
         if pad.just_pressed(Button::DPadLeft) {
-            self.choose_objective(Objective::ReachB);
+            self.choose_objective(Objective::ReachTarget);
         } else if pad.just_pressed(Button::DPadRight)
-            && self.flight_objective() == Objective::ReachB
+            && self.flight_objective() == Objective::ReachTarget
             && let Some(target) = self.orbit_controls.target
         {
             self.choose_objective(Objective::Orbit(target));
@@ -265,7 +265,7 @@ impl ViewerApp {
                 palette::WHITE,
             );
         }
-        if self.flight_objective() == Objective::ReachB {
+        if self.flight_objective() == Objective::ReachTarget {
             return false;
         }
         let Some(target) = self.orbit_controls.target else {
@@ -291,7 +291,7 @@ impl ViewerApp {
         let target = self
             .orbit_controls
             .target
-            .filter(|_| self.flight_objective() != Objective::ReachB);
+            .filter(|_| self.flight_objective() != Objective::ReachTarget);
         let Some(target) = target else {
             self.orbit_controls.check = None;
             return;
@@ -350,7 +350,7 @@ impl ViewerApp {
                 .show_ui(ui, |ui| {
                     ui.selectable_value(
                         &mut objective,
-                        Objective::ReachB,
+                        Objective::ReachTarget,
                         "Reach stationary target",
                     );
                     if let Some(target) = self.orbit_controls.target {
@@ -364,7 +364,7 @@ impl ViewerApp {
                 self.choose_objective(objective);
             }
             match self.flight_objective() {
-                Objective::ReachB => {
+                Objective::ReachTarget => {
                     ui.label("Reach the stationary target and stop.");
                     controls_grid(ui, |ui| {
                         objective_control_row(ui);
@@ -496,7 +496,7 @@ impl ViewerApp {
     }
 
     pub(super) fn draw_orbits(&self, painter: &egui::Painter, rect: egui::Rect) {
-        if self.flight_objective() == Objective::ReachB {
+        if self.flight_objective() == Objective::ReachTarget {
             return;
         }
         let draw = |target: Target, color, dashed| {
@@ -541,7 +541,7 @@ impl ViewerApp {
             self.flight_forecast()
         } else {
             match self.flight_objective() {
-                Objective::ReachB => Vec::new(),
+                Objective::ReachTarget => Vec::new(),
                 Objective::Orbit(_) => self.orbit_controls.target.map_or_else(Vec::new, |target| {
                     orbit::forecast(
                         self.flight_world(),
@@ -795,7 +795,7 @@ mod tests {
         app.manual_flight();
         app.refresh_orbit_prediction();
         assert!(app.orbit_check_running());
-        app.choose_objective(Objective::ReachB);
+        app.choose_objective(Objective::ReachTarget);
         assert!(!app.orbit_check_running());
     }
 
@@ -861,9 +861,9 @@ mod tests {
         press(&mut app, &[Button::West], false);
         assert!(app.orbit_controls.error.is_some());
         assert_eq!(app.game.orbit_pilot().expect("kept active").target, active);
-        app.choose_objective(Objective::ReachB);
+        app.choose_objective(Objective::ReachTarget);
         app.toggle_autopilot();
-        assert!(app.assisted() && app.game.objective() == Objective::ReachB);
+        assert!(app.assisted() && app.game.objective() == Objective::ReachTarget);
         press(&mut app, &[Button::East], false);
         assert!(!app.assisted());
     }
@@ -917,7 +917,7 @@ mod tests {
         let mut app = planet_app();
         let orbit = game_bar_height(&mut app);
         press(&mut app, &[Button::DPadLeft], false);
-        assert_eq!(app.game.objective(), Objective::ReachB);
+        assert_eq!(app.game.objective(), Objective::ReachTarget);
         assert_eq!(game_bar_height(&mut app), orbit);
     }
 
@@ -944,7 +944,7 @@ mod tests {
         );
         assert!(!app.assisted());
         press(&mut app, &[Button::DPadLeft], false);
-        assert_eq!(app.game.objective(), Objective::ReachB);
+        assert_eq!(app.game.objective(), Objective::ReachTarget);
         app.toggle_autopilot();
         assert!(app.assisted());
         press(&mut app, &[Button::DPadRight], false);

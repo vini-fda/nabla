@@ -124,7 +124,7 @@ fn two_pilots(
                 .find(|s| s.name == "flip_and_burn_tuned")
                 .expect("a policy");
             clients[1]
-                .engage(nabla_client::Objective::ReachB, policy)
+                .engage(nabla_client::Objective::ReachTarget, policy)
                 .expect("a ship to fly");
         }
         landed = clients[1].take_landed();

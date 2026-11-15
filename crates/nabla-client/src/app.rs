@@ -500,15 +500,15 @@ impl ViewerApp {
         let restarting = self.screen == Screen::Flight;
         let previous = self.game.objective();
         let engage = if restarting {
-            previous == Objective::ReachB && self.assisted()
+            previous == Objective::ReachTarget && self.assisted()
         } else {
             self.autopilot_on_start
         };
         self.game = Game::in_world(self.selected_case(), self.selected_world());
         log::info!("Flight started in {}", self.game.world.name);
         self.reset_orbit_controls();
-        if restarting && previous == Objective::ReachB {
-            self.choose_objective(Objective::ReachB);
+        if restarting && previous == Objective::ReachTarget {
+            self.choose_objective(Objective::ReachTarget);
         }
         if engage {
             self.engage_objective();
@@ -654,7 +654,7 @@ impl ViewerApp {
     /// The autopilot: the policy it flies with, its switch, its source, and its sampling period.
     fn autopilot_ui(&mut self, ui: &mut egui::Ui) {
         ui.heading("Autopilot");
-        if self.game.objective() == Objective::ReachB {
+        if self.game.objective() == Objective::ReachTarget {
             self.policy_ui(ui);
         } else {
             ui.label("Circular-orbit capture and hold");
@@ -672,7 +672,7 @@ impl ViewerApp {
             if toggle.changed() {
                 self.toggle_autopilot();
             }
-            if self.game.objective() == Objective::ReachB {
+            if self.game.objective() == Objective::ReachTarget {
                 ui.checkbox(&mut self.show_code, "Show code");
             }
         });
@@ -723,7 +723,7 @@ impl ViewerApp {
         if let Some(solution) = picked {
             self.policy = solution;
             self.score_policy();
-            if self.assisted() && self.game.objective() == Objective::ReachB {
+            if self.assisted() && self.game.objective() == Objective::ReachTarget {
                 self.engage_objective();
             }
         }
@@ -802,7 +802,7 @@ impl ViewerApp {
                 "initial angular velocity",
                 format!("{:.2} rad/s", s.omega),
             );
-            if self.game.objective() == Objective::ReachB {
+            if self.game.objective() == Objective::ReachTarget {
                 row(
                     &formula::GOAL,
                     "target",
@@ -810,7 +810,7 @@ impl ViewerApp {
                 );
             }
         });
-        if self.game.objective() != Objective::ReachB {
+        if self.game.objective() != Objective::ReachTarget {
             return;
         }
         let name = self.policy.name;
@@ -874,7 +874,7 @@ impl ViewerApp {
                 "angular velocity",
                 format!("{:+.3} rad/s", s.omega),
             );
-            if self.game.objective() == Objective::ReachB {
+            if self.game.objective() == Objective::ReachTarget {
                 row(
                     &formula::DISTANCE,
                     "distance to the target",
@@ -1613,7 +1613,7 @@ impl ViewerApp {
         if self.show_path {
             self.draw_path(painter, rect, replay, k, &state);
         }
-        if self.game.objective() == Objective::ReachB {
+        if self.game.objective() == Objective::ReachTarget {
             self.draw_goal(painter, rect, replay, &state);
         }
         if debug {
@@ -1891,7 +1891,7 @@ impl ViewerApp {
         {
             self.draw_sas_heading(painter, rect, &state, heading);
         }
-        if game.objective() == Objective::ReachB {
+        if game.objective() == Objective::ReachTarget {
             self.draw_goal_marker(painter, rect, marker_area, &game.replay, &state);
         }
         if pads {

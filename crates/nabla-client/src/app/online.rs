@@ -211,7 +211,7 @@ impl ViewerApp {
             // The ship is new: its nearest body is the orbit to offer, and the stationary
             // target is the objective.
             self.reset_orbit_controls();
-            self.choose_objective(super::Objective::ReachB);
+            self.choose_objective(super::Objective::ReachTarget);
         }
         self.online_ready = playing;
         let Some(online) = &mut self.online else {

@@ -126,14 +126,14 @@ impl Autopilot {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum Objective {
     #[default]
-    ReachB,
+    ReachTarget,
     Orbit(Target),
 }
 
 impl Objective {
     pub fn label(self) -> &'static str {
         match self {
-            Self::ReachB => "Reach stationary target",
+            Self::ReachTarget => "Reach stationary target",
             Self::Orbit(_) => "Orbit",
         }
     }
@@ -141,7 +141,7 @@ impl Objective {
 
 /// Only one controller can own the flight's controls at a time.
 pub(crate) enum FlightController {
-    ReachB(Autopilot),
+    ReachTarget(Autopilot),
     Orbit(Pilot),
 }
 
@@ -157,7 +157,7 @@ pub(crate) fn run_controller(
     s: &State,
 ) -> Result<Control, String> {
     match controller {
-        FlightController::ReachB(pilot) => pilot.control(task, s),
+        FlightController::ReachTarget(pilot) => pilot.control(task, s),
         FlightController::Orbit(pilot) => {
             let u = pilot.control(world, s, &task.params);
             if u.is_admissible(&task.params) && orbit::clear(world, s) {
@@ -179,7 +179,7 @@ pub(crate) fn forecast_of(
 ) -> Vec<[f64; 2]> {
     match controller {
         Some(FlightController::Orbit(pilot)) => orbit::forecast(world, start, pilot.clone()),
-        Some(FlightController::ReachB(pilot)) => {
+        Some(FlightController::ReachTarget(pilot)) => {
             let steps = orbit::forecast_steps(h);
             let states = pilot
                 .controller
@@ -245,7 +245,7 @@ impl Game {
             landed: None,
             hold: None,
             autopilot: None,
-            objective: Objective::ReachB,
+            objective: Objective::ReachTarget,
             manual: false,
             fault: None,
             pads: Pads::default(),
@@ -300,7 +300,10 @@ impl Game {
         solution: &'static StoredSolution,
     ) -> Result<Option<Prediction>, String> {
         let (controller, prediction) = match objective {
-            Objective::ReachB => (FlightController::ReachB(Autopilot::new(solution)), None),
+            Objective::ReachTarget => (
+                FlightController::ReachTarget(Autopilot::new(solution)),
+                None,
+            ),
             Objective::Orbit(target) => {
                 let prediction = orbit::predict(&self.world, self.next_state(), target)?;
                 (
@@ -406,7 +409,8 @@ impl Game {
         while self.replay.last_frame() as f64 * h <= self.time {
             let k = self.replay.last_frame();
             let s = self.next_state();
-            if self.objective == Objective::ReachB && self.landed.is_none() && task.reached(&s) {
+            if self.objective == Objective::ReachTarget && self.landed.is_none() && task.reached(&s)
+            {
                 self.landed = Some(k);
                 log::info!("Landed at step {k}");
             }
@@ -452,7 +456,7 @@ impl Game {
     pub fn view_bounds(&self) -> ([f64; 2], [f64; 2]) {
         let s = self.state();
         let (mut dx, mut dy) = match self.objective {
-            Objective::ReachB => {
+            Objective::ReachTarget => {
                 let goal = self.replay.case.task.goal;
                 ((goal.x - s.x).abs(), (goal.y - s.y).abs())
             }
@@ -1296,7 +1300,7 @@ mod tests {
                 ..aim(1.0, 0.1)
             };
             let h = g.replay.h();
-            g.engage(Objective::ReachB, solution).expect("engage");
+            g.engage(Objective::ReachTarget, solution).expect("engage");
             while g.landed().is_none() && g.time() < 60.0 {
                 g.advance(h, input, Steering::Sas);
             }
@@ -1318,7 +1322,7 @@ mod tests {
         };
         fly(&mut g, 1.0, thrust, Steering::Raw);
         let mut flown = 0.0;
-        g.engage(Objective::ReachB, solution).expect("engage");
+        g.engage(Objective::ReachTarget, solution).expect("engage");
         while g.landed().is_none() && flown < 60.0 {
             g.advance(0.05, Input::default(), Steering::Raw);
             flown += 0.05;
@@ -1366,7 +1370,8 @@ mod tests {
     #[test]
     fn an_inadmissible_policy_hands_the_ship_back() {
         let mut g = game();
-        g.engage(Objective::ReachB, &OVERTHRUST).expect("engage");
+        g.engage(Objective::ReachTarget, &OVERTHRUST)
+            .expect("engage");
         g.advance(0.05, Input::default(), Steering::Raw);
         let fault = g.take_fault().expect("a fault");
         assert!(fault.contains("inadmissible"), "{fault}");
@@ -1381,7 +1386,7 @@ mod tests {
     fn the_default_policy_lands_in_the_default_world() {
         let world = crate::world::Preset::PlanetAndMoon.world();
         let mut g = Game::in_world(world.case(), world);
-        g.engage(Objective::ReachB, &nabla_core::solutions::SOLUTIONS[0])
+        g.engage(Objective::ReachTarget, &nabla_core::solutions::SOLUTIONS[0])
             .expect("engages");
         for _ in 0..600 {
             g.advance(0.02, Input::default(), Steering::Raw);
@@ -1394,7 +1399,7 @@ mod tests {
     fn fly_with(g: &mut Game, seconds: f64, autopilot: Option<&'static StoredSolution>) {
         if let Some(solution) = autopilot {
             if !g.assisted() {
-                g.engage(Objective::ReachB, solution).expect("engage");
+                g.engage(Objective::ReachTarget, solution).expect("engage");
             }
         } else {
             g.disengage();
@@ -1433,7 +1438,8 @@ mod tests {
             None,
             "B is irrelevant even in manual orbit flight"
         );
-        g.select_objective(Objective::ReachB).expect("select B");
+        g.select_objective(Objective::ReachTarget)
+            .expect("select B");
         g.advance(0.02, Input::default(), Steering::Raw);
         assert!(g.landed().is_some(), "B becomes the objective again");
     }
@@ -1443,7 +1449,8 @@ mod tests {
         let world = crate::world::Preset::Planet.world();
         let mut g = Game::in_world(world.case(), world);
         let solution = &nabla_core::solutions::SOLUTIONS[0];
-        g.engage(Objective::ReachB, solution).expect("engage B");
+        g.engage(Objective::ReachTarget, solution)
+            .expect("engage B");
         let invalid = Objective::Orbit(Target {
             body: 999,
             altitude: 10.0,
@@ -1451,8 +1458,11 @@ mod tests {
         });
         assert!(g.engage(invalid, solution).is_err());
         assert!(g.select_objective(invalid).is_err());
-        assert_eq!(g.objective(), Objective::ReachB);
-        assert!(matches!(g.autopilot, Some(FlightController::ReachB(_))));
+        assert_eq!(g.objective(), Objective::ReachTarget);
+        assert!(matches!(
+            g.autopilot,
+            Some(FlightController::ReachTarget(_))
+        ));
     }
 
     #[test]

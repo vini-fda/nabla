@@ -1,0 +1,7 @@
+# The online_loopback tests fly clients through a real server on the real clock. A test
+# running beside them that keeps every core busy stalls the clients, so commands arrive late
+# and the corrections grow past what the tests allow. They run alone, and are retried once.
+[[profile.default.overrides]]
+filter = "binary(online_loopback)"
+threads-required = "num-cpus"
+retries = 1

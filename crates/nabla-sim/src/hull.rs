@@ -11,8 +11,8 @@
 //! The points are counterclockwise, in units of the hull radius `rho` (a world's
 //! [`hull_radius`](crate::world::World::hull_radius): the distance from the ship's center to
 //! its nose, which the drawn model is scaled to), in the ship's own frame, with the nose
-//! along +x: a ship of hull radius `rho` collides through these points at [`points`](rho),
-//! turned by its heading.
+//! along +x, so a ship of hull radius `rho` collides through the points that [`points`]
+//! scales to it, turned by its heading.
 
 /// The hull of the ship's slice, counterclockwise, nose along +x, `rho`-scaled.
 pub const HULL: [[f32; 2]; 35] = [

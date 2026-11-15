@@ -30,8 +30,8 @@ to see a magnifier. Nabla's text fields are drawn by egui on a canvas, so they g
 this from the browser. A first fix, in an egui fork, lays eframe's hidden `<input>` over the
 focused field. That brings back the edit menu, but only with Paste in it. This document
 records what a native field does on iOS Safari, compares Nabla's fields with it, explains
-the gap, and sets out the properties a principled fix must have. The fix itself comes later,
-built on the current code.
+the gap, and sets out the properties a principled fix must have. The fix built on it, a
+mirrored text agent, is in the fork too, and @simulator records how it fares.
 
 *In one sentence:* iOS's text interaction works on the DOM's text and selection, and
 eframe's hidden input holds neither. A fix must keep that input an exact, invisible mirror of
@@ -65,7 +65,31 @@ The fork (`vini-fda/egui`, branch `ios-paste`, commit `35182136a`; used by Nabla
   browser can open its edit menu.
 
 This is enough for Paste. Holding a finger on the field, or tapping its caret, opens iOS's
-menu, and Paste inserts at egui's cursor. Everything else in @map is still missing.
+menu, and Paste inserts at egui's cursor. Everything else in @map is still missing. The map's
+"Nabla today" column is this commit.
+
+The fix that follows the map, direction A of @directions, is two more commits on the branch:
+
+- *egui* (`fdde6616b`). An integration asks with `RawInput::text_edit_mirror`, and egui
+  describes the focused single-line field in `PlatformOutput::text_edit_mirror`: its text,
+  its selection in characters with its direction, the whole field's rectangle, where the
+  text starts, the font, the row height, the cursor colour and the scale. Edits come back
+  as `ImeEvent::ReplaceRange` and `ImeEvent::SetSelection`. A mirrored field leaves its
+  caret, selection and composition to the native field.
+- *eframe* (`12e22a0fd`). On a touch screen, the agent becomes that copy: it covers the
+  whole field, holds its text and selection, and lays the text out where egui draws it, in
+  egui's fonts (as `FontFace`s), at 16 px or more and scaled down to egui's size (E8). Only
+  its caret shows. eframe sends the browser's edits back by diffing the agent's value on
+  `input` and `compositionend`, and its selection on `selectionchange`. It writes egui's
+  state to the agent only when egui changed it, and never while a composition or a finger
+  is on it (P4a).
+
+Three things differ from the plan. The description is a field of `PlatformOutput` of its
+own, not part of `IMEOutput`, so code that builds an `IMEOutput` doesn't break. A
+composition comes back by diffing values like any other edit, not as `Preedit` and
+`Commit`: this also covers Android, whose keyboards re-compose words already typed. And egui
+gives the field's whole rectangle, not just the text's, so that a touch anywhere on the field
+is the browser's.
 
 = The map <map>
 
@@ -373,6 +397,10 @@ and E2 found it small (@results).
     [E8], [Without `user-scalable=no`, does an agent smaller than 16 px zoom the page on
       focus, and does a 16 px agent scaled down with a `transform` keep P2?],
       [yes, and yes (@results-2)],
+    [E9], [Does the magnifier show the canvas's text under an agent whose text is
+      transparent?], [yes (@results-3)],
+    [E10], [Does a composition work inside a value that already holds text, and what comes
+      on commit?], [yes (@results-3)],
   ),
   caption: [What to find out before building.],
 ) <fig-experiments>
@@ -569,6 +597,85 @@ Two fields held the server address in Lilex: one at 12.5 px, and one at 16 px wi
 eframe can't know whether the page allows zooming. So the agent always uses at least 16 px,
 and a `transform` scales it down to egui's size (P2). This works with or without
 `user-scalable=no`.
+
+= Results of E9–E10 <results-3>
+
+Run on 15 November 2026, in the same Simulator, on the scratch page of E8 (an `<input>`
+with transparent text over the same text drawn on a canvas), then in Nabla.
+
+== E9: the magnifier
+
+The magnifier magnifies the screen, not the input: dragging a handle showed
+":4433/\#sha25" from the canvas under the transparent input, with the caret in it. In
+Nabla, holding a finger on the address showed egui's text with the browser's caret following
+the finger ("loc|alhos"). So P6 needs nothing from egui.
+
+== E10: a composition inside a value
+
+The Japanese Romaji keyboard was added to the Simulator for this. Typing "kani" in the middle
+of the server address composed かに there, with iOS's underline under it, and each
+`compositionupdate` carried the whole composed string. Picking 蟹 committed it through more
+than one `input` event before `compositionend`, so only the value after `compositionend` is
+the committed text. In Nabla, a composition shows inline in egui's text ("あb"), with iOS's
+underline lined up under it, and Return commits it, as in a native field. A second Return
+then reaches egui as Enter.
+
+= The Simulator check <simulator>
+
+Run on 15 November 2026, in the same Simulator, on Nabla's address field and on the text
+editor of a `DragValue` (the gravity constant $G$), with the fork at `12e22a0fd`.
+
+#figure(
+  rules(
+    columns: (0.9fr, 2fr, auto),
+    ([Check], [What happened], []),
+    [First tap], [Takes the focus, opens the keyboard and puts the caret where the tap was
+      ("local|host").], same,
+    [Double tap], [Selects the word, with both handles, and opens Cut | Copy | Paste |
+      Replace… | ›.], same,
+    [Tap the caret], [Paste | Select | Select All | AutoFill.], same,
+    [Long press], [Shows the magnifier and moves the caret; no menu on release, as on the
+      native page.], same,
+    [Handle drag], [The selection follows the handle (`[8, 20]` … `[8, 22]`), and the menu
+      comes back on release.], same,
+    [Cut, Copy, Paste], [Cut leaves "https://:4433" and the clipboard holds "localhost";
+      Paste puts it back; Copy of a dragged selection gives "localhost:4433".], same,
+    [Typing over a selection], [Replaces it, in egui too.], same,
+    [Tap outside], [`blur`, the keyboard goes away, and the page pans back.], same,
+    [`DragValue`], [Opens with its text selected, takes a new value, and Return commits it
+      ($G$ = 2.00).], same,
+    [Desktop, with a mouse], [No mirror: the agent stays one pixel wide, and egui draws its
+      own caret. Editing and Enter work as before.], same,
+  ),
+  caption: [The mirrored agent in the Simulator.],
+) <fig-simulator>
+
+The check found four faults, now fixed in the fork:
+
+- *The first tap opened no keyboard.* An unfocused field on a touch screen senses only
+  clicks, so that dragging it scrolls, and nothing put egui's cursor anywhere. Without a
+  cursor, egui gave no `IMEOutput` in the pass that handled the tap, and iOS opens the
+  keyboard only for a focus given while it handles a touch. egui now puts the cursor where
+  the tap lands.
+- *Touches on the field were lost.* eframe focused the agent before moving it over the
+  field, without letting the page scroll. iOS then did not pan the field above the keyboard,
+  and touches behind the keyboard's area never reach the page. eframe now places the agent
+  first and lets the focus scroll the page, as for any text field.
+- *No menu after a double tap.* This went away with the fault above: the double tap
+  happened where iOS had no field.
+- *A centred field's text was off by half its width,* and the agent scrolled by itself when
+  its text filled egui's clip. egui now gives where the text really starts, and the agent
+  keeps a row's height of room on its right.
+
+Still open:
+
+- *A dimmed field.* Twice, a long press and then a tap left the field drawn as if egui had
+  lost the focus, though the agent kept the DOM focus and typing still reached egui. After
+  that, a deleted character came back on blur. It did not happen again with logging on.
+  Watch for it on the iPhone.
+- *The password field* shows only when a server asks for one, so it wasn't tried. It should
+  take `type="password"` (E4).
+- *On a device:* a real double tap and magnifier, E6, Android Chrome and desktop Safari.
 
 = Test plan <tests>
 

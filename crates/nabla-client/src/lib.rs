@@ -27,6 +27,7 @@ pub mod net;
 mod notifications;
 pub mod online;
 mod orbit;
+mod overlays;
 mod planets;
 mod plots;
 mod plume;

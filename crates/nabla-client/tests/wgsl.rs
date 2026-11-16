@@ -4,6 +4,7 @@
 fn shaders_parse_and_validate() {
     let sources = [
         include_str!("../src/field.wgsl"),
+        include_str!("../src/overlays.wgsl"),
         include_str!("../src/planets.wgsl"),
         include_str!("../src/ship3d.wgsl"),
         include_str!("../src/sprites.wgsl"),

@@ -448,6 +448,7 @@ impl ViewerApp {
                 let depth = eframe::egui_wgpu::depth_format_from_bits(crate::DEPTH_BUFFER, 0);
                 crate::planets::init(render_state, samples, depth);
                 crate::field::init(render_state, samples, depth);
+                crate::overlays::init(render_state, samples, depth);
                 crate::streamlines::init(render_state, samples, depth);
                 Ok((
                     ShipRenderer::new(render_state, &model, samples, depth),
@@ -1610,12 +1611,6 @@ impl ViewerApp {
             draw_grid(painter, &self.camera, rect, &style);
         }
         let (replay, k, offset) = self.shown();
-        if self.show_path {
-            self.draw_path(painter, rect, replay, k, &state);
-        }
-        if self.game.objective() == Objective::ReachTarget {
-            self.draw_goal(painter, rect, replay, &state);
-        }
         if debug {
             crate::planets::draw_debug(painter, &self.camera, rect, &self.game.world.bodies);
         }
@@ -1647,11 +1642,6 @@ impl ViewerApp {
                 ) {
                     painter.add(callback);
                 }
-                // The field's contour lines, after the planets and ships: the depth they
-                // are tested against.
-                if self.show_field {
-                    self.draw_field_lines_3d(ui, painter, rect, &depth);
-                }
                 if self.show_streamlines {
                     self.draw_streamlines(ui, painter, rect, Some(&depth));
                 }
@@ -1662,14 +1652,29 @@ impl ViewerApp {
                 {
                     painter.add(callback);
                 }
+                // The marks on the plane, over everything whose depth they are tested
+                // against, as their flat draws have them.
+                self.draw_marks_3d(
+                    painter,
+                    rect,
+                    &depth,
+                    ui.visuals(),
+                    ui.ctx().pixels_per_point(),
+                );
             }
             _ => {
+                if self.show_path {
+                    self.draw_path(painter, rect, replay, k, &state);
+                }
+                if self.game.objective() == Objective::ReachTarget {
+                    self.draw_goal(painter, rect, replay, &state);
+                }
                 self.draw_ship(painter, rect, &state);
                 self.draw_arrows(painter, rect, replay, k, &state);
+                self.draw_orbits(painter, rect);
+                self.draw_prediction(painter, rect);
             }
         }
-        self.draw_orbits(painter, rect);
-        self.draw_prediction(painter, rect);
         if self.show_collision_meshes {
             self.draw_collision_meshes(painter, rect, &state);
         }
@@ -1696,29 +1701,6 @@ impl ViewerApp {
             self.game.world.players[0].radius,
             stroke,
         );
-    }
-
-    /// The bodies' gravity field's contour lines in the 3D view, drawn after the planets and
-    /// ships: the depth they are tested against, through the scene's own `depth` map.
-    fn draw_field_lines_3d(
-        &self,
-        ui: &egui::Ui,
-        painter: &egui::Painter,
-        rect: egui::Rect,
-        depth: &DepthMap,
-    ) {
-        let Some(callback) = crate::field::paint_lines(
-            &self.camera,
-            rect,
-            &self.field_contours,
-            self.field_line_width,
-            depth,
-            ui.ctx().pixels_per_point(),
-            ui.visuals(),
-        ) else {
-            return;
-        };
-        painter.add(callback);
     }
 
     /// The gravity field's lines, traced by `draw_scene` beforehand: glowing streamlines with
@@ -1859,6 +1841,109 @@ impl ViewerApp {
         };
         painter.circle_stroke(goal, GOAL_RADIUS_PX, egui::Stroke::new(2.0_f32, color));
         painter.circle_filled(goal, 2.0, color);
+        painter.text(
+            goal + egui::vec2(GOAL_LABEL_OFFSET_PX, -GOAL_LABEL_OFFSET_PX),
+            egui::Align2::LEFT_BOTTOM,
+            if reached {
+                "Target (reached)"
+            } else {
+                "Target"
+            },
+            egui::FontId::monospace(12.0),
+            color,
+        );
+    }
+
+    /// The goal in the 3D view, as depth-tested marks of the marks' pass: the same shapes
+    /// `draw_goal` gives egui in the flat view. The position tolerance as a circle
+    /// in the plane, an ellipse once the view is tilted, drawn to scale once it is visible;
+    /// the target itself as a billboard ring and dot at the goal, lying at the goal's own
+    /// depth, so what stands in front of it hides it as one. Both `GOAL_COLOR`, faded once
+    /// reached.
+    fn goal_strokes(
+        &self,
+        overlays: &mut crate::overlays::Overlays<'_>,
+        replay: &Replay,
+        now: &State,
+    ) {
+        let task = &replay.case.task;
+        let reached = task.reached(now);
+        let color = GOAL_COLOR.gamma_multiply(if reached { 0.35 } else { 1.0 });
+        let tolerance = task.tolerance.position as f32;
+        if tolerance * self.camera.scale > 1.5 {
+            let center = world(task.goal.x, task.goal.y);
+            let circle = (0..64).map(|i| {
+                let angle = i as f32 / 64.0 * std::f32::consts::TAU;
+                Vec3::plane(center + egui::Vec2::angled(angle) * tolerance)
+            });
+            overlays.stroke(circle, true, 1.0, color);
+        }
+        let goal = world(task.goal.x, task.goal.y);
+        overlays.ring(goal, GOAL_RADIUS_PX, 2.0, color);
+        overlays.disc(goal, 2.0, color);
+    }
+
+    /// The marks on the plane in the 3D view, over the planets, ships and plumes whose depth
+    /// they are tested against: the field's contour lines, the path flown, the goal, the
+    /// orbits and the prediction, as one pass of depth-tested ribbons (`crate::overlays`) --
+    /// the same widths, colors and dash patterns their flat draws (`draw_contours`,
+    /// `draw_path`, `draw_goal`, `draw_orbits`, `draw_prediction`) give egui where nothing
+    /// hides them.
+    fn draw_marks_3d(
+        &self,
+        painter: &egui::Painter,
+        rect: egui::Rect,
+        depth: &DepthMap,
+        visuals: &egui::Visuals,
+        pixels_per_point: f32,
+    ) {
+        let mut overlays =
+            crate::overlays::Overlays::new(&self.camera, rect, depth, pixels_per_point);
+        if self.show_field {
+            crate::field::contour_strokes(
+                &mut overlays,
+                &self.camera,
+                &self.field_contours,
+                self.field_line_width,
+                visuals,
+            );
+        }
+        let (replay, k, offset) = self.shown();
+        let state = replay.state_at(k, offset);
+        if self.show_path {
+            path_strokes(&mut overlays, replay, k, &state);
+        }
+        if self.game.objective() == Objective::ReachTarget {
+            self.goal_strokes(&mut overlays, replay, &state);
+        }
+        self.orbit_strokes(&mut overlays);
+        self.prediction_strokes(&mut overlays);
+        if let Some(callback) = overlays.finish() {
+            painter.add(callback);
+        }
+        if self.game.objective() == Objective::ReachTarget {
+            self.draw_goal_label(painter, rect, replay, &state);
+        }
+    }
+
+    /// The goal's label beside its mark: the one part of the goal that is not a mark on the
+    /// plane but a text over the canvas, so it stays in front of everything drawn.
+    fn draw_goal_label(
+        &self,
+        painter: &egui::Painter,
+        rect: egui::Rect,
+        replay: &Replay,
+        now: &State,
+    ) {
+        let task = &replay.case.task;
+        let reached = task.reached(now);
+        let color = GOAL_COLOR.gamma_multiply(if reached { 0.35 } else { 1.0 });
+        let Some(goal) = self
+            .camera
+            .world_to_screen(world(task.goal.x, task.goal.y), rect)
+        else {
+            return;
+        };
         painter.text(
             goal + egui::vec2(GOAL_LABEL_OFFSET_PX, -GOAL_LABEL_OFFSET_PX),
             egui::Align2::LEFT_BOTTOM,
@@ -2728,6 +2813,33 @@ fn screen_path(
             path
         })
         .collect()
+}
+
+/// The path flown in the 3D view, as depth-tested strokes of the marks' pass
+/// (`crate::overlays`): the same shapes `draw_path` gives egui in the flat view - the
+/// flight so far in `PATH_COLOR`, what has been flown of it up to `now` in `TRAVELED_COLOR`
+/// over it, and where the run started, even once that path has moved on.
+fn path_strokes(
+    overlays: &mut crate::overlays::Overlays<'_>,
+    replay: &Replay,
+    k: usize,
+    now: &State,
+) {
+    let point = |s: &State| Vec3::plane(world(s.x, s.y));
+    overlays.stroke(replay.states().iter().map(point), false, 1.0, PATH_COLOR);
+    overlays.stroke(
+        replay.states_up_to(k).chain([now]).map(point),
+        false,
+        2.0,
+        TRAVELED_COLOR,
+    );
+    let start = replay.case.start;
+    overlays.ring(
+        world(start.x, start.y),
+        START_RADIUS_PX,
+        1.5,
+        TRAVELED_COLOR,
+    );
 }
 
 /// Center the camera on `bounds` (in the plane) and zoom so they fill the canvas, as seen

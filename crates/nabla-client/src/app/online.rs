@@ -12,7 +12,7 @@ use nabla_net::wire::{MAX_PASSWORD, MAX_USERNAME, Password, RosterEntry, Usernam
 
 use super::{
     Aim, GridStyle, Input, ViewerApp, canvas_buttons, draw_grid, fit_camera, icons, keys, palette,
-    screen_path, world,
+    path_strokes, screen_path, world,
 };
 use crate::camera::Vec3;
 use crate::canvas_buttons::Button;
@@ -638,27 +638,68 @@ impl ViewerApp {
             self.online_fit = false;
         }
         let painter = ui.painter_at(rect);
-        self.draw_online_scene(ui, &painter, rect, views);
-        self.draw_orbits(&painter, rect);
-        self.draw_prediction(&painter, rect);
-        if self.show_path {
-            let k = (own.t / own.replay.h()).floor() as usize;
-            self.draw_path(
-                &painter,
-                rect,
-                &own.replay,
-                k.min(own.replay.last_frame()),
-                &own.state,
-            );
-        }
+        let depth = self.draw_online_scene(ui, &painter, rect, views);
+        // The aim is read before the marks are drawn, which hold shared borrows of self.
         self.aiming = self.online_aim(&response, rect, &own.state);
+        if let Some(depth) = depth {
+            // The marks on the plane, over everything whose depth they are tested
+            // against: the orbits, the prediction, the path flown and the goal, as
+            // their flat draws have them, the same widths, colors and dash patterns.
+            let mut overlays = crate::overlays::Overlays::new(
+                &self.camera,
+                rect,
+                &depth,
+                ui.ctx().pixels_per_point(),
+            );
+            self.orbit_strokes(&mut overlays);
+            self.prediction_strokes(&mut overlays);
+            if self.show_path {
+                let k = (own.t / own.replay.h()).floor() as usize;
+                path_strokes(
+                    &mut overlays,
+                    &own.replay,
+                    k.min(own.replay.last_frame()),
+                    &own.state,
+                );
+            }
+            if let Some(online) = &self.online
+                && online.assisted()
+            {
+                self.goal_strokes(&mut overlays, &own.replay, &own.state);
+            }
+            if let Some(callback) = overlays.finish() {
+                painter.add(callback);
+            }
+            if let Some(online) = &self.online
+                && online.assisted()
+            {
+                self.draw_goal_label(&painter, rect, &own.replay, &own.state);
+            }
+        } else {
+            self.draw_orbits(&painter, rect);
+            self.draw_prediction(&painter, rect);
+            if self.show_path {
+                let k = (own.t / own.replay.h()).floor() as usize;
+                self.draw_path(
+                    &painter,
+                    rect,
+                    &own.replay,
+                    k.min(own.replay.last_frame()),
+                    &own.state,
+                );
+            }
+            if let Some(online) = &self.online
+                && online.assisted()
+            {
+                self.draw_goal(&painter, rect, &own.replay, &own.state);
+            }
+        }
         if let Some((pointer, heading)) = self.aiming {
             self.draw_aim(&painter, rect, &own.state, pointer, heading);
         }
         if let Some(online) = &self.online
             && online.assisted()
         {
-            self.draw_goal(&painter, rect, &own.replay, &own.state);
             self.draw_goal_marker(&painter, rect, rect, &own.replay, &own.state);
         }
         self.draw_name_tags(&painter, rect, corner, views);
@@ -779,17 +820,19 @@ impl ViewerApp {
     }
 
     /// The arena, the world's bodies, and the ships with their plumes.
+    /// Each pilot's canvas, and its own depth map when the scene was drawn in 3D, for the
+    /// marks over it to test their depth against.
     fn draw_online_scene(
         &mut self,
         ui: &egui::Ui,
         painter: &egui::Painter,
         rect: egui::Rect,
         views: &[View],
-    ) {
-        let Some(online) = &self.online else { return };
-        let Some(world_data) = online.world() else {
-            return;
+    ) -> Option<DepthMap> {
+        let Some(online) = &self.online else {
+            return None;
         };
+        let world_data = online.world()?;
         let bodies = world_data.bodies.clone();
         let half_side = world_data.arena.map_or(0.0, |arena| arena.half_side);
         let hull = world_data.hull_radius();
@@ -826,10 +869,10 @@ impl ViewerApp {
             for view in views {
                 self.draw_ship_sized(painter, rect, &view.state, hull);
             }
-            return;
+            return None;
         }
         let Some((renderer, plume)) = &self.ship3d else {
-            return;
+            return None;
         };
         let ships: Vec<_> = views
             .iter()
@@ -859,6 +902,7 @@ impl ViewerApp {
         ) {
             painter.add(callback);
         }
+        Some(depth)
     }
 }
 

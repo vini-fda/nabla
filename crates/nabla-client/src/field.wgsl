@@ -1,7 +1,8 @@
 // Soft bands of the gravitational potential on the plane z = 0, drawn under everything else
 // on the canvas. The crisp equipotential contours are drawn separately, in Rust, by marching
 // squares (field.rs): per-pixel bands alias where the field changes within one pixel (near a
-// body, zoomed out), while world-space lines stay sub-cell accurate at any zoom.
+// body, zoomed out), while world-space lines stay sub-cell accurate at any zoom. In the 3D
+// view the lines are the depth-tested ribbons of the marks' pass (`overlays.rs`).
 
 struct Uniforms {
     clip_from_world: mat4x4<f32>,
@@ -71,69 +72,8 @@ fn linear_from_gamma_rgb(srgb: vec3<f32>) -> vec3<f32> {
 }
 
 // -------------------------------------------------------------------------------------------
-// The contour lines: ribbons over the bands (ribbon.rs), depth-tested against the planets and
-// ships that drew before them. Each vertex carries its signed distance across its ribbon, in
-// device pixels, and each fragment's alpha is a fence on that distance: how much of the pixel
-// the stroke covers. So the lines are anti-aliased at any width, with or without
-// multisampling, and look as egui's own strokes of the same width and color do.
-
-struct LinesUniforms {
-    // x, y: the callback viewport's size in device pixels; z: half the line's width in device
-    // pixels; w: the anti-aliasing feather, in device pixels.
-    params: vec4<f32>,
-    // The line's color as egui's colors: sRGB gamma channels from 0 to 1, premultiplied by
-    // their alpha.
-    color: vec4<f32>,
-};
-@group(2) @binding(0) var<uniform> lines: LinesUniforms;
-
-struct LinesVertexIn {
-    // x, y: device pixels from the viewport's corner; z: the depth the plane lies at, 0 to 1.
-    @location(0) pos: vec3<f32>,
-    // The signed distance across the ribbon, from the line along its middle, in `pos`'s
-    // pixels.
-    @location(1) across: f32,
-};
-
-struct LinesVertexOut {
-    @builtin(position) position: vec4<f32>,
-    @location(0) across: f32,
-};
-
-@vertex
-fn lines_vs(vertex: LinesVertexIn) -> LinesVertexOut {
-    var out: LinesVertexOut;
-    // From the viewport's top-left pixels to clip space, egui's y down flipped as its own
-    // shader flips it.
-    let centered = vec2<f32>(
-        2.0 * vertex.pos.x / lines.params.x - 1.0,
-        1.0 - 2.0 * vertex.pos.y / lines.params.y,
-    );
-    out.position = vec4<f32>(centered, vertex.pos.z, 1.0);
-    out.across = vertex.across;
-    return out;
-}
-
-/// How much of a pixel `d` from the middle of a stroke of half-width `half` the stroke
-/// covers: the overlap of the stroke with a box filter `feather` wide there. A stroke wider
-/// than the feather is full inside and fades over the feather, centered on its edge; a
-/// thinner one never fills a pixel, and is as much fainter, rather than wider than it is.
-fn coverage(d: f32, half: f32, feather: f32) -> f32 {
-    let overlap = min(d + 0.5 * feather, half) - max(d - 0.5 * feather, -half);
-    return clamp(overlap / feather, 0.0, 1.0);
-}
-
-@fragment
-fn lines_fs_gamma_framebuffer(in: LinesVertexOut) -> @location(0) vec4<f32> {
-    let covered = coverage(abs(in.across), lines.params.z, lines.params.w);
-    return lines.color * covered;
-}
-
-@fragment
-fn lines_fs_linear_framebuffer(in: LinesVertexOut) -> @location(0) vec4<f32> {
-    let covered = coverage(abs(in.across), lines.params.z, lines.params.w);
-    return vec4<f32>(linear_from_gamma_rgb(lines.color.rgb), lines.color.a) * covered;
-}
+// The contour lines are drawn by the marks' pass (`overlays.wgsl`), depth-tested against the
+// planets and ships that drew before them.
 
 @fragment
 fn fs_gamma_framebuffer(in: VertexOut) -> @location(0) vec4<f32> {

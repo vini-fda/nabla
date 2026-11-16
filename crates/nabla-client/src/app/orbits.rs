@@ -574,6 +574,62 @@ impl ViewerApp {
             painter.add(egui::Shape::line(run, egui::Stroke::new(2.0, palette::RED)));
         }
     }
+
+    /// The orbit rings on the canvas in the 3D view, as depth-tested strokes of the marks'
+    /// pass (`crate::overlays`): the pilot's orbit and the selected one, the same rings
+    /// `draw_orbits` gives egui in the flat view, the same radii, widths, colors and dash
+    /// pattern, tested against the depth of the planets and ships drawn before them, so
+    /// what stands in front of the plane hides them.
+    pub(super) fn orbit_strokes(&self, overlays: &mut crate::overlays::Overlays<'_>) {
+        if self.flight_objective() == Objective::ReachTarget {
+            return;
+        }
+        let draw = |overlays: &mut crate::overlays::Overlays<'_>,
+                    target: Target,
+                    color: egui::Color32,
+                    dashed: bool| {
+            let flight = self.flight_world();
+            let radius = target.radius(flight) as f32;
+            let center = egui::Vec2::from(flight.bodies[target.body].position);
+            let point = |i: usize| {
+                let angle = i as f32 * std::f32::consts::TAU / 128.0;
+                Vec3::plane(center + egui::Vec2::angled(angle) * radius)
+            };
+            // The dashed ring in runs of its 128 segments, two on and two off, as the flat
+            // view draws it; the solid one the closed polyline around.
+            if dashed {
+                for i in (0..128).step_by(4) {
+                    overlays.stroke([point(i), point(i + 1), point(i + 2)], false, 1.5, color);
+                }
+            } else {
+                overlays.stroke((0..128).map(point), true, 1.5, color);
+            }
+        };
+        if let Some(pilot) = self.flight_orbit_pilot() {
+            draw(overlays, pilot.target, palette::GREEN, false);
+        }
+        if let Some(target) = self.orbit_controls.target {
+            draw(overlays, target, self.selected_orbit_color(), true);
+        }
+    }
+
+    /// The controller's forecast on the canvas in the 3D view, as a depth-tested stroke of
+    /// the marks' pass: the same line `draw_prediction` gives egui in the flat view, tested
+    /// against the depth of the planets and ships drawn before it.
+    pub(super) fn prediction_strokes(&self, overlays: &mut crate::overlays::Overlays<'_>) {
+        if !self.show_prediction || self.prediction.path.len() < 2 {
+            return;
+        }
+        // Drop elapsed forecast samples so the red line always starts at the visible ship.
+        let first = ((self.flight_time() - self.prediction.starts_at) / self.flight_h())
+            .max(0.0)
+            .ceil() as usize;
+        let state = self.flight_state();
+        let points = std::iter::once([state.x, state.y])
+            .chain(self.prediction.path.iter().skip(first).copied())
+            .map(|p| Vec3::plane(world(p[0], p[1])));
+        overlays.stroke(points, false, 2.0, palette::RED);
+    }
 }
 
 /// Width of the column of icons and symbols in the rows of the objective view, and of the sample

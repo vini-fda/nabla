@@ -6,8 +6,9 @@
 //!   chained into polylines: per-pixel bands alias where the field changes within one
 //!   pixel (near a body, zoomed out), while world-space lines stay sub-cell accurate at any
 //!   zoom. In the flat 2D view they are drawn as plain egui strokes; in the 3D view, as
-//!   the same stroke by a wgpu pass that tests them against the depth of the planets and
-//!   ships drawn before them, so what stands in front of the plane hides them.
+//!   the same strokes of the marks' pass (`crate::overlays`), tested against the depth of
+//!   the planets and ships drawn before them, so what stands in front of the plane hides
+//!   them.
 //!
 //! Both use the potential whose negative gradient is the simulation's acceleration
 //! (`nabla_sim::physics::gravity_acceleration`): `-G M / r` outside a body, and the uniform
@@ -105,7 +106,6 @@ pub fn init(render: &egui_wgpu::RenderState, samples: u32, depth: Option<wgpu::T
     });
     let bind_group = bind_group(device, &layout, &uniforms, &bodies_buf);
     let pipeline = pipeline(device, &shader, &layout, render, samples, depth);
-    let lines = LinesResources::new(device, &shader, render, samples, depth);
     render
         .renderer
         .write()
@@ -119,7 +119,6 @@ pub fn init(render: &egui_wgpu::RenderState, samples: u32, depth: Option<wgpu::T
             uniforms,
             quad,
         });
-    render.renderer.write().callback_resources.insert(lines);
 }
 
 /// The banding pass's pipeline: a world-space quad on the plane `z = 0`, blended as egui
@@ -322,199 +321,35 @@ impl CallbackTrait for Callback {
 }
 
 // -----------------------------------------------------------------------------------------
-// The wgpu pass for the contour lines, drawn over the bands and depth-tested against the
-// planets and ships that drew before them.
+// The contour lines in the 3D view: strokes of the marks' pass (`crate::overlays`), drawn
+// after the planets and ships, depth-tested against them through the scene's own depth map,
+// so what stands in front of the plane hides them.
 
-/// The contour lines pass's pipeline and buffers.
-struct LinesResources {
-    pipeline: wgpu::RenderPipeline,
-    bind_group: wgpu::BindGroup,
-    uniforms: wgpu::Buffer,
-    /// The segments' quads, regrown whenever a frame no longer fits.
-    vertices: wgpu::Buffer,
-    capacity: u64,
-    /// The last frame's bound vertices and their bytes.
-    count: u32,
-    bound: u64,
-}
-
-impl LinesResources {
-    fn new(
-        device: &wgpu::Device,
-        shader: &wgpu::ShaderModule,
-        render: &egui_wgpu::RenderState,
-        samples: u32,
-        depth: Option<wgpu::TextureFormat>,
-    ) -> Self {
-        let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("gravity field line uniforms"),
-            size: 32,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("gravity field lines"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(32),
-                },
-                count: None,
-            }],
-        });
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("gravity field lines"),
-            layout: &layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: uniforms.as_entire_binding(),
-            }],
-        });
-        Self {
-            pipeline: lines_pipeline(device, shader, &layout, render, samples, depth),
-            bind_group,
-            uniforms,
-            vertices: device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("gravity field line vertices"),
-                size: 4,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }),
-            capacity: 4,
-            count: 0,
-            bound: 4,
-        }
-    }
-}
-
-/// The lines pass's pipeline: like the bands', but each vertex one of a ribbon's
-/// (`crate::ribbon`), in device pixels with the plane's depth, carrying its distance across
-/// the ribbon, which the fragment shader fences itself in by.
-fn lines_pipeline(
-    device: &wgpu::Device,
-    shader: &wgpu::ShaderModule,
-    layout: &wgpu::BindGroupLayout,
-    render: &egui_wgpu::RenderState,
-    samples: u32,
-    depth: Option<wgpu::TextureFormat>,
-) -> wgpu::RenderPipeline {
-    // Group 0: the bands' uniform and bodies; group 2: the lines' own uniform.
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("gravity field lines"),
-        bind_group_layouts: &[None, None, Some(layout)],
-        ..Default::default()
-    });
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("gravity field lines"),
-        layout: Some(&pipeline_layout),
-        vertex: wgpu::VertexState {
-            module: shader,
-            entry_point: Some("lines_vs"),
-            compilation_options: Default::default(),
-            buffers: &[Some(wgpu::VertexBufferLayout {
-                array_stride: LINE_VERTEX_BYTES,
-                step_mode: wgpu::VertexStepMode::Vertex,
-                attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32],
-            })],
-        },
-        primitive: wgpu::PrimitiveState::default(),
-        depth_stencil: depth.map(|format| wgpu::DepthStencilState {
-            format,
-            depth_write_enabled: Some(false),
-            depth_compare: Some(wgpu::CompareFunction::LessEqual),
-            stencil: Default::default(),
-            bias: Default::default(),
-        }),
-        multisample: wgpu::MultisampleState {
-            count: samples,
-            ..Default::default()
-        },
-        fragment: Some(wgpu::FragmentState {
-            module: shader,
-            // As egui's own shader picks its output, and the bands' above.
-            entry_point: Some(if render.target_format.is_srgb() {
-                "lines_fs_linear_framebuffer"
-            } else {
-                "lines_fs_gamma_framebuffer"
-            }),
-            compilation_options: Default::default(),
-            targets: &[Some(wgpu::ColorTargetState {
-                format: render.target_format,
-                blend: Some(wgpu::BlendState {
-                    color: wgpu::BlendComponent {
-                        src_factor: wgpu::BlendFactor::One,
-                        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                        operation: wgpu::BlendOperation::Add,
-                    },
-                    alpha: wgpu::BlendComponent {
-                        src_factor: wgpu::BlendFactor::OneMinusDstAlpha,
-                        dst_factor: wgpu::BlendFactor::One,
-                        operation: wgpu::BlendOperation::Add,
-                    },
-                }),
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-        }),
-        multiview_mask: None,
-        cache: None,
-    })
-}
-
-/// Floats and bytes per vertex of the lines pass: `LinesVertexIn` of `field.wgsl`.
-const LINE_VERTEX_FLOATS: usize = 4;
-const LINE_VERTEX_BYTES: u64 = 4 * LINE_VERTEX_FLOATS as u64;
-
-/// The paint callback of one frame's contour lines in the 3D view: the chains' ribbons in the
-/// canvas's device pixels, each vertex with the depth the plane lies at there and its
-/// distance across the ribbon, for the fragment distance fence.
-struct LinesCallback {
-    uniforms: Vec<u8>,
-    vertices: Vec<f32>,
-}
-
-impl CallbackTrait for LinesCallback {
-    fn prepare(
-        &self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        _screen: &ScreenDescriptor,
-        _encoder: &mut wgpu::CommandEncoder,
-        resources: &mut CallbackResources,
-    ) -> Vec<wgpu::CommandBuffer> {
-        if let Some(res) = resources.get_mut::<LinesResources>() {
-            queue.write_buffer(&res.uniforms, 0, &self.uniforms);
-            let bytes = to_bytes(&self.vertices);
-            res.count = (bytes.len() as u64 / LINE_VERTEX_BYTES) as u32;
-            res.bound = bytes.len() as u64;
-            if res.bound > res.capacity {
-                res.capacity = res.bound.next_power_of_two();
-                res.vertices = device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("gravity field line vertices"),
-                    size: res.capacity,
-                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                });
-            }
-            queue.write_buffer(&res.vertices, 0, &bytes);
-        }
-        Vec::new()
-    }
-
-    fn paint(
-        &self,
-        _info: egui::PaintCallbackInfo,
-        pass: &mut wgpu::RenderPass<'static>,
-        resources: &CallbackResources,
-    ) {
-        if let Some(res) = resources.get::<LinesResources>() {
-            pass.set_pipeline(&res.pipeline);
-            pass.set_bind_group(2, &res.bind_group, &[]);
-            pass.set_vertex_buffer(0, res.vertices.slice(0..res.bound));
-            pass.draw(0..res.count, 0..1);
-        }
+/// The contour lines on the canvas in the 3D view, from `cache` (`contours`, warmed by the
+/// caller) as strokes to add to the `overlays` pass, along with the other marks of the frame.
+/// They are the stroke `draw_contours` gives egui in the flat view, the same color and
+/// `width` points thick, with the same pixel of anti-aliasing.
+pub fn contour_strokes(
+    overlays: &mut crate::overlays::Overlays<'_>,
+    camera: &Camera,
+    cache: &Option<Contours>,
+    width: f32,
+    visuals: &egui::Visuals,
+) {
+    let Some(stroke) = stroke(camera, width, visuals) else {
+        return;
+    };
+    let Some(contours) = cache.as_ref() else {
+        return;
+    };
+    for chain in &contours.chains {
+        let (closed, points) = ring(chain);
+        overlays.stroke(
+            points.iter().map(|p| Vec3::plane(Vec2::from(*p))),
+            closed,
+            stroke.width,
+            stroke.color,
+        );
     }
 }
 
@@ -541,120 +376,6 @@ fn ring(chain: &[[f32; 2]]) -> (bool, &[[f32; 2]]) {
         }
         _ => (false, chain),
     }
-}
-
-/// The contour lines on the canvas in the 3D view, from `cache` (`contours`, warmed by the
-/// caller) as a paint callback to add after the planets and ships: drawn over the bands,
-/// depth-tested against the 3D content through the scene's own `depth` map, so what stands
-/// in front of the plane hides them. They are the stroke `draw_contours` gives egui in the
-/// flat view, the same color and `width` points thick, with the same pixel of anti-aliasing.
-/// The callback is recreated every frame, as the view's device pixels move.
-pub fn paint_lines(
-    camera: &Camera,
-    rect: Rect,
-    cache: &Option<Contours>,
-    width: f32,
-    depth: &DepthMap,
-    pixels_per_point: f32,
-    visuals: &egui::Visuals,
-) -> Option<egui::PaintCallback> {
-    let stroke = stroke(camera, width, visuals)?;
-    let (vertices, uniforms) = line_vertices(
-        camera,
-        rect,
-        cache.as_ref()?,
-        stroke,
-        depth,
-        pixels_per_point,
-    )?;
-    Some(egui_wgpu::Callback::new_paint_callback(
-        rect,
-        LinesCallback {
-            uniforms: to_bytes(&uniforms),
-            vertices,
-        },
-    ))
-}
-
-/// What `paint_lines` draws: the vertices of the chains' ribbons, and the floats of the
-/// shader's uniforms. Each vertex is its place in the canvas's device pixels, the depth the
-/// plane lies at there, and its distance across the ribbon.
-fn line_vertices(
-    camera: &Camera,
-    rect: Rect,
-    contours: &Contours,
-    stroke: Stroke,
-    depth: &DepthMap,
-    pixels_per_point: f32,
-) -> Option<(Vec<f32>, [f32; 8])> {
-    // In device pixels: half the stroke, and one pixel of feathering centered on its edge,
-    // as egui feathers its own strokes. The ribbon covers both.
-    let half = 0.5 * stroke.width * pixels_per_point;
-    let feather = 1.0;
-    let reach = half + 0.5 * feather;
-    let on_screen = rect.expand(stroke.width + 8.0);
-    let mut vertices: Vec<f32> = Vec::new();
-    for chain in &contours.chains {
-        let (closed, points) = ring(chain);
-        let count = points.len();
-        let points = points.iter().map(|p| Vec3::plane(Vec2::from(*p)));
-        let runs = camera.project_polyline_with_world(points, rect);
-        // A ring is still one when the near plane has cut nothing from it.
-        let closed = closed && runs.len() == 1 && runs[0].len() == count;
-        for run in runs {
-            if run.len() < 2 || !run.iter().any(|(_, p)| on_screen.contains(*p)) {
-                continue;
-            }
-            // From the canvas rect's corner, in device pixels like the shader wants, with
-            // each point's depth and whether it is in sight.
-            let points = crate::ribbon::distinct(
-                run.iter().map(|&(world, screen)| {
-                    (
-                        (screen - rect.min) * pixels_per_point,
-                        (depth.depth(world, 0.0), on_screen.contains(screen)),
-                    )
-                }),
-                closed,
-            );
-            let places: Vec<Vec2> = points.iter().map(|(p, _)| *p).collect();
-            let offsets = crate::ribbon::offsets(&places, reach, closed);
-            for (i, j) in crate::ribbon::segments(points.len(), closed) {
-                let ((a, (depth_a, seen_a)), (b, (depth_b, seen_b))) = (points[i], points[j]);
-                if !seen_a && !seen_b {
-                    continue;
-                }
-                let (a_plus, a_minus) = (a + offsets[i], a - offsets[i]);
-                let (b_plus, b_minus) = (b + offsets[j], b - offsets[j]);
-                for (at, depth, across) in [
-                    (a_plus, depth_a, reach),
-                    (a_minus, depth_a, -reach),
-                    (b_minus, depth_b, -reach),
-                    (a_plus, depth_a, reach),
-                    (b_minus, depth_b, -reach),
-                    (b_plus, depth_b, reach),
-                ] {
-                    vertices.extend([at.x, at.y, depth, across]);
-                }
-            }
-        }
-    }
-    if vertices.is_empty() {
-        return None;
-    }
-    // The color as the shader and egui's own have it: gamma channels from 0 to 1,
-    // premultiplied by their alpha.
-    let [r, g, b, a] = stroke.color.to_normalized_gamma_f32();
-    let uniforms = [
-        rect.width() * pixels_per_point,
-        rect.height() * pixels_per_point,
-        half,
-        feather,
-        r,
-        g,
-        b,
-        a,
-    ];
-    Some((vertices, uniforms))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1259,27 +980,26 @@ mod tests {
         };
         let mut cache = None;
         contours(&camera, rect, &bodies, 1.0, &mut cache);
-        let contours = cache.as_ref().expect("warmed");
         let visuals = egui::Visuals::dark();
         let depth = DepthMap::for_camera(&camera, rect, 100.0);
         let stroke = stroke(&camera, 1.5, &visuals).expect("facing the plane");
-        let (vertices, uniforms) =
-            line_vertices(&camera, rect, contours, stroke, &depth, 2.0).expect("lines");
+        let mut overlays = crate::overlays::Overlays::new(&camera, rect, &depth, 2.0);
+        contour_strokes(&mut overlays, &camera, &cache, 1.5, &visuals);
         // The shader's color is egui's: channels from 0 to 1, premultiplied, so the lines
-        // are as translucent as the stroke, not opaque white.
-        let [r, g, b, a] = stroke.color.to_array().map(|c| f32::from(c) / 255.0);
-        assert_eq!(uniforms[4..], [r, g, b, a]);
-        assert!(a > 0.5 && a < 1.0 && r <= a && g <= a && b <= a);
-        // Half the stroke's width in device pixels, and a pixel of feathering.
-        assert_eq!(uniforms[..4], [1600.0, 1200.0, 1.5, 1.0]);
-        // Every vertex is the ribbon's reach across: the half width and half the feather.
-        let vertices = vertices.as_chunks::<LINE_VERTEX_FLOATS>().0;
+        // are as translucent as the stroke, not opaque white. Half the stroke's width in
+        // device pixels, and a pixel of feathering: every vertex is the ribbon's reach
+        // across, the half width and half the feather.
+        let vertices: Vec<[f32; 10]> = overlays.vertices().as_chunks::<10>().0.to_vec();
         assert!(vertices.len() > 600 && vertices.len().is_multiple_of(6));
         assert!(vertices.iter().all(|v| v[3].abs() == 2.0));
+        assert!(vertices.iter().all(|v| v[4] == 1.5 && v[5] == 1.0));
+        let [r, g, b, a] = stroke.color.to_normalized_gamma_f32();
+        assert!(vertices.iter().all(|v| v[6..] == [r, g, b, a]));
+        assert!(a > 0.5 && a < 1.0 && r <= a && g <= a && b <= a);
         // Consecutive segments' quads share their vertices where they join, so no pixel
         // of a line is blended twice: the second triangle's last vertex, and the first
         // triangle's last, are the next quad's first two.
-        let place = |v: &[f32; LINE_VERTEX_FLOATS]| [v[0], v[1]];
+        let place = |v: &[f32; 10]| [v[0], v[1]];
         let joined = vertices
             .chunks(6)
             .zip(vertices.chunks(6).skip(1))
@@ -1288,7 +1008,7 @@ mod tests {
             })
             .count();
         // All but where one ring's quads end and the next ring's begin.
-        let rings = contours.chains.len();
+        let rings = cache.as_ref().expect("warmed").chains.len();
         assert!(
             joined + rings >= vertices.len() / 6,
             "{joined} joins among {} quads of {rings} rings",
@@ -1308,7 +1028,7 @@ mod tests {
             scale: 20.0,
             ..Camera::default()
         };
-        let contours = Contours {
+        let cache = Some(Contours {
             chains: vec![ring_chain],
             bodies: Vec::new(),
             gravity: 1.0,
@@ -1317,13 +1037,12 @@ mod tests {
             orbit: camera.orbit,
             rect,
             cell: 1.0,
-        };
+        });
         let depth = DepthMap::for_camera(&camera, rect, 100.0);
-        let stroke = Stroke::new(2.0, egui::Color32::WHITE);
-        let (vertices, _) =
-            line_vertices(&camera, rect, &contours, stroke, &depth, 1.0).expect("lines");
-        let vertices = vertices.as_chunks::<LINE_VERTEX_FLOATS>().0;
+        let mut overlays = crate::overlays::Overlays::new(&camera, rect, &depth, 1.0);
+        contour_strokes(&mut overlays, &camera, &cache, 2.0, &egui::Visuals::dark());
         // Four sides, four quads, the last back to the first.
+        let vertices: Vec<[f32; 10]> = overlays.vertices().as_chunks::<10>().0.to_vec();
         assert_eq!(vertices.len(), 24);
         assert_eq!(vertices[23][..2], vertices[0][..2]);
         assert_eq!(vertices[20][..2], vertices[1][..2]);

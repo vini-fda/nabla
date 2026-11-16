@@ -663,7 +663,7 @@ mod tests {
         bad(&|w| {
             w.players[0].state = State {
                 x: 0.0,
-                y: -12.0,
+                y: -600.0,
                 ..State::default()
             }
         });

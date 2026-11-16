@@ -1916,7 +1916,7 @@ impl ViewerApp {
         if self.game.objective() == Objective::ReachTarget {
             self.goal_strokes(&mut overlays, replay, &state);
         }
-        self.orbit_strokes(&mut overlays);
+        self.orbit_strokes(&mut overlays, rect);
         self.prediction_strokes(&mut overlays);
         if let Some(callback) = overlays.finish() {
             painter.add(callback);

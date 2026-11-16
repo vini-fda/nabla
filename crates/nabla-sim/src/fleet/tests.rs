@@ -277,7 +277,10 @@ fn the_partition_is_the_finest_that_keeps_near_ships_together() {
             .collect();
         let near = |i: usize, j: usize| {
             apart(&ships[i], &ships[j])
-                <= 2.0 * dynamics.radius() + dynamics.skin() + reach[block_of[i]] + reach[block_of[j]]
+                <= 2.0 * dynamics.radius()
+                    + dynamics.skin()
+                    + reach[block_of[i]]
+                    + reach[block_of[j]]
         };
         // Closed: near ships share a block.
         for i in 0..n {
@@ -299,7 +302,11 @@ fn the_partition_is_the_finest_that_keeps_near_ships_together() {
                     }
                 }
             }
-            assert_eq!(reached.len(), block.len(), "seed {seed}: {block:?} falls apart");
+            assert_eq!(
+                reached.len(),
+                block.len(),
+                "seed {seed}: {block:?} falls apart"
+            );
         }
         // The names do not matter: the ships in another order fall into the same sets.
         let mut order: Vec<usize> = (0..n).collect();
@@ -406,7 +413,11 @@ fn a_world_without_ship_collisions_is_a_product_of_ships() {
                 assert!(report.touches.is_empty());
                 for ((ship, flown), command) in each.iter_mut().zip(&ships).zip(&commands) {
                     ship.tick(command);
-                    assert_eq!(ship.state(), flown.state, "{preset:?} seed {seed} tick {tick}");
+                    assert_eq!(
+                        ship.state(),
+                        flown.state,
+                        "{preset:?} seed {seed} tick {tick}"
+                    );
                 }
             }
         }
@@ -594,7 +605,10 @@ fn two_ships_on_a_collision_course_never_pass_through_each_other() {
             "seed {seed}: they passed through each other untouched"
         );
     }
-    assert!(most_substeps > 20, "fast blocks were stepped finely: {most_substeps}");
+    assert!(
+        most_substeps > 20,
+        "fast blocks were stepped finely: {most_substeps}"
+    );
 }
 
 /// The shove bound: a ship that another runs into, in the open and coasting, ends up moving
@@ -717,7 +731,11 @@ fn a_world_too_small_for_another_ship_has_no_spawn_for_it() {
     let first = dynamics
         .spawn(&world, &[], 0, params)
         .expect("an empty world has room");
-    assert_eq!(first, world.spawn(0).state, "the template itself, when it is clear");
+    assert_eq!(
+        first,
+        world.spawn(0).state,
+        "the template itself, when it is clear"
+    );
     let ships = [Member::new(params, first)];
     assert_eq!(dynamics.spawn(&world, &ships, 1, params), None);
     // And where ships do not collide, they share the template.
@@ -770,7 +788,10 @@ fn within_the_horizon_no_block_forms_that_the_partition_did_not_foresee() {
             }
         }
     }
-    assert!(checked > 10_000 && merged > 500, "{checked} blocks, {merged} of several");
+    assert!(
+        checked > 10_000 && merged > 500,
+        "{checked} blocks, {merged} of several"
+    );
 }
 
 /// The order of two ships' names is the order the solver takes them in, and the outcome of a
@@ -832,7 +853,10 @@ fn the_order_of_names_gives_no_ship_an_advantage() {
     let count = bias.len() as f64;
     let mean = bias.iter().sum::<f64>() / count;
     let deviation = (bias.iter().map(|b| (b - mean).powi(2)).sum::<f64>() / count).sqrt();
-    assert!(differed > 1000, "the order matters to the outcome: {differed}");
+    assert!(
+        differed > 1000,
+        "the order matters to the outcome: {differed}"
+    );
     assert!(
         mean.abs() < 1e-3 && mean.abs() < 4.0 * deviation / count.sqrt(),
         "the name first is shoved {mean} of the closing speed more, with a deviation of {deviation}"

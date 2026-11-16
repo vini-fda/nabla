@@ -415,7 +415,10 @@ impl Play {
                 delta: State::default(),
                 jumped: true,
             };
-            self.pending = Some(self.pending.map_or(jump, |sum_so_far| sum(sum_so_far, jump)));
+            self.pending = Some(
+                self.pending
+                    .map_or(jump, |sum_so_far| sum(sum_so_far, jump)),
+            );
             return;
         }
         let forecast = self.forecast(roster, k);
@@ -448,8 +451,7 @@ impl Play {
                 self.stats.nonzero += 1;
                 let (position, heading) = (d.x.hypot(d.y), d.theta.abs());
                 self.stats.visible += u64::from(position > VISIBLE || heading > VISIBLE);
-                self.stats.snapped +=
-                    u64::from(position > SNAP_POSITION || heading > SNAP_HEADING);
+                self.stats.snapped += u64::from(position > SNAP_POSITION || heading > SNAP_HEADING);
                 self.stats.max_position = self.stats.max_position.max(d.x.hypot(d.y));
                 self.stats.max_velocity = self.stats.max_velocity.max(d.vx.hypot(d.vy));
                 self.stats.max_heading = self.stats.max_heading.max(d.theta.abs());

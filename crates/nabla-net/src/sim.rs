@@ -910,8 +910,8 @@ impl Sim {
         for n in base.tick..=end {
             let predicted = client.predict_company(n).expect("not before the base");
             for (a, &(other, predicted)) in predicted.iter().enumerate() {
-                let stands = !strangers[a]
-                    && (0..count).all(|b| !influence[a][b] || faithful[b] >= n);
+                let stands =
+                    !strangers[a] && (0..count).all(|b| !influence[a][b] || faithful[b] >= n);
                 let truth = self
                     .server
                     .log(other)
@@ -1136,7 +1136,10 @@ pub fn honest_pilot(seed: u64, peer: usize, stamp: Tick) -> Command {
 /// Thrust is on for most of them, with seldom a turn. It flies with no assist, so that its
 /// control does not change from tick to tick.
 pub fn steady_pilot(seed: u64, peer: usize, stamp: Tick) -> Command {
-    let mut rng = Rng::fork(seed ^ 0x57EA, ((peer as u64) << 32) | u64::from(stamp / 120));
+    let mut rng = Rng::fork(
+        seed ^ 0x57EA,
+        ((peer as u64) << 32) | u64::from(stamp / 120),
+    );
     let input = if stamp < 240 {
         Input {
             thrust: 1.0,

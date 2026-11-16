@@ -593,7 +593,10 @@ mod tests {
             ..world.clone()
         };
         let source_apart = apart.to_toml().expect("serialize");
-        assert!(source_apart.contains("ship_collisions = false"), "{source_apart}");
+        assert!(
+            source_apart.contains("ship_collisions = false"),
+            "{source_apart}"
+        );
         let parsed_apart = World::from_toml(&source_apart).expect("parse");
         assert_eq!(parsed_apart, apart);
         assert!(!parsed_apart.ship_collisions());

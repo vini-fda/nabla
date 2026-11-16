@@ -2,12 +2,12 @@
 //! `thm-contain`, `thm-exact` and `thm-margin`, what holds against hostile clients, and their
 //! forms for ships that collide: `thm-influence` and `thm-exact-b`.
 
+use nabla_core::State;
 use nabla_net::Config;
 use nabla_net::sim::{Behavior, Checks, Hostile, Link, Peer, Report, Scenario, Sim};
 use nabla_net::wire::{
     ClientStream, Commands, ConnId, Password, ServerStream, ShipId, Username, decode, encode,
 };
-use nabla_core::State;
 use nabla_net::{Kind, ServerMachine};
 use nabla_sim::command::Command;
 use nabla_sim::rng::Rng;
@@ -343,9 +343,18 @@ fn ships_that_collide_are_predicted_exactly_while_their_controls_hold() {
         let (touches, company) = (sum(|r| r.touches), sum(|r| r.company_checks));
         let (coupled, touched) = (sum(|r| r.coupled_checks), sum(|r| r.touched_checks));
         assert!(touches > 1000, "{preset:?}: the ships collided: {touches}");
-        assert!(company > 100_000, "{preset:?}: {company} other ships found exact");
-        assert!(coupled > 20_000, "{preset:?}: {coupled} found exact after sharing a block");
-        assert!(touched > 2000, "{preset:?}: {touched} found exact after a touch");
+        assert!(
+            company > 100_000,
+            "{preset:?}: {company} other ships found exact"
+        );
+        assert!(
+            coupled > 20_000,
+            "{preset:?}: {coupled} found exact after sharing a block"
+        );
+        assert!(
+            touched > 2000,
+            "{preset:?}: {touched} found exact after a touch"
+        );
     }
 }
 
@@ -503,7 +512,9 @@ fn a_ship_depends_only_on_the_ships_it_has_shared_a_block_with() {
             rammed[1].behavior = Behavior::Hostile(Hostile::Rammer);
             let (stormy, _) = run(scenario(seed, world.clone(), ticks, rammed, ALL));
             let (a, b) = (
-                calm.server().log(ShipId(0)).expect("ship 0 in the calm run"),
+                calm.server()
+                    .log(ShipId(0))
+                    .expect("ship 0 in the calm run"),
                 stormy
                     .server()
                     .log(ShipId(0))
@@ -521,7 +532,11 @@ fn a_ship_depends_only_on_the_ships_it_has_shared_a_block_with() {
             let until = alone_until(&calm).min(alone_until(&stormy));
             let same = until - a.since as usize;
             assert!(same > 0, "{preset:?} seed {seed}: a ship joins alone");
-            assert_eq!(a.samples[..same], b.samples[..same], "{preset:?} seed {seed}");
+            assert_eq!(
+                a.samples[..same],
+                b.samples[..same],
+                "{preset:?} seed {seed}"
+            );
             assert_eq!(
                 a.commands[..same - 1],
                 b.commands[..same - 1],

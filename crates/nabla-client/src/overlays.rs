@@ -266,42 +266,47 @@ impl<'a> Overlays<'a> {
         let feather = 1.0;
         let reach = half + 0.5 * feather;
         let on_screen = self.rect.expand(width + 8.0);
+        let bounds = Rect::from_min_max(
+            ((on_screen.min - self.rect.min) * self.pixels_per_point).to_pos2(),
+            ((on_screen.max - self.rect.min) * self.pixels_per_point).to_pos2(),
+        );
         let runs = self.camera.project_polyline_with_world(points, self.rect);
         // A ring is still one when the near plane has cut nothing from it.
         let closed = closed && runs.len() == 1 && runs[0].len() == count;
         for run in &runs {
-            if run.len() < 2 || !run.iter().any(|(_, p)| on_screen.contains(*p)) {
-                continue;
-            }
-            // From the canvas rect's corner, in device pixels like the shader wants, with
-            // each point's depth and whether it is in sight.
-            let points = crate::ribbon::distinct(
-                run.iter().map(|&(world, screen)| {
+            // Clip before tessellating: a segment can cross the canvas with both ends outside,
+            // and near-plane intersections can otherwise project enormously far away. Depth
+            // interpolates linearly in screen space, including at the clipped endpoints.
+            let points: Vec<_> = run
+                .iter()
+                .map(|&(world, screen)| {
                     (
                         (screen - self.rect.min) * self.pixels_per_point,
-                        (self.depth.depth(world, 0.0), on_screen.contains(screen)),
+                        self.depth.depth(world, 0.0),
                     )
-                }),
-                closed,
-            );
-            let places: Vec<Vec2> = points.iter().map(|(p, _)| *p).collect();
-            let offsets = crate::ribbon::offsets(&places, reach, closed);
-            for (i, j) in crate::ribbon::segments(points.len(), closed) {
-                let ((a, (depth_a, seen_a)), (b, (depth_b, seen_b))) = (points[i], points[j]);
-                if !seen_a && !seen_b {
-                    continue;
-                }
-                let (a_plus, a_minus) = (a + offsets[i], a - offsets[i]);
-                let (b_plus, b_minus) = (b + offsets[j], b - offsets[j]);
-                for (at, depth, across) in [
-                    (a_plus, depth_a, reach),
-                    (a_minus, depth_a, -reach),
-                    (b_minus, depth_b, -reach),
-                    (a_plus, depth_a, reach),
-                    (b_minus, depth_b, -reach),
-                    (b_plus, depth_b, reach),
-                ] {
-                    self.push(at, depth, across, half, feather, color);
+                })
+                .collect();
+            let clipped = crate::ribbon::clip(&points, bounds, closed, |a, b, t| a + (b - a) * t);
+            let whole_ring = closed && clipped.len() == 1 && clipped[0].len() == count;
+            for points in clipped {
+                let closed = whole_ring;
+                let points = crate::ribbon::distinct(points, closed);
+                let places: Vec<Vec2> = points.iter().map(|(p, _)| *p).collect();
+                let offsets = crate::ribbon::offsets(&places, reach, closed);
+                for (i, j) in crate::ribbon::segments(points.len(), closed) {
+                    let ((a, depth_a), (b, depth_b)) = (points[i], points[j]);
+                    let (a_plus, a_minus) = (a + offsets[i], a - offsets[i]);
+                    let (b_plus, b_minus) = (b + offsets[j], b - offsets[j]);
+                    for (at, depth, across) in [
+                        (a_plus, depth_a, reach),
+                        (a_minus, depth_a, -reach),
+                        (b_minus, depth_b, -reach),
+                        (a_plus, depth_a, reach),
+                        (b_minus, depth_b, -reach),
+                        (b_plus, depth_b, reach),
+                    ] {
+                        self.push(at, depth, across, half, feather, color);
+                    }
                 }
             }
         }
@@ -499,6 +504,31 @@ mod tests {
         assert_eq!(vertices.len(), 24);
         assert_eq!(vertices[23][..2], vertices[0][..2]);
         assert_eq!(vertices[20][..2], vertices[1][..2]);
+    }
+
+    #[test]
+    fn a_stroke_with_both_ends_off_screen_still_crosses_the_canvas() {
+        let camera = camera();
+        let rect = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
+        let depth = DepthMap::for_camera(&camera, rect, 100.0);
+        let mut overlays = Overlays::new(&camera, rect, &depth, 1.0);
+        overlays.stroke(
+            [
+                Vec3::plane(Vec2::new(-100.0, 0.0)),
+                Vec3::plane(Vec2::new(100.0, 0.0)),
+            ],
+            false,
+            1.0,
+            Color32::WHITE,
+        );
+        let vertices = vertices(&overlays);
+        assert_eq!(vertices.len(), 6);
+        assert!(
+            vertices
+                .iter()
+                .all(|v| v[0].is_finite() && v[0].abs() < 1000.0)
+        );
+        assert!(vertices.iter().all(|v| (v[1] - 300.0).abs() < 10.0));
     }
 
     #[test]

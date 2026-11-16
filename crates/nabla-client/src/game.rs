@@ -946,34 +946,36 @@ mod tests {
     fn saves_current_state_and_reloads_collision_world() {
         let mut world = crate::world::Preset::PlanetAndMoon.world();
         world.gravity_constant = 2.5;
+        // A scale-up of the classic crash: positions 50x, speeds sqrt(50)x.
+        let incoming = 100.0 * 50.0_f64.sqrt();
         world.players[0].state = State {
-            x: -20.0,
-            y: -12.0,
-            vx: 100.0,
+            x: -1000.0,
+            y: -600.0,
+            vx: incoming,
             ..State::default()
         };
         let body = world.bodies[0].position;
         let mut game = Game::in_world(world.case(), world.clone());
         let (lo, hi) = game.view_bounds();
         assert!(
-            lo[1] <= -19.0 && hi[0] >= 14.5,
+            lo[1] <= -950.0 && hi[0] >= 725.0,
             "initial view includes planet and moon"
         );
         // The crash's claims: the hull reaches the planet's surface (a center distance of
-        // ~7.1), and no sample of the flight, crashed and scraping as it tumbles, sinks
+        // ~350.1), and no sample of the flight, crashed and scraping as it tumbles, sinks
         // into it.
         let mut closest = f64::INFINITY;
-        for _ in 0..30 {
+        for _ in 0..220 {
             game.advance(0.017, Input::default(), Steering::Raw);
             let s = game.state();
             closest = closest.min((s.x - f64::from(body[0])).hypot(s.y - f64::from(body[1])));
         }
         assert!(
-            closest < 7.4 && closest > 6.99,
+            closest < 350.4 && closest > 349.99,
             "the hull scrapes the surface without passing into the planet: {closest}"
         );
         assert!(
-            game.state().vx.hypot(game.state().vy) < 100.0,
+            game.state().vx.hypot(game.state().vy) < incoming,
             "the crash bleeds the incoming speed: {:?}",
             game.state()
         );
@@ -1388,10 +1390,10 @@ mod tests {
         let mut g = Game::in_world(world.case(), world);
         g.engage(Objective::ReachTarget, &nabla_core::solutions::SOLUTIONS[0])
             .expect("engages");
-        for _ in 0..600 {
+        for _ in 0..6000 {
             g.advance(0.02, Input::default(), Steering::Raw);
         }
-        assert!(g.landed().is_some(), "landed within 12 s");
+        assert!(g.landed().is_some(), "landed within 120 s");
         assert_eq!(g.take_fault(), None);
     }
 

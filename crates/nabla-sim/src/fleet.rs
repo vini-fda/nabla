@@ -535,7 +535,7 @@ impl Dynamics {
     /// no room.
     ///
     /// The places are the world's spawn templates, from the `index`th on, and then rings of
-    /// places around each, four hull radii apart, out to [`SPAWN_RINGS`] rings. Where ships do
+    /// places around each, four hull radii apart, out to eight rings. Where ships do
     /// not collide every place is clear of them, and the ship takes its template, as in Phase A.
     pub fn spawn(
         &self,

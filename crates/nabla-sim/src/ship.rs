@@ -1,14 +1,16 @@
 //! One ship's map from tick to tick, `f_i` of `specs/multiplayer.typ`: the command is made safe,
 //! becomes a control, the physics advances one tick, and the arena's wall stops the ship.
 //!
-//! The map depends on this ship's state, parameters and command, and on the world's constants,
-//! and on nothing about the other ships. That is the whole content of Phase A: a server runs one
-//! [`Ship`] for each pilot, and a client runs a copy of its own to predict.
+//! This is the world's map ([`crate::fleet::Dynamics::tick`]) for a ship that is alone in its
+//! block, which is every ship of a world whose ships do not collide, and any ship far enough
+//! from the others in one whose ships do. It depends on this ship's state, parameters and
+//! command, and on the world's constants, and on nothing else: a [`Ship`] keeps no physics from
+//! one tick to the next.
 
-use nabla_core::{Control, Params, State, step};
+use nabla_core::{Control, Params, State};
 
 use crate::command::Command;
-use crate::physics::Physics;
+use crate::fleet::{Dynamics, Member};
 use crate::world::World;
 
 /// `Wall`: stop the ship at the edge of the arena, whose half side is `half_side`, for a hull of
@@ -36,17 +38,11 @@ pub fn wall(s: State, half_side: f64, radius: f64) -> State {
     State { x, y, vx, vy, ..s }
 }
 
-/// One ship, advancing a tick at a time under the world's rules.
+/// One ship, flying alone, advancing a tick at a time under the world's rules.
+#[derive(Clone, Debug)]
 pub struct Ship {
-    params: Params,
-    state: State,
-    /// The heading the stability assist holds: the part of the ship's extended state that is not
-    /// physics.
-    hold: Option<f64>,
-    /// The control of the tick before, to draw the plume.
-    control: Control,
-    /// Rapier, in a world with bodies. In a vacuum the exact model steps the ship instead.
-    physics: Option<Physics>,
+    dynamics: Dynamics,
+    member: Member,
 }
 
 impl Ship {
@@ -58,71 +54,44 @@ impl Ship {
             ..params
         };
         Self {
-            params,
-            state,
-            hold: None,
-            control: Control::default(),
-            physics: Self::physics_in(world, &params, state),
+            dynamics: Dynamics::new(world),
+            member: Member::new(params, state),
         }
     }
 
-    fn physics_in(world: &World, params: &Params, state: State) -> Option<Physics> {
-        (!world.bodies.is_empty())
-            .then(|| Physics::for_ship(world, state, params, world.hull_radius()))
-    }
-
     /// The ship put back in state `state`, holding `hold`, as a client does to replay from a
-    /// snapshot. Rapier's contact cache, which a state does not have, starts afresh.
-    pub fn restore(&mut self, world: &World, state: State, hold: Option<f64>) {
-        self.state = state;
-        self.hold = hold;
-        self.physics = Self::physics_in(world, &self.params, state);
+    /// snapshot. Nothing is lost by it: the state and the hold are all a tick reads.
+    pub fn restore(&mut self, state: State, hold: Option<f64>) {
+        self.member.state = state;
+        self.member.hold = hold;
     }
 
     pub fn state(&self) -> State {
-        self.state
+        self.member.state
     }
 
     pub fn hold(&self) -> Option<f64> {
-        self.hold
+        self.member.hold
     }
 
+    /// The control of the tick before, to draw the plume.
     pub fn control(&self) -> Control {
-        self.control
+        self.member.control
     }
 
     pub fn params(&self) -> &Params {
-        &self.params
+        &self.member.params
     }
 
     /// One tick under `command`: `f(x, c) = (Wall(phi(s, u)), eta')` where `(u, eta')` is the
     /// actuation of the command. The command is sanitized first, so any value at all is safe,
     /// and should its control still not be admissible (it cannot be, for a finite state) the ship
     /// coasts.
-    pub fn tick(&mut self, world: &World, command: &Command) {
-        let command = command.sanitize(&self.params);
-        let (mut u, hold) = command.actuate(&self.params, &self.state, self.hold);
-        if !u.is_admissible(&self.params) {
-            u = Control::default();
-        }
-        let moved = match &mut self.physics {
-            Some(physics) => physics
-                .step(self.params.h, u)
-                .pop()
-                .expect("a step has samples"),
-            None => step(&self.params, &self.state, &u),
-        };
-        let walled = world.arena.map_or(moved, |arena| {
-            wall(moved, arena.half_side, f64::from(world.hull_radius()))
-        });
-        if walled != moved
-            && let Some(physics) = &mut self.physics
-        {
-            physics.set_state(&walled);
-        }
-        self.state = walled;
-        self.hold = hold;
-        self.control = u;
+    pub fn tick(&mut self, command: &Command) {
+        self.dynamics.tick(
+            std::slice::from_mut(&mut self.member),
+            std::slice::from_ref(command),
+        );
     }
 }
 
@@ -212,7 +181,7 @@ mod tests {
         };
         let mut fastest = 0.0_f64;
         for _ in 0..4000 {
-            ship.tick(&world, &full);
+            ship.tick(&full);
             fastest = fastest.max(ship.state().vx.abs());
         }
         let bound = speed_bound(a, world.h(), 0.0);
@@ -291,7 +260,7 @@ mod tests {
                 if tick % 40 == 0 {
                     mode = adversary(&mut rng, &params, &ship);
                 }
-                ship.tick(&world, &mode);
+                ship.tick(&mode);
                 let s = ship.state();
                 assert!(
                     s.x.abs() <= S - 1.0 && s.y.abs() <= S - 1.0,
@@ -317,7 +286,7 @@ mod tests {
             torque: 0.0,
         };
         for tick in 0..3000 {
-            ship.tick(&world, &full);
+            ship.tick(&full);
             let s = ship.state();
             assert!(
                 s.x.abs() <= S - 1.0 && s.y.abs() <= S - 1.0,
@@ -344,7 +313,7 @@ mod tests {
         let run = || {
             let mut ship = Ship::new(&world, params, start);
             for c in &commands {
-                ship.tick(&world, c);
+                ship.tick(c);
             }
             ship.state()
         };
@@ -352,23 +321,57 @@ mod tests {
     }
 
     #[test]
-    fn restoring_a_vacuum_ship_resumes_it_exactly() {
-        let world = arena(Preset::Vacuum);
-        let params = world.default_ship();
-        let mut rng = Rng::new(5);
-        let mut live = Ship::new(&world, params, world.spawn(0).state);
-        let mut replay = Ship::new(&world, params, world.spawn(0).state);
-        for tick in 0..300 {
-            let c = adversary(&mut rng, &params, &live);
-            live.tick(&world, &c);
-            if tick == 100 {
-                replay.restore(&world, live.state(), live.hold());
-            } else if tick > 100 {
-                replay.tick(&world, &c);
+    fn restoring_a_ship_resumes_it_exactly_in_a_vacuum_and_among_bodies() {
+        // A state and a hold are all there is to a ship, so a replay from any tick of a flight is
+        // that flight, to the last bit: on the planet's surface too, where the ship is in contact.
+        for (preset, start) in [
+            (Preset::Vacuum, None),
+            (Preset::PlanetAndMoon, None),
+            (Preset::Planet, Some(at(0.0, -3.9))),
+        ] {
+            let world = arena(preset);
+            let params = world.default_ship();
+            let start = start.unwrap_or_else(|| world.spawn(0).state);
+            let mut rng = Rng::new(5);
+            let mut live = Ship::new(&world, params, start);
+            let mut replay = Ship::new(&world, params, start);
+            let mut command = Command::default();
+            for tick in 0..900 {
+                if tick % 15 == 0 {
+                    command = adversary(&mut rng, &params, &live);
+                }
+                live.tick(&command);
+                if tick % 100 == 0 {
+                    replay.restore(live.state(), live.hold());
+                } else {
+                    replay.tick(&command);
+                    assert_eq!(replay.state(), live.state(), "{preset:?} tick {tick}");
+                    assert_eq!(replay.hold(), live.hold(), "{preset:?} tick {tick}");
+                }
             }
         }
-        assert_eq!(replay.state(), live.state());
-        assert_eq!(replay.hold(), live.hold());
+    }
+
+    #[test]
+    fn the_control_a_ship_flew_is_admissible_and_fits_a_snapshot() {
+        // The control is rounded toward zero to single precision, so that what a snapshot says
+        // of it is all of it.
+        let world = arena(Preset::Vacuum);
+        let params = Params {
+            f_max: 0.7,
+            tau_max: 0.3,
+            ..world.default_ship()
+        };
+        let mut rng = Rng::new(21);
+        let mut ship = Ship::new(&world, params, world.spawn(0).state);
+        for _ in 0..20_000 {
+            let command = adversary(&mut rng, &params, &ship);
+            ship.tick(&command);
+            let u = ship.control();
+            assert!(u.is_admissible(ship.params()), "{u:?}");
+            assert_eq!(f64::from(u.thrust as f32), u.thrust, "{u:?}");
+            assert_eq!(f64::from(u.torque as f32), u.torque, "{u:?}");
+        }
     }
 
     #[test]
@@ -393,7 +396,7 @@ mod tests {
                     if tick % 40 == 0 {
                         mode = adversary(&mut rng, &params, &ship);
                     }
-                    ship.tick(&world, &mode);
+                    ship.tick(&mode);
                     let s = ship.state();
                     fastest = fastest.max(s.vx.abs()).max(s.vy.abs());
                 }
@@ -405,7 +408,7 @@ mod tests {
                 torque: 0.0,
             };
             for _ in 0..4000 {
-                ship.tick(&world, &full);
+                ship.tick(&full);
                 fastest = fastest.max(ship.state().vx.abs());
             }
             let vacuum_bound = speed_bound(a, world.h(), 6.0);

@@ -12,7 +12,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 /// The version of this protocol, which `Hello` carries.
-pub const PROTOCOL: u16 = 3;
+pub const PROTOCOL: u16 = 4;
 
 /// The most a stream frame may hold: a world file is at most 1 MiB, and a `Lobby` holds one.
 pub const MAX_STREAM_FRAME: usize = 1024 * 1024 + 4096;

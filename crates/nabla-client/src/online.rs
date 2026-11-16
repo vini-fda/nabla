@@ -1,12 +1,12 @@
 //! The networked flight: the client machine of `nabla-net` on a connection, and what a screen
 //! needs of it.
 //!
-//! The machine predicts the own ship, `Pred(k)`, and takes in snapshots. This turns that into
-//! things to draw. The own ship is drawn between its last two predicted ticks, and moved by a
-//! smoothing offset that absorbs a correction and then decays (`specs/multiplayer.typ`,
-//! "Hiding corrections"). Other ships are drawn in the past, between two snapshots, by cubic
-//! Hermite interpolation (`prop-hermite`). An autopilot flies by the prediction and sends
-//! `Direct` commands (`Autopilots`).
+//! The machine predicts the own ship and the ships that could touch it, and takes in snapshots.
+//! This turns that into things to draw. Those ships are drawn between their last two predicted
+//! ticks, each moved by a smoothing offset that absorbs a correction and then decays
+//! (`specs/multiplayer.typ`, "Hiding corrections"). Ships beyond the prediction are drawn in the
+//! past, between two snapshots, by cubic Hermite interpolation (`prop-hermite`). An autopilot
+//! flies by the prediction and sends `Direct` commands (`Autopilots`).
 //!
 //! Nothing here draws, so it runs under test: the transport is a trait, and the clock is an
 //! argument of [`Online::frame_at`].
@@ -186,6 +186,15 @@ impl Playout {
     }
 }
 
+/// The point in the own ship's prediction at which the company is drawn.
+#[derive(Clone, Copy)]
+struct Present {
+    tick: Tick,
+    due: f64,
+    now: f64,
+    h: f64,
+}
+
 /// An autopilot flying the ship.
 struct Engaged {
     controller: FlightController,
@@ -200,8 +209,11 @@ pub struct Online {
     started: Instant,
     last: f64,
     smoothing: Smoothing,
+    company_smoothing: BTreeMap<ShipId, Smoothing>,
     /// The own ship's predicted flight, tick by tick.
     trail: BTreeMap<Tick, Step>,
+    /// The predicted flights of the other ships it carries.
+    company_trails: BTreeMap<ShipId, BTreeMap<Tick, Step>>,
     /// The buffers of the own ship's plots, kept from frame to frame.
     plots: Option<Plots>,
     playout: Playout,
@@ -243,7 +255,9 @@ impl Online {
             started: Instant::now(),
             last: 0.0,
             smoothing: Smoothing::default(),
+            company_smoothing: BTreeMap::new(),
             trail: BTreeMap::new(),
+            company_trails: BTreeMap::new(),
             plots: None,
             playout: Playout::default(),
             engaged: None,
@@ -297,7 +311,9 @@ impl Online {
 
     fn reset_flight(&mut self) {
         self.trail.clear();
+        self.company_trails.clear();
         self.smoothing = Smoothing::default();
+        self.company_smoothing.clear();
         self.playout = Playout::default();
         self.engaged = None;
         self.landed = false;
@@ -513,9 +529,13 @@ impl Online {
             transport.send(kind);
         }
         if let Some(correction) = self.machine.take_correction() {
+            if correction.jumped {
+                self.company_smoothing.clear();
+            }
             self.smoothing.absorb(&correction);
         }
         self.smoothing.decay(frame_time);
+        self.update_company(frame_time);
         let steps = self.machine.trajectory();
         let newest = steps.last().map(|step| step.tick);
         for step in steps {
@@ -537,6 +557,35 @@ impl Online {
         }
     }
 
+    /// Bring the nearby ships' corrections and predicted trails up to date.
+    fn update_company(&mut self, frame_time: f64) {
+        for (ship, correction) in self.machine.take_company_corrections() {
+            self.company_smoothing
+                .entry(ship)
+                .or_default()
+                .absorb(&correction);
+        }
+        for smoothing in self.company_smoothing.values_mut() {
+            smoothing.decay(frame_time);
+        }
+        let company = self.machine.company_trajectories();
+        self.company_trails
+            .retain(|ship, _| company.iter().any(|(other, _)| other == ship));
+        self.company_smoothing
+            .retain(|ship, _| company.iter().any(|(other, _)| other == ship));
+        for (ship, steps) in company {
+            let newest = steps.last().map(|step| step.tick);
+            self.company_smoothing.entry(ship).or_default();
+            let trail = self.company_trails.entry(ship).or_default();
+            for step in steps {
+                trail.insert(step.tick, step);
+            }
+            if let Some(newest) = newest {
+                *trail = trail.split_off(&newest.saturating_sub(TRAIL));
+            }
+        }
+    }
+
     /// What a screen can say about the connection.
     pub fn info(&self) -> Info {
         Info {
@@ -548,39 +597,62 @@ impl Online {
         }
     }
 
-    /// The ships to draw at local time `now`: the own ship first, then the others.
+    /// The ships to draw at local time `now`: the own ship first, then the others. A ship the
+    /// prediction carries is drawn in the own ship's frame; the rest are drawn at the playout tick.
     pub fn views(&mut self, now: f64) -> Vec<View> {
         let mut views = Vec::new();
-        let (Some(world), Some(own), Some(params), Some(h)) = (
+        let (Some(world), Some(own), Some(params), Some(h), Some(k), Some(due)) = (
             self.machine.world().cloned(),
             self.machine.ship(),
             self.machine.params(),
             self.machine.h(),
+            self.machine.tick(),
+            self.machine.next_deadline(),
         ) else {
             return views;
         };
         let mut task = world.spawn(0).task;
         task.params = params;
-        if let Some(view) = self.own_view(&task, own, h, now) {
+        let present = Present {
+            tick: k,
+            due,
+            now,
+            h,
+        };
+        if let Some(view) = predicted_view(
+            &task,
+            own,
+            params,
+            true,
+            present,
+            &self.trail,
+            &self.smoothing,
+        ) {
             views.push(view);
         }
-        let Some(playout) = self.playout.tick else {
-            return views;
-        };
         let roster: Vec<(ShipId, Params)> = self
             .machine
             .roster()
             .iter()
             .map(|(id, entry)| (*id, entry.params))
             .collect();
-        let Some(remotes) = self.machine.remotes() else {
-            return views;
-        };
+        let remotes = self.machine.remotes();
         for (ship, params) in roster {
             if ship == own {
                 continue;
             }
-            let Some(records) = remotes.get(&ship) else {
+            if let (Some(trail), Some(smoothing)) = (
+                self.company_trails.get(&ship),
+                self.company_smoothing.get(&ship),
+            ) && let Some(view) =
+                predicted_view(&task, ship, params, false, present, trail, smoothing)
+            {
+                views.push(view);
+                continue;
+            }
+            let (Some(playout), Some(records)) =
+                (self.playout.tick, remotes.and_then(|all| all.get(&ship)))
+            else {
                 continue;
             };
             let records: Vec<Remote> = records.iter().copied().collect();
@@ -605,49 +677,58 @@ impl Online {
         plots.rerecord(&own.replay);
         plots
     }
+}
 
-    /// The own ship, drawn between its last two predicted ticks, and moved by the smoothing.
-    fn own_view(&self, task: &Task, ship: ShipId, h: f64, now: f64) -> Option<View> {
-        let k = self.machine.tick()?;
-        let due = self.machine.next_deadline()?;
-        // The ship is in tick `k - 1`, which began a tick's length before the next issue.
-        let fraction = (1.0 - (due - now) / h).clamp(0.0, 1.0);
-        let (from, to) = (self.trail.get(&k.checked_sub(1)?)?, self.trail.get(&k)?);
-        let mut state = hermite(&from.state, &to.state, fraction, h);
-        self.smoothing.apply(&mut state);
-        // The contiguous run of the trail that ends at `k`.
-        let mut run: Vec<&Step> = Vec::new();
-        for (tick, step) in self.trail.range(..=k).rev() {
-            if run.last().is_some_and(|last| last.tick != tick + 1) {
-                break;
-            }
-            run.push(step);
+/// A predicted ship, drawn between its last two ticks and moved by its smoothing.
+fn predicted_view(
+    task: &Task,
+    ship: ShipId,
+    params: Params,
+    own: bool,
+    present: Present,
+    trail: &BTreeMap<Tick, Step>,
+    smoothing: &Smoothing,
+) -> Option<View> {
+    let Present { tick, due, now, h } = present;
+    // The ship is in tick `k - 1`, which began a tick's length before the next issue.
+    let fraction = (1.0 - (due - now) / h).clamp(0.0, 1.0);
+    let (from, to) = (trail.get(&tick.checked_sub(1)?)?, trail.get(&tick)?);
+    let mut state = hermite(&from.state, &to.state, fraction, h);
+    smoothing.apply(&mut state);
+    // The contiguous run of the trail that ends at the present tick.
+    let mut run: Vec<&Step> = Vec::new();
+    for (step_tick, step) in trail.range(..=tick).rev() {
+        if run.last().is_some_and(|last| last.tick != step_tick + 1) {
+            break;
         }
-        run.reverse();
-        let states: Vec<State> = run.iter().map(|step| step.state).collect();
-        // A tick the snapshots overtook before it was issued has no control, and the ship held the
-        // one before: skipping it would move every later control a tick early, leaving none for
-        // now, and the sound silent until that tick leaves the trail.
-        let mut held = Control::default();
-        let controls: Vec<Control> = run[..run.len().saturating_sub(1)]
-            .iter()
-            .map(|step| {
-                held = step.control.unwrap_or(held);
-                held
-            })
-            .collect();
-        // Inside the tick, never at its end: a frame later than the tick's due time has run past
-        // the last control, and the plume and the sound would find none (so silence) there.
-        let t = (run.len().saturating_sub(2)) as f64 * h + fraction.min(LAST_OF_TICK) * h;
-        Some(View {
-            ship,
-            own: true,
-            state,
-            params: task.params,
-            replay: replay_of(task, states, controls),
-            t,
-        })
+        run.push(step);
     }
+    run.reverse();
+    let states: Vec<State> = run.iter().map(|step| step.state).collect();
+    // A tick the snapshots overtook before it was issued has no control, and the ship held the one
+    // before: skipping it would move every later control a tick early, leaving none for now, and
+    // the sound silent until that tick leaves the trail.
+    let mut held = Control::default();
+    let controls: Vec<Control> = run[..run.len().saturating_sub(1)]
+        .iter()
+        .map(|step| {
+            held = step.control.unwrap_or(held);
+            held
+        })
+        .collect();
+    // Inside the tick, never at its end: a frame later than the tick's due time has run past the
+    // last control, and the plume and the sound would find none (so silence) there.
+    let t = (run.len().saturating_sub(2)) as f64 * h + fraction.min(LAST_OF_TICK) * h;
+    let mut task = *task;
+    task.params = params;
+    Some(View {
+        ship,
+        own,
+        state,
+        params,
+        replay: replay_of(&task, states, controls),
+        t,
+    })
 }
 
 /// Another ship, drawn at the playout tick `at` from its snapshots: between two of them by

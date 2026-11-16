@@ -174,6 +174,10 @@ pub struct World {
     /// Rapier substeps per tick. The tick is `h = 1 / tick_rate`, which every player's `h` equals.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tick_rate: Option<u32>,
+    /// Version 2: whether ships collide with each other. They do unless this says `false`, which
+    /// is the world of Phase A, where each ship flies as if alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ship_collisions: Option<bool>,
     /// Version 2: where the world ends.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arena: Option<Arena>,
@@ -223,6 +227,7 @@ impl World {
             name: "Pure vacuum".to_owned(),
             gravity_constant: 0.0,
             tick_rate: None,
+            ship_collisions: None,
             arena: None,
             ships: None,
             players: vec![Player {
@@ -283,11 +288,12 @@ impl World {
         match self.version {
             1 if self.players.len() == 1
                 && self.tick_rate.is_none()
+                && self.ship_collisions.is_none()
                 && self.arena.is_none()
                 && self.ships.is_none() => {}
             1 => {
                 return Err(
-                    "Expected world version 1 with exactly one player, and no tick rate, arena or ships"
+                    "Expected world version 1 with exactly one player, and no tick rate, ship collisions, arena or ships"
                         .to_owned(),
                 );
             }
@@ -411,6 +417,12 @@ impl World {
             .map_or(self.players[0].task.params.h, |rate| 1.0 / f64::from(rate))
     }
 
+    /// Whether ships collide with each other: in a version 2 world, unless it says they do not.
+    /// A version 1 world has one ship.
+    pub fn ship_collisions(&self) -> bool {
+        self.version == 2 && self.ship_collisions != Some(false)
+    }
+
     /// The hull radius `rho`, the same for every ship.
     pub fn hull_radius(&self) -> f32 {
         self.players[0].radius
@@ -436,8 +448,9 @@ impl World {
             .map_or(default, |ships| ships.grant(&default, request))
     }
 
-    /// The `index`th ship to join takes the spawn template `index mod n`. Ships can share a place,
-    /// as ships do not touch in Phase A.
+    /// The spawn template `index mod n`, which the `index`th ship to join tries first. Where ships
+    /// collide, [`Dynamics::spawn`](crate::fleet::Dynamics::spawn) finds a place near it that is
+    /// clear of the ships flying. Where they do not, ships can share a place.
     pub fn spawn(&self, index: usize) -> &Player {
         &self.players[index % self.players.len()]
     }
@@ -572,6 +585,18 @@ mod tests {
         assert!(source.contains("tick_rate = 60"), "{source}");
         let parsed = World::from_toml(&source).expect("parse");
         assert_eq!(parsed, world);
+        // Ships collide unless the world says they do not, and a world that says so keeps saying it.
+        assert!(world.ship_collisions());
+        assert!(!source.contains("ship_collisions"), "{source}");
+        let apart = World {
+            ship_collisions: Some(false),
+            ..world.clone()
+        };
+        let source_apart = apart.to_toml().expect("serialize");
+        assert!(source_apart.contains("ship_collisions = false"), "{source_apart}");
+        let parsed_apart = World::from_toml(&source_apart).expect("parse");
+        assert_eq!(parsed_apart, apart);
+        assert!(!parsed_apart.ship_collisions());
         // The file's own `h` is not trusted: the tick belongs to the world.
         let wrong = source.replace("h = 0.016666666666666666", "h = 0.0167");
         assert_ne!(wrong, source, "the file writes its h");
@@ -593,6 +618,8 @@ mod tests {
                 (world.tick_rate, world.arena, world.ships),
                 (None, None, None)
             );
+            assert_eq!(world.ship_collisions, None);
+            assert!(!world.ship_collisions(), "one ship has nothing to hit");
             assert_eq!(world.h(), 0.02);
             let params = world.default_ship();
             assert_eq!(
@@ -633,7 +660,7 @@ mod tests {
         bad(&|w| {
             w.players[0].state = State {
                 x: 0.0,
-                y: -600.0,
+                y: -12.0,
                 ..State::default()
             }
         });
@@ -648,6 +675,9 @@ mod tests {
         let mut v1 = Preset::Planet.world();
         v1.tick_rate = Some(60);
         v1.validate().expect_err("version 1 has no tick rate");
+        let mut v1 = Preset::Planet.world();
+        v1.ship_collisions = Some(true);
+        v1.validate().expect_err("version 1 has one ship");
         let mut v3 = good;
         v3.version = 3;
         v3.validate().expect_err("unknown version");

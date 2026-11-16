@@ -9,107 +9,11 @@
 //! segment's line. The segments' quads share their vertices at the joins: nothing overlaps
 //! there to blend twice, as separate quads with caps would, and nothing gaps.
 
-use egui::{Rect, Vec2};
+use egui::Vec2;
 
 /// A miter no longer than this many times the ribbon's half width, where the polyline turns
 /// sharply.
 const MITER_LIMIT: f32 = 2.0;
-
-/// The runs of a polyline inside `bounds`, cut at its edges. Values carried by the points are
-/// interpolated at the cuts, as screen-space vertex attributes interpolate. In particular,
-/// projective world coordinates and perspective depths remain correct there. A closed polyline
-/// stays closed only when it is wholly inside; clipping never adds edges along `bounds`.
-pub fn clip<T: Copy>(
-    points: &[(Vec2, T)],
-    bounds: Rect,
-    closed: bool,
-    lerp: impl Fn(T, T, f32) -> T,
-) -> Vec<Vec<(Vec2, T)>> {
-    let n = points.len();
-    if n < 2 {
-        return Vec::new();
-    }
-    let mut runs = Vec::new();
-    let mut run: Vec<(Vec2, T)> = Vec::new();
-    let mut whole = true;
-    for (i, j) in segments(n, closed) {
-        let ((a, carried_a), (b, carried_b)) = (points[i], points[j]);
-        let Some((from, to)) = clip_segment(a, b, bounds) else {
-            whole = false;
-            if !run.is_empty() {
-                runs.push(std::mem::take(&mut run));
-            }
-            continue;
-        };
-        whole &= from == 0.0 && to == 1.0;
-        let at = |t: f32| {
-            if t == 0.0 {
-                (a, carried_a)
-            } else if t == 1.0 {
-                (b, carried_b)
-            } else {
-                (a + (b - a) * t, lerp(carried_a, carried_b, t))
-            }
-        };
-        let (cut_a, cut_b) = (at(from), at(to));
-        if run
-            .last()
-            .is_some_and(|(p, _)| (*p - cut_a.0).length() <= 1e-3)
-        {
-            run.push(cut_b);
-        } else {
-            if !run.is_empty() {
-                runs.push(std::mem::take(&mut run));
-            }
-            run.extend([cut_a, cut_b]);
-        }
-    }
-    if !run.is_empty() {
-        runs.push(run);
-    }
-    if closed && whole {
-        return vec![points.to_vec()];
-    }
-    // The closing segment may join the last run to the first. Both are open at the cut.
-    if closed && runs.len() > 1 {
-        let join =
-            (runs[0][0].0 - runs[runs.len() - 1].last().expect("nonempty").0).length() <= 1e-3;
-        if join {
-            let first = runs.remove(0);
-            runs.last_mut()
-                .expect("another run")
-                .extend(first.into_iter().skip(1));
-        }
-    }
-    runs
-}
-
-/// The parameters at which segment `a..b` enters and leaves `bounds`, if it crosses it.
-fn clip_segment(a: Vec2, b: Vec2, bounds: Rect) -> Option<(f32, f32)> {
-    if ![a.x, a.y, b.x, b.y].into_iter().all(f32::is_finite) {
-        return None;
-    }
-    let delta = b - a;
-    let (mut enter, mut leave) = (0.0_f32, 1.0_f32);
-    for axis in 0..2 {
-        let (start, step) = (a[axis], delta[axis]);
-        let (min, max) = (bounds.min[axis], bounds.max[axis]);
-        if step.abs() < f32::EPSILON {
-            if !(min..=max).contains(&start) {
-                return None;
-            }
-            continue;
-        }
-        let first = (min - start) / step;
-        let second = (max - start) / step;
-        enter = enter.max(first.min(second));
-        leave = leave.min(first.max(second));
-        if enter > leave {
-            return None;
-        }
-    }
-    Some((enter, leave))
-}
 
 /// The points of a polyline on screen, each with whatever its vertices carry, less those so
 /// near the one before that the pixels' rounding would turn the segment between them. A
@@ -244,58 +148,5 @@ mod tests {
         assert_eq!(segments(ring.len(), true).last(), Some((2, 0)));
         // Two points make no ring.
         assert_eq!(segments(2, true).count(), 1);
-    }
-
-    #[test]
-    fn clipping_keeps_crossings_and_interpolates_what_points_carry() {
-        let bounds = Rect::from_min_size(Vec2::ZERO.to_pos2(), Vec2::splat(10.0));
-        let points = [(Vec2::new(-1e6, 5.0), 0.0), (Vec2::new(1e6, 5.0), 2.0)];
-        let runs = clip(&points, bounds, false, |a, b, t| a + (b - a) * t);
-        assert_eq!(runs.len(), 1);
-        assert_eq!(runs[0].len(), 2);
-        assert_eq!(runs[0][0].0, Vec2::new(0.0, 5.0));
-        assert_eq!(runs[0][1].0, Vec2::new(10.0, 5.0));
-        assert!((runs[0][0].1 - 1.0).abs() < 1e-4);
-        assert!((runs[0][1].1 - 1.0).abs() < 1e-4);
-        // A ring around the viewport has no stroke inside it: do not outline the clip bounds.
-        let outside = [
-            (Vec2::new(-5.0, -5.0), ()),
-            (Vec2::new(15.0, -5.0), ()),
-            (Vec2::new(15.0, 15.0), ()),
-            (Vec2::new(-5.0, 15.0), ()),
-        ];
-        assert!(clip(&outside, bounds, true, |a, _, _| a).is_empty());
-    }
-
-    #[test]
-    fn clipping_a_ring_preserves_its_runs_without_closing_the_cuts() {
-        let bounds = Rect::from_min_size(Vec2::ZERO.to_pos2(), Vec2::splat(10.0));
-        let square = [
-            (Vec2::new(2.0, -5.0), ()),
-            (Vec2::new(8.0, -5.0), ()),
-            (Vec2::new(8.0, 15.0), ()),
-            (Vec2::new(2.0, 15.0), ()),
-        ];
-        let runs = clip(&square, bounds, true, |a, _, _| a);
-        assert_eq!(runs.len(), 2);
-        assert_eq!(runs[0].first().expect("cut").0, Vec2::new(8.0, 0.0));
-        assert_eq!(runs[0].last().expect("cut").0, Vec2::new(8.0, 10.0));
-        assert_eq!(runs[1].first().expect("cut").0, Vec2::new(2.0, 10.0));
-        assert_eq!(runs[1].last().expect("cut").0, Vec2::new(2.0, 0.0));
-        assert!(
-            runs.iter()
-                .flatten()
-                .all(|(p, _)| bounds.contains(p.to_pos2()))
-        );
-        let inside = [
-            (Vec2::new(1.0, 1.0), ()),
-            (Vec2::new(9.0, 1.0), ()),
-            (Vec2::new(9.0, 9.0), ()),
-            (Vec2::new(1.0, 9.0), ()),
-        ];
-        assert_eq!(
-            clip(&inside, bounds, true, |a, _, _| a),
-            vec![inside.to_vec()]
-        );
     }
 }

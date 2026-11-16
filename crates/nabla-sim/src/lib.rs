@@ -8,6 +8,7 @@
 #![warn(clippy::all, rust_2018_idioms)]
 
 pub mod command;
+pub mod fleet;
 pub mod hull;
 pub mod measure;
 pub mod physics;

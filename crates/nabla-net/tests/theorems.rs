@@ -1,11 +1,13 @@
 //! The theorems of `specs/multiplayer.typ` as assertions on a simulated network: `thm-once`,
-//! `thm-contain`, `thm-exact` and `thm-margin`, and what holds against hostile clients.
+//! `thm-contain`, `thm-exact` and `thm-margin`, what holds against hostile clients, and their
+//! forms for ships that collide: `thm-influence` and `thm-exact-b`.
 
 use nabla_net::Config;
 use nabla_net::sim::{Behavior, Checks, Hostile, Link, Peer, Report, Scenario, Sim};
 use nabla_net::wire::{
     ClientStream, Commands, ConnId, Password, ServerStream, ShipId, Username, decode, encode,
 };
+use nabla_core::State;
 use nabla_net::{Kind, ServerMachine};
 use nabla_sim::command::Command;
 use nabla_sim::rng::Rng;
@@ -21,6 +23,34 @@ fn vacuum() -> World {
         .world()
         .multiplayer(60, 1000.0, 4)
         .expect("a valid world")
+}
+
+/// A world of Phase A: the same, with ships that pass through each other.
+fn apart(world: World) -> World {
+    World {
+        ship_collisions: Some(false),
+        ..world
+    }
+}
+
+/// A world whose spawn templates face each other in pairs across `gap`, at rest, so that ships
+/// that thrust meet in the middle.
+fn facing(preset: Preset, spawns: usize, gap: f64) -> World {
+    let mut world = preset
+        .world()
+        .multiplayer(60, 1000.0, spawns)
+        .expect("a valid world");
+    for (n, player) in world.players.iter_mut().enumerate() {
+        let left = n % 2 == 0;
+        player.state = State {
+            x: 300.0 + if left { -gap / 2.0 } else { gap / 2.0 },
+            y: 300.0 + 5.0 * (n / 2) as f64,
+            theta: if left { 0.0 } else { std::f64::consts::PI },
+            ..State::default()
+        };
+    }
+    world.validate().expect("a valid world");
+    world
 }
 
 fn scenario(seed: u64, world: World, ticks: u32, peers: Vec<Peer>, checks: Checks) -> Scenario {
@@ -262,6 +292,81 @@ fn a_million_ticks_of_seeds_keep_every_invariant_and_every_prediction_exact() {
         "the paths were bad: {lost} of {sent} lost"
     );
     assert!(reports.iter().all(|r| r.max_buffered <= 60));
+    // The ships of these runs collide, where their pilots happen to fly them into each other.
+    let touches: u64 = reports.iter().map(|r| r.touches).sum();
+    assert!(touches > 0, "some ships touched: {touches}");
+}
+
+#[test]
+fn among_bodies_too_a_prediction_is_exact() {
+    // A tick is a function of the state, so a replay from a snapshot is the server's own flight,
+    // on the planet's surface as anywhere: `thm-exact` with no tolerance, on one platform.
+    let world = Preset::PlanetAndMoon
+        .world()
+        .multiplayer(60, 1000.0, 4)
+        .expect("a valid world");
+    let ticks = 3_000;
+    let reports = over_seeds(0..24, |seed| {
+        let mut sim = Sim::new(random_scenario(seed, &world, ticks, ALL));
+        sim.run().clone()
+    });
+    let exact: u64 = reports.iter().map(|r| r.exact_checks).sum();
+    assert!(exact > 100_000, "{exact} predictions found exact");
+}
+
+/// Steady pilots, whose ships spawn facing each other and so collide, on paths `delay` seconds
+/// long each way.
+fn colliding(seed: u64, world: &World, ticks: u32, pilots: usize, delay: f64) -> Scenario {
+    let peers = (0..pilots)
+        .map(|n| {
+            let mut peer = Peer::steady(world, delay);
+            peer.join_at = 0.05 * n as f64;
+            peer
+        })
+        .collect();
+    scenario(seed, world.clone(), ticks, peers, ALL)
+}
+
+#[test]
+fn ships_that_collide_are_predicted_exactly_while_their_controls_hold() {
+    // thm-exact-b: a client folds forward its own ship and the ships near it, each under the
+    // control it last flew. For as long as those controls hold, and no ship it left out comes
+    // near, what it predicts is what the server computes, to the last bit: through the
+    // collision, in a vacuum and among bodies.
+    for preset in [Preset::Vacuum, Preset::PlanetAndMoon] {
+        let world = facing(preset, 4, 40.0);
+        let reports = over_seeds(0..40, |seed| {
+            let mut sim = Sim::new(colliding(seed, &world, 1500, 4, 0.04));
+            sim.run().clone()
+        });
+        let sum = |pick: fn(&Report) -> u64| reports.iter().map(pick).sum::<u64>();
+        let (touches, company) = (sum(|r| r.touches), sum(|r| r.company_checks));
+        let (coupled, touched) = (sum(|r| r.coupled_checks), sum(|r| r.touched_checks));
+        assert!(touches > 1000, "{preset:?}: the ships collided: {touches}");
+        assert!(company > 100_000, "{preset:?}: {company} other ships found exact");
+        assert!(coupled > 20_000, "{preset:?}: {coupled} found exact after sharing a block");
+        assert!(touched > 2000, "{preset:?}: {touched} found exact after a touch");
+    }
+}
+
+#[test]
+fn pilots_who_ram_each_other_on_bad_paths_keep_every_invariant() {
+    // The same, on paths that lose, reorder and duplicate, with pilots who change their minds:
+    // predictions are then often wrong, as they may be, and every assertion still holds.
+    for preset in [Preset::Vacuum, Preset::PlanetAndMoon] {
+        let world = facing(preset, 6, 30.0);
+        let reports = over_seeds(0..40, |seed| {
+            let mut sc = random_scenario(seed, &world, 2400, ALL);
+            for peer in &mut sc.peers {
+                peer.join_at = peer.join_at.min(2.0);
+            }
+            let mut sim = Sim::new(sc);
+            sim.run().clone()
+        });
+        let touches: u64 = reports.iter().map(|r| r.touches).sum();
+        assert!(touches > 20, "{preset:?}: the ships collided: {touches}");
+        assert!(reports.iter().all(|r| r.ticks == 2400));
+    }
 }
 
 /// Three honest peers, the first of which is the one whose ship we watch.
@@ -300,23 +405,25 @@ fn hostile_five(world: &World) -> Vec<Peer> {
 
 #[test]
 fn a_ship_depends_on_nothing_but_its_own_connection() {
-    // thm-contain: ship 0's trajectory is a function of its initial state, parameters, and the
-    // commands delivered on its connection, with when. Whatever the other clients send, and
-    // whenever they come and go, it is unchanged to the last bit.
+    // thm-contain: where ships do not collide, ship 0's trajectory is a function of its initial
+    // state, parameters, and the commands delivered on its connection, with when. Whatever the
+    // other clients send, and whenever they come and go, it is unchanged to the last bit.
     for preset in [Preset::Vacuum, Preset::PlanetAndMoon] {
-        let world = preset
-            .world()
-            .multiplayer(60, 1000.0, 8)
-            .expect("a valid world");
+        let world = apart(
+            preset
+                .world()
+                .multiplayer(60, 1000.0, 8)
+                .expect("a valid world"),
+        );
         for seed in 0..6 {
             let quiet = honest_three(&world);
-            let (calm, _) = run(scenario(seed, world.clone(), 2400, quiet, ALL_NO_EXACT));
+            let (calm, _) = run(scenario(seed, world.clone(), 2400, quiet, ALL));
             let (stormy, _) = run(scenario(
                 seed,
                 world.clone(),
                 2400,
                 hostile_five(&world),
-                ALL_NO_EXACT,
+                ALL,
             ));
             let (a, b) = (
                 calm.server()
@@ -335,11 +442,170 @@ fn a_ship_depends_on_nothing_but_its_own_connection() {
     }
 }
 
-/// The checks that hold in any world: the invariants, but exactness only where the map is exact.
-const ALL_NO_EXACT: Checks = Checks {
-    invariants: true,
-    exact: false,
-};
+/// `I_i(n)` for every `n` up to the end of a run: the ships whose commands the state of `ship`
+/// at tick `n` can depend on. A ship takes on the influences of the ships of its block, tick by
+/// tick.
+fn influences(server: &ServerMachine, ship: ShipId, ticks: u32) -> Vec<Vec<ShipId>> {
+    let ships: Vec<ShipId> = (0..256)
+        .map(ShipId)
+        .filter(|&id| server.log(id).is_some())
+        .collect();
+    let index = |id: ShipId| ships.iter().position(|&s| s == id).expect("a logged ship");
+    let mut sets: Vec<Vec<bool>> = (0..ships.len())
+        .map(|i| (0..ships.len()).map(|j| i == j).collect())
+        .collect();
+    let mut history = Vec::new();
+    for tick in 0..=ticks {
+        history.push(
+            ships
+                .iter()
+                .zip(&sets[index(ship)])
+                .filter(|&(_, &inside)| inside)
+                .map(|(&id, _)| id)
+                .collect(),
+        );
+        let before = sets.clone();
+        for (i, &id) in ships.iter().enumerate() {
+            let log = server.log(id).expect("a logged ship");
+            for &mate in log.company_at(tick).unwrap_or(&[]) {
+                for (mine, theirs) in sets[i].iter_mut().zip(&before[index(mate)]) {
+                    *mine |= theirs;
+                }
+            }
+        }
+    }
+    history
+}
+
+#[test]
+fn a_ship_depends_only_on_the_ships_it_has_shared_a_block_with() {
+    // thm-influence: where ships collide, a client can change another's flight, and only by
+    // flying into it. Ship 0's state at a tick is a function of the commands of the ships in its
+    // influence set there, so the same run with every other client replaced by hostile ones is
+    // the same for ship 0, to the last bit, up to the first tick its influence set holds another
+    // ship in either run.
+    let (mut met, mut never) = (0, 0);
+    for preset in [Preset::Vacuum, Preset::PlanetAndMoon] {
+        let world = preset
+            .world()
+            .multiplayer(60, 1000.0, 8)
+            .expect("a valid world");
+        for seed in 0..12 {
+            let ticks = 2400;
+            let (calm, _) = run(scenario(
+                seed,
+                world.clone(),
+                ticks,
+                honest_three(&world),
+                ALL,
+            ));
+            let mut rammed = hostile_five(&world);
+            rammed[1].behavior = Behavior::Hostile(Hostile::Rammer);
+            let (stormy, _) = run(scenario(seed, world.clone(), ticks, rammed, ALL));
+            let (a, b) = (
+                calm.server().log(ShipId(0)).expect("ship 0 in the calm run"),
+                stormy
+                    .server()
+                    .log(ShipId(0))
+                    .expect("ship 0 in the stormy run"),
+            );
+            assert_eq!(a.since, b.since, "{preset:?} seed {seed}: the same join");
+            let alone_until = |sim: &Sim| {
+                influences(sim.server(), ShipId(0), ticks)
+                    .iter()
+                    .position(|set| set.as_slice() != [ShipId(0)])
+                    .unwrap_or(ticks as usize + 1)
+            };
+            // The states at ticks `since..until` are of ticks ship 0 was the only ship in its
+            // influence set for, in both runs.
+            let until = alone_until(&calm).min(alone_until(&stormy));
+            let same = until - a.since as usize;
+            assert!(same > 0, "{preset:?} seed {seed}: a ship joins alone");
+            assert_eq!(a.samples[..same], b.samples[..same], "{preset:?} seed {seed}");
+            assert_eq!(
+                a.commands[..same - 1],
+                b.commands[..same - 1],
+                "{preset:?} seed {seed}"
+            );
+            if until <= ticks as usize {
+                met += 1;
+            } else {
+                never += 1;
+            }
+        }
+    }
+    assert!(met >= 6, "the rammer found its mark in {met} runs");
+    assert!(met + never == 24);
+}
+
+#[test]
+fn a_ship_that_keeps_to_itself_is_not_moved_by_a_collision_elsewhere() {
+    // The same theorem with honest pilots: two pairs of ships, each pair facing each other, far
+    // from the other pair. Change how the second pair flies, and the first pair's flights are
+    // the same to the last bit, collisions and all, for as long as no ship of the second pair is
+    // in their influence sets.
+    let world = {
+        let mut world = facing(Preset::Vacuum, 4, 30.0);
+        for player in &mut world.players[2..] {
+            player.state.y += 400.0;
+        }
+        world.validate().expect("a valid world");
+        world
+    };
+    let mut checked = 0;
+    for seed in 0..10 {
+        let ticks = 1500;
+        let peers = |second: Behavior| -> Vec<Peer> {
+            (0..4)
+                .map(|n| {
+                    let mut peer = Peer::steady(&world, 0.03);
+                    peer.join_at = 0.05 * n as f64;
+                    if n >= 2 {
+                        peer.behavior = second;
+                    }
+                    peer
+                })
+                .collect()
+        };
+        let (one, report) = run(scenario(
+            seed,
+            world.clone(),
+            ticks,
+            peers(Behavior::Steady),
+            ALL,
+        ));
+        let (other, _) = run(scenario(
+            seed,
+            world.clone(),
+            ticks,
+            peers(Behavior::Honest),
+            ALL,
+        ));
+        assert!(report.touches > 0, "seed {seed}: the pairs collided");
+        for ship in [ShipId(0), ShipId(1)] {
+            let strangers = [ShipId(2), ShipId(3)];
+            let clear_until = |sim: &Sim| {
+                influences(sim.server(), ship, ticks)
+                    .iter()
+                    .position(|set| set.iter().any(|id| strangers.contains(id)))
+                    .unwrap_or(ticks as usize + 1)
+            };
+            let until = clear_until(&one).min(clear_until(&other));
+            let (a, b) = (
+                one.server().log(ship).expect("logged"),
+                other.server().log(ship).expect("logged"),
+            );
+            let same = until - a.since as usize;
+            assert_eq!(a.samples[..same], b.samples[..same], "seed {seed} {ship:?}");
+            assert!(
+                a.touched[..same - 1].iter().any(|&touched| touched),
+                "seed {seed} {ship:?}: the stretch compared has a collision in it"
+            );
+            checked += same;
+        }
+    }
+    assert!(checked > 10_000, "{checked} ticks compared");
+}
 
 #[test]
 fn hostile_clients_change_nothing_for_an_honest_one_and_break_nothing() {

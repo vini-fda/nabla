@@ -651,7 +651,7 @@ impl ViewerApp {
                 &depth,
                 ui.ctx().pixels_per_point(),
             );
-            self.orbit_strokes(&mut overlays, rect);
+            self.orbit_strokes(&mut overlays);
             self.prediction_strokes(&mut overlays);
             if self.show_path {
                 let k = (own.t / own.replay.h()).floor() as usize;

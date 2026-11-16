@@ -19,54 +19,6 @@ use nabla_sim::span;
 /// enough to lose commands to the server (`specs/multiplayer.typ`, "Autopilots").
 const CHECK_BUDGET: Duration = Duration::from_millis(2);
 
-/// Orbit rings keep this many world-space segments, so zooming refines their shape without
-/// changing the selected ring's two-on, two-off dash pattern.
-const ORBIT_SEGMENTS: usize = 128;
-const MAX_ORBIT_SUBDIVISIONS: usize = 32;
-/// The greatest distance between a displayed circle and its chords, in points.
-const ORBIT_TOLERANCE: f32 = 0.25;
-
-#[derive(Clone, Copy)]
-struct OrbitCircle {
-    center: egui::Vec2,
-    radius: f32,
-    subdivisions: usize,
-}
-
-impl OrbitCircle {
-    fn for_view(
-        camera: &crate::camera::Camera,
-        rect: egui::Rect,
-        center: egui::Vec2,
-        radius: f32,
-    ) -> Self {
-        let mut circle = Self {
-            center,
-            radius,
-            subdivisions: 1,
-        };
-        let largest_scale = (0..ORBIT_SEGMENTS)
-            .filter_map(|i| camera.scale_at(circle.point(i), rect))
-            .fold(0.0_f32, f32::max);
-        let screen_radius = radius * largest_scale;
-        let needed = std::f32::consts::PI * (screen_radius / (2.0 * ORBIT_TOLERANCE)).sqrt();
-        circle.subdivisions = (needed.ceil() as usize)
-            .max(ORBIT_SEGMENTS)
-            .div_ceil(ORBIT_SEGMENTS)
-            .clamp(1, MAX_ORBIT_SUBDIVISIONS);
-        circle
-    }
-
-    fn point(self, i: usize) -> Vec3 {
-        let angle = i as f32 * std::f32::consts::TAU / self.segment_count() as f32;
-        Vec3::plane(self.center + egui::Vec2::angled(angle) * self.radius)
-    }
-
-    fn segment_count(self) -> usize {
-        ORBIT_SEGMENTS * self.subdivisions
-    }
-}
-
 #[derive(Default)]
 pub(super) struct Controls {
     target: Option<Target>,
@@ -550,14 +502,15 @@ impl ViewerApp {
         let draw = |target: Target, color, dashed| {
             let body = &self.flight_world().bodies[target.body];
             let radius = target.radius(self.flight_world()) as f32;
-            let circle =
-                OrbitCircle::for_view(&self.camera, rect, egui::Vec2::from(body.position), radius);
-            for i in 0..ORBIT_SEGMENTS {
+            let center = egui::Vec2::from(body.position);
+            for i in 0..128 {
                 if dashed && i % 4 >= 2 {
                     continue;
                 }
-                let from = i * circle.subdivisions;
-                let points = (from..=from + circle.subdivisions).map(|j| circle.point(j));
+                let points = [i, i + 1].map(|j| {
+                    let angle = j as f32 * std::f32::consts::TAU / 128.0;
+                    Vec3::plane(center + egui::Vec2::angled(angle) * radius)
+                });
                 for run in self.camera.project_polyline(points, rect) {
                     painter.add(egui::Shape::line(run, egui::Stroke::new(1.5, color)));
                 }
@@ -627,11 +580,7 @@ impl ViewerApp {
     /// `draw_orbits` gives egui in the flat view, the same radii, widths, colors and dash
     /// pattern, tested against the depth of the planets and ships drawn before them, so
     /// what stands in front of the plane hides them.
-    pub(super) fn orbit_strokes(
-        &self,
-        overlays: &mut crate::overlays::Overlays<'_>,
-        rect: egui::Rect,
-    ) {
+    pub(super) fn orbit_strokes(&self, overlays: &mut crate::overlays::Overlays<'_>) {
         if self.flight_objective() == Objective::ReachTarget {
             return;
         }
@@ -641,23 +590,19 @@ impl ViewerApp {
                     dashed: bool| {
             let flight = self.flight_world();
             let radius = target.radius(flight) as f32;
-            let circle = OrbitCircle::for_view(
-                &self.camera,
-                rect,
-                egui::Vec2::from(flight.bodies[target.body].position),
-                radius,
-            );
-            let point = |i: usize| circle.point(i);
-            // The dashed ring in runs of its original segments, two on and two off, as the
-            // flat view draws it; the solid one the closed polyline around.
+            let center = egui::Vec2::from(flight.bodies[target.body].position);
+            let point = |i: usize| {
+                let angle = i as f32 * std::f32::consts::TAU / 128.0;
+                Vec3::plane(center + egui::Vec2::angled(angle) * radius)
+            };
+            // The dashed ring in runs of its 128 segments, two on and two off, as the flat
+            // view draws it; the solid one the closed polyline around.
             if dashed {
-                for i in (0..ORBIT_SEGMENTS).step_by(4) {
-                    let from = i * circle.subdivisions;
-                    let to = (i + 2) * circle.subdivisions;
-                    overlays.stroke((from..=to).map(point), false, 1.5, color);
+                for i in (0..128).step_by(4) {
+                    overlays.stroke([point(i), point(i + 1), point(i + 2)], false, 1.5, color);
                 }
             } else {
-                overlays.stroke((0..circle.segment_count()).map(point), true, 1.5, color);
+                overlays.stroke((0..128).map(point), true, 1.5, color);
             }
         };
         if let Some(pilot) = self.flight_orbit_pilot() {
@@ -854,35 +799,6 @@ mod tests {
     fn finish_check(app: &mut ViewerApp) {
         while app.orbit_check_running() {
             app.refresh_orbit_prediction();
-        }
-    }
-
-    #[test]
-    fn orbit_circles_refine_with_zoom_to_stay_within_the_screen_tolerance() {
-        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
-        let far = OrbitCircle::for_view(
-            &crate::camera::Camera::default(),
-            rect,
-            egui::Vec2::ZERO,
-            10.0,
-        );
-        assert_eq!(far.subdivisions, 1);
-        let camera = crate::camera::Camera {
-            scale: 100.0,
-            ..crate::camera::Camera::default()
-        };
-        let circle = OrbitCircle::for_view(&camera, rect, egui::Vec2::ZERO, 10.0);
-        assert!(circle.subdivisions > 1);
-        assert!(circle.subdivisions <= MAX_ORBIT_SUBDIVISIONS);
-        for i in 0..circle.segment_count() {
-            let a = camera.project(circle.point(i), rect).expect("in front");
-            let b = camera.project(circle.point(i + 1), rect).expect("in front");
-            let angle = (i as f32 + 0.5) * std::f32::consts::TAU / circle.segment_count() as f32;
-            let middle = camera
-                .project(Vec3::plane(egui::Vec2::angled(angle) * 10.0), rect)
-                .expect("in front");
-            let chord_middle = (a.to_vec2() + b.to_vec2()) / 2.0;
-            assert!((middle.to_vec2() - chord_middle).length() <= ORBIT_TOLERANCE);
         }
     }
 

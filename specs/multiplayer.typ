@@ -143,9 +143,9 @@
   chosen in a lobby, in one shared world, in free flight, on native and browser clients, over QUIC. We treat the game as a state
   machine whose only replica of record is the server, and we derive what a client does (prediction,
   reconciliation, interpolation) as speculation against that machine. We write an ideal specification,
-  give a protocol, and prove that the protocol implements it. We prove that no client can damage
-  another's flight, and that a client's prediction of its own ship is exact whenever the commands it
-  predicted with are the ones applied. We then bound how wrong a display can be, with constants
+  give a protocol, and prove that the protocol implements it. We prove that no message can damage
+  another's flight except through commanded physics, and that a client's prediction is exact whenever
+  the commands it predicted with are the ones applied and its coupling closure holds. We then bound how wrong a display can be, with constants
   computed for `nabla`'s actual ship, and show what ship collisions change. The paper ends with a plan
   in which each milestone is discharged by a named theorem.]
 }))
@@ -195,7 +195,7 @@ and where each one is justified.
     [Autopilots], [Allowed, as clients sending direct commands.], [@thm-contain, @autopilots],
     [Own ship], [Predicted, and replayed from each snapshot.], [@thm-exact, @thm-sens],
     [Other ships, Phase A], [Hermite-interpolated between snapshots, in the past.], [@prop-hermite],
-    [Other ships, Phase B], [Extrapolated into the pilot's own frame.], [@prop-zoh, @thm-first],
+    [Other ships, Phase B], [Extrapolated into the pilot's own frame.], [@prop-zoh, @thm-exact-b],
     [Transport], [WebTransport over HTTP/3 (QUIC) for every client, datagrams for play.], [@transport],
     [Protocol code], [Sans-IO state machines, tested on a simulated network.], [@atomicity, @plan],
   ),
@@ -1149,11 +1149,44 @@ The lobby lets a pilot pick a stronger ship than the bundled one. The bounds abo
 
 = Ship collisions <collisions>
 
-Phase B removes @eq:product. Ships still obey one world map, $F(W, c)$, and the server is still the only authority, so @thm-refine, @thm-once and @thm-live go through unchanged. We list what breaks and how to repair it.
+Phase B removes @eq:product, but not the world map $F(W,c)$ or the server's authority. The design below makes $F$ a pure function of the ships' states and commands, including among bodies. Thus @thm-refine and @thm-once are unchanged, and prediction can again be exact under an explicit closure hypothesis rather than merely close.
 
-*Containment weakens.* A client can now affect another ship, but only by flying into it. @thm-contain becomes: ship $i$'s trajectory is a function of its own commands *and the contacts it undergoes*. It remains true that no message from $j$ reaches $i$'s state other than through physics, and that $j$'s commands are admissible. In free flight, ramming has no score attached, so griefing is a social matter. The lobby does add a lever: with restitution $0$, a head-on hit changes ship $j$'s speed by $m_i slash (m_i + m_j)$ of the closing speed, so the allowed range of mass is how the server says how hard one ship can shove another. A server option to disable ship collisions is the remedy of last resort, and is cheap given the plan below.
+*Containment weakens only through physics.* Ship $i$'s trajectory is a function of its initial state, its parameters, its own delivered commands, and the other ships and commands in the coupling blocks it joins. A message from $j$ still cannot write $i$'s state directly, and every command is sanitized. With restitution $0$, a head-on hit changes ship $j$'s speed by $m_i slash (m_i + m_j)$ of the closing speed, so the allowed mass range bounds how hard a pilot can shove. A world may set `ship_collisions = false`, recovering @eq:product and @thm-contain exactly.
 
-*Prediction is no longer exact.* To replay ship $i$ the client now needs the commands of every ship that could touch it, and those are unknown for the last $L$ ticks. It holds each at its last known control, per @prop-zoh. But a contact can only come from nearby, and the speed and acceleration limits say how nearby.
+== A memoryless world map
+
+A persistent Rapier world would hide contact caches and insertion history outside a snapshot. Instead `nabla_sim::fleet::Dynamics` holds only constants and builds a fresh solver for each coupled block on each tick. Ships enter blocks in ship-id order; their convex hulls have restitution $0$ and friction $0.5$, and the arena's $Wall$ is applied afterward. A singleton block in vacuum uses `nabla_core::step`; any other block uses Rapier, with the fixed bodies in its reach.
+
+#definition(name: [Reach and coupling])[
+  For a set $B$ of ships and a horizon of $L$ ticks, let
+  #numbered[$
+    D_B(L) = L h max_(i in B) |v_i|
+      + frac(h^2 L(L+1), 2) max_(i in B)(a_i + g_max)
+      + rho h max_(i in B)(|omega_i| + beta_i L h).
+  $ <eq:reach>]
+  Sets $A$ and $B$ are *near* when some $i in A$ and $j in B$ have centers at most
+  $2 rho + sigma + D_A(L) + D_B(L)$ apart, where $sigma = rho slash 8 + 0.05$. The *coupling partition* $Pi_L$ is the finest partition with no near sets in different blocks. It is computed by merging near blocks until none remain; a merge only increases reach, so the result does not depend on merge order. A tick steps the blocks of $Pi_1$.
+] <def-blocks>
+
+The first two terms of @eq:reach bound translation. Rapier's semi-implicit step advances by the velocity after the force update, hence $L(L+1) slash 2$ rather than $L^2 slash 2$. The last bounds a hull point's sweep during one tick, at the spin torque can produce by tick $L$. The skin covers Rapier's contact margin and rounding positions to `f32`.
+
+#theorem(name: [Locality])[
+  If $S$ is a union of blocks of $Pi_1(W)$, the next states of $S$ under $F(W,c)$ are exactly its next states under $F(W|_S,c|_S)$, to the last bit on one platform.
+] <thm-local>
+
+#proof[
+  $S$ is stepped as the same blocks, in the same order, with the same commands and the same fixed bodies in reach. A fresh Rapier world has no other input. The wall is a pure function of each resulting state.
+]
+
+#lemma(name: [Block horizon])[
+  Until any ship touches another ship or a body, every block stepped during the next $L$ ticks is contained in one block of $Pi_L$ at the window's start.
+] <lem-blocks>
+
+#proof[
+  Before the first contact, @eq:reach bounds each current block's motion over the remainder of the window. If two current blocks were in different blocks of $Pi_L$, their centers therefore remain more than $2 rho + sigma$ apart: they cannot touch, and they cannot be near at the next tick's one-tick partition. Induction over the window proves the claim.
+]
+
+For intuition at longer ranges, there is also a continuous two-ship bound.
 
 #lemma(name: [Interaction horizon])[
   Let ships $i, j$ have distance $r > R$, where $R = rho_i + rho_j$, and relative speed $w$. Let $A = a_i + a_j + 2 g_max$. So long as neither has had a contact with anything, they do not touch before
@@ -1164,26 +1197,42 @@ Phase B removes @eq:product. Ships still obey one world map, $F(W, c)$, and the 
   Each ship's acceleration is at most $a + g_max$, so the relative acceleration is at most $A$. Integrating twice, with the triangle inequality, the distance at time $s$ is at least $r - w s - A s^2 slash 2$. This exceeds $R$ for $s < H_(i j)$, the positive root.
 ]
 
-Fixed bodies fit too, with $v = 0$ and $A = a_i + g_max$. Since pilots choose their ships, each pair has its own $A$. Two bundled ships have $A = 39$. A gap of $5$ closing at $10$ gives $H = 0.31$ s, and a gap of $2$ at the same speed $0.15$ s, longer than the replay horizon of $0.1$ s at $RTT = 100$ ms, and this stays true at the caps (@tab-caps). So ships that are not within a few units of each other cannot interact within a replay, unless they are closing fast. Near the arena's top speeds the horizon shrinks to about the gap over $w$, so at $400$ units/s an edge reaches $40$ units. With at most 16 ships there are at most 120 pairs to check.
+Two bundled ships have $A = 39$. A gap of $5$ closing at $10$ gives $H = 0.31$ s, and a gap of $2$ at the same speed $0.15$ s, longer than the replay horizon of $0.1$ s at $RTT = 100$ ms; @tab-caps repeats this at the allowed caps. The implementation uses the discrete partition, which also accounts for rotation and existing multi-ship blocks, rather than this pairwise formula.
 
-#definition(name: [Coupling graph])[
-  $G_t$ has an edge between $i$ and $j$ iff $H_(i j) <= t$.
-]
+== Exact prediction under contact
 
-#theorem(name: [First contact])[
-  The first contact in the world during a window of length $t$ is along an edge of $G_t$. Until that contact, the world map has the product form @eq:product, and so @thm-exact holds for every ship up to that time.
-] <thm-first>
+The client replays its own ship's block in $Pi_L$, called its *company*. Its own commands come from `cmd`; every other member's last control in the snapshot is held, as in @prop-zoh. Ships outside the company stay in delayed snapshot interpolation. For drawing, the client chooses the company $30$ ticks beyond the replay horizon, so a ship enters the own-ship frame half a second before it can touch.
+
+Exactness needs closure in *both* worlds. A set $S$ of carried ships is closed at tick $n$ when every server block and every predicted block that meets $S$ is wholly contained in $S$; in particular, neither kind of block may contain an uncarried ship. The second condition is essential: a mispredicted neighbor can otherwise couple with the own ship in the replay even when the server's ships do not couple.
+
+#theorem(name: [Exact prediction, Phase B])[
+  Let $S$ be a set of ships carried throughout $[T_b,N]$. Suppose $S$ is closed at every tick in $[T_b,N)$, and every $i in S$ is replayed with the command the server applied at each of those ticks. Then the predicted and true states of every $i in S$ agree throughout $[T_b,N]$.
+] <thm-exact-b>
 
 #proof[
-  #st(1, 1)[Let $s <= t$ be the time of the first contact, between $i$ and $j$.]
-  #st(1, 2)[Before $s$, no ship has had a contact, so @lem-horizon's premise holds on $[0, s)$ for every pair.]
-  #st(1, 3)[If $i$ and $j$ were not adjacent, then $H_(i j) > t >= s$, and they would not touch at $s$: a contradiction.]
-  #st(1, 4)[Q.E.D., since without contact, ships don't affect each other, which is @eq:product.]
+  #st(1, 1)[At $T_b$, all carried states, parameters and assist headings are the snapshot's, hence the server's.]
+  #st(1, 2)[Assume the states of $S$ agree at $n < N$. By closure, the server blocks meeting $S$ and the predicted blocks meeting $S$ contain exactly ships of $S$.]
+  #st(1, 3)[Those blocks and their commands therefore agree. By @thm-local applied in each world, the states of $S$ agree at $n+1$.]
+  #st(1, 4)[Q.E.D., by induction.]
 ]
 
-*What this gives the client.* It replays exactly the component of its own ship in $G_(L h)$, holding each other member's control, and takes everyone else's state from snapshots. When ships are not crowded, the component is the single ship, so prediction stays exact, and costs what it does in Phase A. The theorem says nothing past the first contact: a pair colliding at the edge of the window can throw a ship at a third which the graph considered safe. Since the server is the authority, that's a correction, not an inconsistency. We make no attempt to exclude it.
+The least closed set containing the own ship is its influence set: at each tick it absorbs the influences of its mates in the union of the server and predicted block graphs. The simulator computes that set and checks @thm-exact-b to the last bit, including through contacts. If a command differs, a ship leaves, or a stranger enters either graph, it stops claiming exactness for the affected descendants. Phase A is the special case where all blocks are singletons and the hypothesis reduces to @thm-exact.
 
-*Contact amplifies small errors.* @thm-sens excludes contact for a reason. Contact is the one place where prediction errors are not Lipschitz.
+Nearby predicted ships are drawn between the same two ticks as the own ship. Each has its own correction offset, with the same continuity and decay as @prop-smooth; a ship that leaves the company returns to snapshot interpolation. Thus a collision does not put a ship visible in the present through a hull drawn several ticks in the past.
+
+== What the collision properties are
+
+The property tests in `nabla-sim` name the following requirements, over seeded worlds, ships and commands:
+
++ *Determinism and totality (B1, B2).* The same world and commands give the same next world to the last bit. Arbitrary wire commands and finite starting states give finite states inside the arena.
++ *Locality (B3).* A union of blocks steps exactly as it does in the whole world; with collisions disabled, $F$ is the product of the ships' individual maps.
++ *Separation (B4).* In the tested flight envelope, ships in different blocks end a tick more than $2 rho$ apart. This is the empirical counterpart of @lem-blocks, whose hypothesis excludes prior contacts.
++ *Conservation (B5, B6).* Away from bodies and walls, coasting collisions preserve linear and total angular momentum and do not increase kinetic energy. The resulting center-of-mass speed bounds the shove a ship can receive.
++ *No tunneling (B7).* A coupled block takes enough substeps that two hull points close by at most $rho slash 4$ per substep, up to 64; continuous detection remains enabled against fixed bodies. Seeded head-on and glancing encounters at the arena speeds tested never pass through one another.
+
+`Join` chooses the first spawn template or nearby ring position that is a singleton in $Pi_1$, inside the arena and clear of bodies, so joining moves no existing ship. Rapier's result can depend on ship-id insertion order, which determinism permits; a seeded two-order test checks that this produces no systematic advantage to the lower id.
+
+*Contact amplifies small errors.* @thm-sens excludes contact for a reason: it need not be Lipschitz.
 
 #proposition(name: [Grazing])[
   Consider a ship whose unconstrained path would reach a depth $d > 0$ into a body, with relative normal acceleration $c > 0$. With restitution $0$, the contact removes a normal speed of $sqrt(2 c d)$. So a position difference of $d$ between a path that misses and one that doesn't produces a velocity difference of $sqrt(2 c d)$: Hölder of order $1 slash 2$ rather than Lipschitz.
@@ -1193,9 +1242,7 @@ Fixed bodies fit too, with $v = 0$ and $A = a_i + g_max$. Since pilots choose th
   The gap is $-d + c (s - s^*)^2 slash 2$ near its minimum at $s^*$, and vanishes where $|s - s^*| = sqrt(2 d slash c)$. There its rate of change is $c sqrt(2 d slash c) = sqrt(2 c d)$.
 ]
 
-This is the square-root singularity known from grazing impacts @nordmark1991. At $c = 10$, a difference at `f32` resolution ($d approx 8 dot 10^(-6)$ at distance $100$) gives $0.012$ units/s, the same size as what @tab-replay measured in contact, though we have not shown this to be the cause. A difference of $0.1$, as extrapolation might make, gives $1.4$ units/s. So near-misses between ships will produce visible corrections, unavoidably: no amount of bit-exactness helps with an unknown command, and @thm-nopresent says the command can't be known. Smoothing and the small horizon are the available tools. Free flight is forgiving here, as a slightly wrong bump costs nothing.
-
-*Physics changes.* Phase A runs one `Physics` per ship, exactly the code that exists, which makes @eq:product true by construction, and makes the client's predictor the same code as the server's stepper. Phase B needs one Rapier world with all ships as dynamic bodies. Rapier's determinism promise depends on insertion order, and client and server won't have the same bodies in the same order, so a client's replay is not bit-exact, near contact, on any platform. By @replay and @prop-graze, that is acceptable. To restore a component for a replay, the client needs a function setting states on existing bodies, without rebuilding the world. Whether Rapier's solver gives acceptable results across a restore for ship-to-ship contact, as it does for planets (@tab-replay), is the main thing Phase B must measure. Two smaller points. At a closing speed of $400$ units/s, two ships move $3.3$ units per substep, more than $R = 2$, so they need the continuous collision detection that `Physics::new` already enables. And $Wall$'s clamp could push one ship into another, in which case Phase B would replace it with four static colliders.
+This is the square-root singularity known from grazing impacts @nordmark1991. Unknown remote commands can therefore cause visible corrections near a graze even though the world map itself is deterministic. The small replay horizon and per-ship smoothing hide what they can; the next snapshot remains authoritative.
 
 = Transport and the Rust stack <transport>
 
@@ -1334,7 +1381,7 @@ Each milestone's acceptance test is a theorem of this paper, checked on a runnin
     [M5], [Native client: lobby screen, prediction, reconciliation, smoothing, interpolation, remote plumes, autopilots.], [Two pilots with different ships fly in one world at 100 ms RTT. In vacuum with no lost changes, corrections are exactly zero (@thm-exact). Elsewhere they match @tab-replay. An autopilot arrives while another pilot flies by hand.], [Yes],
     [M6], [Web client, certificates, `RUSTFLAGS`.], [A browser and a native pilot share a world, in Chrome, Firefox and Safari, against a server that has only `serverCertificateHashes` to offer. Repeat @tab-replay native against WASM, and @tab-autopilot in WASM. A hidden tab behaves as specified.], [Partly],
     [M7], [Tuning: $q$, $K$, $mu^*$, the ranges and caps, per-connection rate limits, metrics. The autopilot's controller off the frame thread on native.], [@bandwidth met at $N = 16$. Burst-loss behavior measured against @loss. Idle frames measured against @prop-idle on a real 60 Hz display.], [No],
-    [M8], [*Phase B.* A shared Rapier world, extrapolation into the own frame, the coupling graph, and contact smoothing. Rework @thm-contain and the module of @tla.], [Corrections in contact are measured and judged acceptable by playing. Worst-case bound of @prop-zoh holds in the simulator.], [No],
+    [M8], [*Phase B.* The memoryless block world map, extrapolation into the own frame, the coupling partition, and contact smoothing. Rework @thm-contain and the module of @tla.], [@thm-exact-b and the collision properties hold in the simulator. Corrections in contact are measured and judged acceptable by playing. Worst-case bound of @prop-zoh holds in the simulator.], [No],
   ),
   caption: [The milestones, in order. M3 can be done without any socket, and most of the risk is settled by then. M6 is _Partly_ done: it has flown in Chromium only.],
 )

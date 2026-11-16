@@ -2,12 +2,16 @@
 //!
 //! It is a function of what it is handed, and a call is atomic. `Tick` waits for nobody: it has
 //! no precondition, and no client or network can stop the world.
+//!
+//! The world is the ships' states and nothing more. A tick is the world's map
+//! ([`nabla_sim::fleet::Dynamics::tick`]) applied to them and to the commands chosen, so what a
+//! snapshot carries is all a client needs to compute the next tick as the server will.
 
 use std::collections::BTreeMap;
 
 use nabla_core::Params;
 use nabla_sim::command::Command;
-use nabla_sim::ship::Ship;
+use nabla_sim::fleet::{Dynamics, Member};
 use nabla_sim::world::{MAX_PILOTS, World};
 
 use crate::wire::{
@@ -34,8 +38,15 @@ pub struct ShipLog {
     pub samples: Vec<Sample>,
     /// `commands[n]` is the command that tick `since + n` applied.
     pub commands: Vec<Command>,
+    /// `controls[n]`: the control tick `since + n` flew, which the snapshot after it carries.
+    pub controls: Vec<nabla_core::Control>,
     /// `delivered[n]`: a command stamped `since + n` had arrived, and was the one applied.
     pub delivered: Vec<bool>,
+    /// `company[n]`: the other ships of this ship's block at tick `since + n`, which are the only
+    /// ships that tick could let act on it. Empty when it flew the tick alone.
+    pub company: Vec<Vec<ShipId>>,
+    /// `touched[n]`: at tick `since + n` the ship's hull pushed on another ship's, or on a body.
+    pub touched: Vec<bool>,
 }
 
 impl ShipLog {
@@ -54,6 +65,27 @@ impl ShipLog {
     /// Whether the command applied at `tick` was one that had arrived for it.
     pub fn was_delivered(&self, tick: Tick) -> Option<bool> {
         self.delivered
+            .get(usize::try_from(tick.checked_sub(self.since)?).ok()?)
+            .copied()
+    }
+
+    /// The control `tick` flew.
+    pub fn control_at(&self, tick: Tick) -> Option<nabla_core::Control> {
+        self.controls
+            .get(usize::try_from(tick.checked_sub(self.since)?).ok()?)
+            .copied()
+    }
+
+    /// The other ships of the ship's block at `tick`.
+    pub fn company_at(&self, tick: Tick) -> Option<&[ShipId]> {
+        self.company
+            .get(usize::try_from(tick.checked_sub(self.since)?).ok()?)
+            .map(Vec::as_slice)
+    }
+
+    /// Whether the ship's hull pushed on anything at `tick`.
+    pub fn touched_at(&self, tick: Tick) -> Option<bool> {
+        self.touched
             .get(usize::try_from(tick.checked_sub(self.since)?).ok()?)
             .copied()
     }
@@ -92,7 +124,8 @@ struct Conn {
 /// A ship in the world and what the server keeps for it.
 struct Slot {
     conn: ConnId,
-    ship: Ship,
+    /// The ship itself: its granted parameters, its state, and the control of its last tick.
+    member: Member,
     params: Params,
     /// `buf[i]`: commands received for the stamps in the window, `[T, T + N_b)`.
     buf: BTreeMap<Tick, Command>,
@@ -113,6 +146,8 @@ struct Slot {
 
 pub struct ServerMachine {
     world: World,
+    /// The world's map from tick to tick, which keeps nothing between ticks.
+    dynamics: Dynamics,
     world_file: String,
     config: Config,
     /// What a connection must say to be let in, if anything.
@@ -130,6 +165,8 @@ pub struct ServerMachine {
     logs: BTreeMap<ShipId, ShipLog>,
     /// Ticks of ships already under command that came with no command for them.
     held: u64,
+    /// Ticks of pairs of ships whose hulls pushed on each other.
+    touches: u64,
 }
 
 impl ServerMachine {
@@ -147,6 +184,7 @@ impl ServerMachine {
         world.validate()?;
         Ok(Self {
             world_file: world.to_toml()?,
+            dynamics: Dynamics::new(&world),
             world,
             config,
             password: None,
@@ -159,6 +197,7 @@ impl ServerMachine {
             joined: 0,
             logs: BTreeMap::new(),
             held: 0,
+            touches: 0,
         })
     }
 
@@ -178,6 +217,11 @@ impl ServerMachine {
     /// was lost, or was never sent. Only then can a prediction be wrong (`thm-exact`).
     pub fn held(&self) -> u64 {
         self.held
+    }
+
+    /// How many times, over all ticks, two ships' hulls pushed on each other in a tick.
+    pub fn touches(&self) -> u64 {
+        self.touches
     }
 
     pub fn world(&self) -> &World {
@@ -209,7 +253,20 @@ impl ServerMachine {
 
     /// The ship's state now, if it is flying.
     pub fn state_of(&self, ship: ShipId) -> Option<nabla_core::State> {
-        self.ships.get(&ship).map(|slot| slot.ship.state())
+        self.ships.get(&ship).map(|slot| slot.member.state)
+    }
+
+    /// The world's map from tick to tick.
+    pub fn dynamics(&self) -> &Dynamics {
+        &self.dynamics
+    }
+
+    /// The ships flying, with their states now, in the order of their names: the world `W`.
+    pub fn fleet(&self) -> Vec<(ShipId, Member)> {
+        self.ships
+            .iter()
+            .map(|(&id, slot)| (id, slot.member))
+            .collect()
     }
 
     /// The parameters a flying ship was granted.
@@ -365,42 +422,72 @@ impl ServerMachine {
         self.retire_the_idle(now, &mut out);
         self.retire_the_unadmitted(now, &mut out);
         let t = self.tick;
-        for (id, slot) in &mut self.ships {
-            let delivered = slot.buf.remove(&t);
-            let chosen = match delivered {
+        // `Chosen(i)` for every ship, and then the world's map: one step of all of them.
+        let mut delivered = Vec::with_capacity(self.ships.len());
+        let mut chosen = Vec::with_capacity(self.ships.len());
+        let mut fleet = Vec::with_capacity(self.ships.len());
+        for slot in self.ships.values_mut() {
+            let arrived = slot.buf.remove(&t);
+            chosen.push(match arrived {
                 Some(command) => command,
                 None if slot.miss.saturating_add(1) < self.config.silence_ticks => slot.last,
                 None => slot.last.neutral(),
-            };
-            slot.ship.tick(&self.world, &chosen);
+            });
+            delivered.push(arrived.is_some());
+            fleet.push(slot.member);
+        }
+        let report = self.dynamics.tick(&mut fleet, &chosen);
+        let ids: Vec<ShipId> = self.ships.keys().copied().collect();
+        let mut block_of = vec![0; ids.len()];
+        for (b, block) in report.blocks.iter().enumerate() {
+            for &i in block {
+                block_of[i] = b;
+            }
+        }
+        for (i, slot) in self.ships.values_mut().enumerate() {
+            let (chosen, delivered) = (chosen[i], delivered[i]);
+            slot.member = fleet[i];
             slot.last = chosen;
-            slot.miss = if delivered.is_some() {
+            slot.miss = if delivered {
                 0
             } else {
                 slot.miss.saturating_add(1)
             };
-            self.held += u64::from(delivered.is_none() && slot.commanded);
-            slot.commanded |= delivered.is_some();
-            if delivered.is_some_and(|command| command != command.neutral()) {
+            self.held += u64::from(!delivered && slot.commanded);
+            slot.commanded |= delivered;
+            if delivered && chosen != chosen.neutral() {
                 slot.last_input = t;
             }
             if self.config.keep_log
-                && let Some(log) = self.logs.get_mut(id)
+                && let Some(log) = self.logs.get_mut(&ids[i])
             {
                 log.commands.push(chosen);
-                log.delivered.push(delivered.is_some());
+                log.controls.push(slot.member.control);
+                log.delivered.push(delivered);
                 log.samples.push(Sample {
-                    state: slot.ship.state(),
-                    hold: slot.ship.hold(),
+                    state: slot.member.state,
+                    hold: slot.member.hold,
                 });
+                log.company.push(
+                    report.blocks[block_of[i]]
+                        .iter()
+                        .filter(|&&j| j != i)
+                        .map(|&j| ids[j])
+                        .collect(),
+                );
+                log.touched.push(
+                    report.grounded.contains(&i)
+                        || report.touches.iter().any(|&(a, b)| a == i || b == i),
+                );
             }
         }
+        self.touches += report.touches.len() as u64;
         self.tick += 1;
         self.report_presence(&mut out);
         let records: Vec<ShipRecord> = self
             .ships
             .iter()
-            .map(|(&id, slot)| record(id, &slot.ship))
+            .map(|(&id, slot)| record(id, &slot.member))
             .collect();
         for slot in self.ships.values() {
             let snapshot = Snapshot {
@@ -433,7 +520,8 @@ impl ServerMachine {
         )
     }
 
-    /// `Join`: a ship, as granted, at a spawn place, and in the world between ticks.
+    /// `Join`: a ship, as granted, at a spawn place where it is alone in its block, and in the
+    /// world between ticks. With no such place, as with no place left, there is no room.
     fn join(
         &mut self,
         conn: ConnId,
@@ -449,15 +537,22 @@ impl ServerMachine {
             out.push(stream(conn, &ServerStream::NameTaken));
             return;
         }
+        let params = self.world.grant(request);
+        let flying: Vec<Member> = self.ships.values().map(|slot| slot.member).collect();
+        let Some(spawn) = self
+            .dynamics
+            .spawn(&self.world, &flying, self.joined, params)
+        else {
+            out.push(stream(conn, &ServerStream::Full));
+            return;
+        };
         let id = ShipId(self.next_ship);
         self.next_ship += 1;
-        let params = self.world.grant(request);
-        let spawn = self.world.spawn(self.joined).state;
         self.joined += 1;
-        let ship = Ship::new(&self.world, params, spawn);
+        let member = Member::new(params, spawn);
         let sample = Sample {
-            state: ship.state(),
-            hold: ship.hold(),
+            state: member.state,
+            hold: member.hold,
         };
         if self.config.keep_log {
             self.logs.insert(
@@ -466,16 +561,18 @@ impl ServerMachine {
                     since: self.tick,
                     samples: vec![sample],
                     commands: Vec::new(),
+                    controls: Vec::new(),
                     delivered: Vec::new(),
+                    company: Vec::new(),
+                    touched: Vec::new(),
                 },
             );
         }
-        let params = *ship.params();
         self.ships.insert(
             id,
             Slot {
                 conn,
-                ship,
+                member,
                 params,
                 buf: BTreeMap::new(),
                 last: Command::default(),
@@ -506,7 +603,7 @@ impl ServerMachine {
                 ships: self
                     .ships
                     .iter()
-                    .map(|(&i, s)| record(i, &s.ship))
+                    .map(|(&i, s)| record(i, &s.member))
                     .collect(),
             }),
         ));
@@ -614,14 +711,15 @@ fn other_version(client: u16) -> String {
     format!("the client speaks protocol {client} and the server {PROTOCOL}: update the {older}")
 }
 
-fn record(ship: ShipId, sim: &Ship) -> ShipRecord {
-    let control = sim.control();
+/// A ship as a snapshot says it. The control is exactly the one its last tick flew, which the
+/// world's map rounded to single precision.
+fn record(ship: ShipId, member: &Member) -> ShipRecord {
     ShipRecord {
         ship,
-        state: sim.state(),
-        hold: sim.hold(),
-        thrust: control.thrust as f32,
-        torque: control.torque as f32,
+        state: member.state,
+        hold: member.hold,
+        thrust: member.control.thrust as f32,
+        torque: member.control.torque as f32,
     }
 }
 

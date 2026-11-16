@@ -224,6 +224,7 @@ async fn own(
                     m.tick(began.elapsed(), late);
                     m.pilots = machine.pilots();
                     m.held = machine.held();
+                    m.touches = machine.touches();
                     sent.add_to(m);
                 });
             }

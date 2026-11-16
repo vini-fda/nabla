@@ -4,8 +4,9 @@
 //! hostile. [`Sim::run`] plays it out in simulated time, with one event queue, and checks the
 //! theorems of `specs/multiplayer.typ` as assertions along the way: that the log holds exactly one
 //! command per tick and never changes (`thm-once`), that a ship depends only on its own
-//! connection (`thm-contain`, which the tests check by comparing two runs), and that a
-//! prediction made with the commands that were applied is exact (`thm-exact`).
+//! connection and on the ships it shared a block with (`thm-contain` and `thm-influence`, which
+//! the tests check by comparing two runs), and that a prediction made with the controls that were
+//! flown, of ships that nothing outside came near, is exact (`thm-exact`, `thm-exact-b`).
 //!
 //! The same seed gives the same run on every machine. Each peer's links draw from their own
 //! random stream, so what one peer does cannot change the luck of another's packets.
@@ -13,14 +14,14 @@
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap};
 
-use nabla_core::State;
+use nabla_core::Params;
 use nabla_sim::command::Command;
 use nabla_sim::rng::Rng;
 use nabla_sim::steering::{Aim, Input, Steering};
 use nabla_sim::world::{ShipRequest, World};
 
-use crate::client::ClientMachine;
-use crate::server::ServerMachine;
+use crate::client::{Base, ClientMachine};
+use crate::server::{ServerMachine, ShipLog};
 use crate::wire::{ClientStream, Commands, ConnId, ShipId, Tick, Username, encode};
 use crate::{Config, Kind, Outgoing};
 
@@ -110,6 +111,9 @@ pub enum Hostile {
     Flood,
     /// Joins and leaves, hellos twice, joins before hello, leaves when it has no ship.
     Churn,
+    /// Joins, and flies at the first peer's ship at full thrust, to ram it, for as long as the
+    /// run lasts. Its commands are honest ones: where ships collide, this is all it takes.
+    Rammer,
 }
 
 /// Who a peer is.
@@ -117,7 +121,18 @@ pub enum Hostile {
 pub enum Behavior {
     /// A client machine flying with a pilot who holds keys for a while and then changes them.
     Honest,
+    /// A client machine whose pilot holds the same keys for two seconds at a time, with no
+    /// assist: its control is then the same from tick to tick, which is what another client's
+    /// prediction of it assumes.
+    Steady,
     Hostile(Hostile),
+}
+
+impl Behavior {
+    /// Whether the peer is a client machine, flying as a pilot would.
+    pub fn is_honest(self) -> bool {
+        matches!(self, Self::Honest | Self::Steady)
+    }
 }
 
 /// One peer: a connection with its links and its clock.
@@ -143,6 +158,15 @@ pub struct Peer {
 }
 
 impl Peer {
+    /// A peer whose pilot holds the same keys for seconds at a time, otherwise as
+    /// [`Self::honest`].
+    pub fn steady(world: &World, delay: f64) -> Self {
+        Self {
+            behavior: Behavior::Steady,
+            ..Self::honest(world, delay)
+        }
+    }
+
     /// An honest peer for `world`'s default ship on a path with `delay` seconds each way.
     pub fn honest(world: &World, delay: f64) -> Self {
         Self {
@@ -165,8 +189,10 @@ impl Peer {
 pub struct Checks {
     /// Assert `thm-once` and the bounds on memory and size. Needs `keep_log`.
     pub invariants: bool,
-    /// Assert `thm-exact`: right in a vacuum, where client and server run the same exact map.
-    /// Where there are bodies, the error is measured instead (see [`Report`]).
+    /// Assert `thm-exact` and `thm-exact-b`: a prediction equals the log, to the last bit, for
+    /// as long as it flew every ship it carries with the control the server flew, and no ship it
+    /// does not carry shared a block with one it does. Off, the error is measured instead (see
+    /// [`Report`]).
     pub exact: bool,
 }
 
@@ -188,8 +214,16 @@ pub struct Report {
     pub datagrams_down: u64,
     pub lost: u64,
     pub absorbed: u64,
-    /// Predictions compared with the log and found exact.
+    /// Predictions of the own ship compared with the log and found exact.
     pub exact_checks: u64,
+    /// The same of other ships the prediction carried: ships near enough to touch the own one.
+    pub company_checks: u64,
+    /// The predictions among those that were of a tick after the two ships had shared a block,
+    /// or touched: exact through a collision.
+    pub coupled_checks: u64,
+    pub touched_checks: u64,
+    /// Ticks of pairs of ships whose hulls pushed on each other.
+    pub touches: u64,
     pub max_buffered: usize,
     pub max_snapshot_bytes: usize,
     /// Per peer, `(time, e)` at each snapshot absorbed: the margin error in seconds.
@@ -310,7 +344,9 @@ impl Sim {
             .enumerate()
             .map(|(i, spec)| {
                 let stream = |n: u64| Rng::fork(seed, (i as u64) * 8 + n);
-                let client = (spec.behavior == Behavior::Honest)
+                let client = spec
+                    .behavior
+                    .is_honest()
                     .then(|| ClientMachine::new(protocol, spec.request, name_of(i), "sim"));
                 PeerState {
                     spec,
@@ -458,7 +494,7 @@ impl Sim {
     fn start(&mut self, i: usize) {
         self.server.connect(ConnId(i as u32), self.now);
         let hostile = match self.peers[i].spec.behavior {
-            Behavior::Honest => None,
+            Behavior::Honest | Behavior::Steady => None,
             Behavior::Hostile(kind) => Some(kind),
         };
         match hostile {
@@ -500,12 +536,17 @@ impl Sim {
         let local = self.local(i, self.now).max(peer.poll_due);
         let seed = self.seed;
         let peer = &mut self.peers[i];
+        let steady = peer.spec.behavior == Behavior::Steady;
         let Some(client) = &mut peer.client else {
             return;
         };
         let issued = &mut peer.issued;
         let kinds = client.poll(local, &mut |stamp, _predicted| {
-            let command = honest_pilot(seed, i, stamp);
+            let command = if steady {
+                steady_pilot(seed, i, stamp)
+            } else {
+                honest_pilot(seed, i, stamp)
+            };
             issued.insert(stamp, command);
             command
         });
@@ -618,6 +659,14 @@ impl Sim {
             return;
         }
         let tick = self.server.tick_number();
+        let frames = self.hostile_frames(kind, i, tick);
+        self.send_up(i, frames);
+        let at = self.now + self.world.h();
+        self.schedule(at, TIMER, i, What::Act(i));
+    }
+
+    /// What a hostile peer of `kind` sends in one of its turns.
+    fn hostile_frames(&mut self, kind: Hostile, i: usize, tick: Tick) -> Vec<Kind> {
         let mut frames = Vec::new();
         let rng = &mut self.peers[i].hostile_rng;
         match kind {
@@ -663,6 +712,34 @@ impl Sim {
                     frames.push(Kind::Datagram(encode(&Commands { stamp, cmds })));
                 }
             }
+            Hostile::Rammer => {
+                // It reads the server's own state, which is more than any client has.
+                let target = self
+                    .server
+                    .ship_of(ConnId(0))
+                    .and_then(|ship| self.server.state_of(ship));
+                let own = self
+                    .server
+                    .ship_of(ConnId(i as u32))
+                    .and_then(|ship| self.server.state_of(ship));
+                if let (Some(target), Some(own)) = (target, own) {
+                    let heading = (target.y - own.y).atan2(target.x - own.x);
+                    let command = Command::Manual {
+                        input: Input {
+                            thrust: 1.0,
+                            aim: Some(Aim { heading, cone: 0.5 }),
+                            ..Input::default()
+                        },
+                        steering: Steering::Raw,
+                    };
+                    for stamp in tick..tick + 4 {
+                        frames.push(Kind::Datagram(encode(&Commands {
+                            stamp,
+                            cmds: vec![Some(command)],
+                        })));
+                    }
+                }
+            }
             Hostile::Churn => {
                 for _ in 0..3 {
                     let request = ShipRequest {
@@ -686,9 +763,7 @@ impl Sim {
                 }
             }
         }
-        self.send_up(i, frames);
-        let at = self.now + self.world.h();
-        self.schedule(at, TIMER, i, What::Act(i));
+        frames
     }
 
     /// After a server tick: what the specification says holds of the server, holds.
@@ -706,9 +781,10 @@ impl Sim {
         }
         let tick = self.server.tick_number();
         self.report.ticks = tick;
+        self.report.touches = self.server.touches();
         for (i, peer) in self.peers.iter().enumerate() {
             if let Some(ship) = self.server.ship_of(ConnId(i as u32)) {
-                if peer.spec.behavior == Behavior::Honest {
+                if peer.spec.behavior.is_honest() {
                     self.honest_ships.insert(ship, i);
                 }
                 if let Some(buffered) = self.server.buffered(ship) {
@@ -800,56 +876,88 @@ impl Sim {
             return;
         };
         let log = self.server.log(ship).expect("the log is kept");
-        assert_eq!(
-            log.at(base.tick).map(|s| (s.state, s.hold)),
-            Some((base.state, base.hold)),
-            "seed {seed}: the base at {} is not the server's (thm-once 5)",
-            base.tick
-        );
-        // The Advance rule: the client's tick never trails the world's.
-        assert!(
-            base.tick <= k,
-            "seed {seed}: the base {} is past the client's tick {k} (Lead)",
-            base.tick
-        );
-        if let Some(last) = peer.last_base {
-            assert!(
-                base.tick > last,
-                "seed {seed}: the base moved back (thm-once 5)"
-            );
-        }
+        check_base(&base, k, log, peer.last_base, seed);
         peer.last_base = Some(base.tick);
-        // The longest stretch from the base on over which the replay used what was applied.
+        // thm-exact-b. The prediction carries the ships of `company`. Of a part of them that is
+        // closed, tick by tick, under the blocks of the world and under the blocks of the
+        // prediction itself, it is exact for as long as every ship of the part is replayed with
+        // the control the server flew: the own ship with the commands issued, the others with
+        // the control of the base, held. The least such part that holds a ship is its influence
+        // set since the base, counted through the blocks of both.
+        let company = client.company();
         let have = log.since + u32::try_from(log.commands.len()).expect("fewer ticks than u32");
         let end = k.min(have);
-        let mut agree = base.tick;
-        while agree < end {
-            let applied = *log.applied(agree).expect("within the log");
-            let replayed = client.replayed(agree).expect("playing").sanitize(&params);
-            if applied != replayed {
+        // For each ship carried: the first tick it was not replayed as it flew, or was gone by.
+        let faithful = faithful_tills(
+            &self.server,
+            client,
+            ship,
+            &params,
+            base.tick,
+            end,
+            &company,
+        );
+        // influence[a][b]: ship `b` of the company is in the influence set of ship `a`, since the
+        // base. `strangers[a]`: so is a ship that is not carried.
+        let count = company.len();
+        let mut influence: Vec<Vec<bool>> = (0..count)
+            .map(|a| (0..count).map(|b| a == b).collect())
+            .collect();
+        let mut strangers = vec![false; count];
+        let mut coupled = false;
+        let mut touched = false;
+        let mut worst = (0.0_f64, 0.0_f64);
+        for n in base.tick..=end {
+            let predicted = client.predict_company(n).expect("not before the base");
+            for (a, &(other, predicted)) in predicted.iter().enumerate() {
+                let stands = !strangers[a]
+                    && (0..count).all(|b| !influence[a][b] || faithful[b] >= n);
+                let truth = self
+                    .server
+                    .log(other)
+                    .and_then(|theirs| theirs.at(n))
+                    .map(|sample| sample.state);
+                let (true, Some(truth)) = (stands, truth) else {
+                    continue;
+                };
+                if self.checks.exact {
+                    assert_eq!(
+                        predicted, truth,
+                        "seed {seed}: the prediction of {other:?} at {n} from {} (thm-exact)",
+                        base.tick
+                    );
+                    if other == ship {
+                        self.report.exact_checks += 1;
+                        self.report.coupled_checks += u64::from(coupled);
+                        self.report.touched_checks += u64::from(touched);
+                    } else {
+                        self.report.company_checks += 1;
+                    }
+                } else if other == ship {
+                    worst.0 = worst
+                        .0
+                        .max((predicted.x - truth.x).hypot(predicted.y - truth.y));
+                    worst.1 = worst
+                        .1
+                        .max((predicted.vx - truth.vx).hypot(predicted.vy - truth.vy));
+                }
+            }
+            if n == end {
                 break;
             }
-            agree += 1;
-        }
-        let mut worst = (0.0_f64, 0.0_f64);
-        for n in base.tick..=agree {
-            let predicted: State = client.predict(n).expect("not before the base");
-            let truth = log.at(n).expect("within the log").state;
-            if self.checks.exact {
-                assert_eq!(
-                    predicted, truth,
-                    "seed {seed}: the prediction at {n} from {} (thm-exact)",
-                    base.tick
-                );
-                self.report.exact_checks += 1;
-            } else {
-                worst.0 = worst
-                    .0
-                    .max((predicted.x - truth.x).hypot(predicted.y - truth.y));
-                worst.1 = worst
-                    .1
-                    .max((predicted.vx - truth.vx).hypot(predicted.vy - truth.vy));
-            }
+            // Tick `n`: each ship takes on the influences of the ships of its block, in the
+            // world and in the prediction.
+            let (was_coupled, was_touched) = take_influences(
+                &self.server,
+                log,
+                client,
+                &company,
+                &mut influence,
+                &mut strangers,
+                n,
+            );
+            coupled |= was_coupled;
+            touched |= was_touched;
         }
         self.report.max_error.0 = self.report.max_error.0.max(worst.0);
         self.report.max_error.1 = self.report.max_error.1.max(worst.1);
@@ -870,6 +978,104 @@ impl Sim {
             );
         }
     }
+}
+
+/// The base a client just absorbed is true (`thm-once` 5), not past its own tick (Lead), and
+/// after the last one it absorbed.
+fn check_base(base: &Base, k: Tick, log: &ShipLog, last: Option<Tick>, seed: u64) {
+    assert_eq!(
+        log.at(base.tick).map(|s| (s.state, s.hold)),
+        Some((base.state, base.hold)),
+        "seed {seed}: the base at {} is not the server's (thm-once 5)",
+        base.tick
+    );
+    // The Advance rule: the client's tick never trails the world's.
+    assert!(
+        base.tick <= k,
+        "seed {seed}: the base {} is past the client's tick {k} (Lead)",
+        base.tick
+    );
+    if let Some(last) = last {
+        assert!(
+            base.tick > last,
+            "seed {seed}: the base moved back (thm-once 5)"
+        );
+    }
+}
+
+/// For each ship of `company`: the first tick from the base to `end` it was not replayed as it
+/// flew, or was gone by. The own ship `ship` is replayed with the commands issued, the others
+/// with the control of the base, held.
+fn faithful_tills(
+    server: &ServerMachine,
+    client: &ClientMachine,
+    ship: ShipId,
+    params: &Params,
+    base: Tick,
+    end: Tick,
+    company: &[ShipId],
+) -> Vec<Tick> {
+    company
+        .iter()
+        .map(|&other| {
+            let Some(theirs) = server.log(other) else {
+                return base;
+            };
+            (base..end)
+                .find(|&m| {
+                    let as_flown = if other == ship {
+                        theirs.applied(m).copied() == client.replayed(m).map(|c| c.sanitize(params))
+                    } else {
+                        theirs.control_at(m) == client.held(other)
+                    };
+                    !as_flown || theirs.at(m + 1).is_none()
+                })
+                .unwrap_or(end)
+        })
+        .collect()
+}
+
+/// Tick `n`: each ship of `company` takes on the influences of the ships of its block, both in
+/// the world and in the client's prediction of it, and a ship of the block that the prediction
+/// does not carry makes it a stranger to exactness. It returns whether the own ship `log` had
+/// company in the tick, and whether it touched.
+fn take_influences(
+    server: &ServerMachine,
+    log: &ShipLog,
+    client: &mut ClientMachine,
+    company: &[ShipId],
+    influence: &mut [Vec<bool>],
+    strangers: &mut [bool],
+    n: Tick,
+) -> (bool, bool) {
+    let before = influence.to_vec();
+    let strangers_before = strangers.to_vec();
+    let predicted_blocks = client.predicted_blocks(n).expect("not before the base");
+    for (a, &other) in company.iter().enumerate() {
+        let mates = server
+            .log(other)
+            .and_then(|theirs| theirs.company_at(n))
+            .unwrap_or(&[]);
+        let predicted_mates = predicted_blocks
+            .iter()
+            .find(|block| block.contains(&other))
+            .map_or(&[][..], Vec::as_slice);
+        for mate in mates.iter().chain(predicted_mates) {
+            match company.iter().position(|id| id == mate) {
+                Some(b) => {
+                    for (mine, theirs) in influence[a].iter_mut().zip(&before[b]) {
+                        *mine |= theirs;
+                    }
+                    strangers[a] |= strangers_before[b];
+                }
+                None => strangers[a] = true,
+            }
+        }
+    }
+    (
+        !log.company_at(n).expect("within the log").is_empty(),
+        log.touched_at(n).expect("within the log"),
+    )
 }
 
 /// What an honest pilot holds at a stamp.
@@ -921,6 +1127,32 @@ pub fn honest_pilot(seed: u64, peer: usize, stamp: Tick) -> Command {
             thrust: rng.range(0.0, 5.0),
             torque: rng.range(-5.0, 5.0),
         },
+    }
+}
+
+/// What a steady pilot holds at a stamp: full thrust straight ahead for the first four seconds
+/// of the run, and then the same keys for two seconds at a time.
+///
+/// Thrust is on for most of them, with seldom a turn. It flies with no assist, so that its
+/// control does not change from tick to tick.
+pub fn steady_pilot(seed: u64, peer: usize, stamp: Tick) -> Command {
+    let mut rng = Rng::fork(seed ^ 0x57EA, ((peer as u64) << 32) | u64::from(stamp / 120));
+    let input = if stamp < 240 {
+        Input {
+            thrust: 1.0,
+            ..Input::default()
+        }
+    } else {
+        Input {
+            thrust: if rng.chance(0.7) { 1.0 } else { 0.0 },
+            turn: [-1.0, 0.0, 0.0, 0.0, 0.0, 1.0][rng.below(6) as usize],
+            fine: rng.chance(0.3),
+            aim: None,
+        }
+    };
+    Command::Manual {
+        input,
+        steering: Steering::Raw,
     }
 }
 

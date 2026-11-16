@@ -6,10 +6,10 @@ gravity_constant = 1.0
 radius = 1.0
 
 [players.state]
-x = -750.0
-y = 150.0
-vx = 28.284271247461902
-vy = 28.284271247461902
+x = -15.0
+y = 3.0
+vx = 4.0
+vy = 4.0
 theta = 0.0
 omega = 2.0
 
@@ -34,12 +34,12 @@ omega = 0.1
 
 [[bodies]]
 name = "Planet"
-position = [0.0, -600.0]
-radius = 350.0
-mass = 857500.0
+position = [0.0, -12.0]
+radius = 7.0
+mass = 343.0
 
 [[bodies]]
 name = "Moon"
-position = [600.0, 200.0]
-radius = 125.0
-mass = 39062.5
+position = [12.0, 4.0]
+radius = 2.5
+mass = 15.625

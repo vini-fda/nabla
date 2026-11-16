@@ -312,7 +312,8 @@ fn a_taken_name_sends_the_pilot_back_to_pick_another() {
 
 #[test]
 fn two_pilots_with_different_ships_fly_in_one_world_at_100_ms_with_no_corrections() {
-    let world = vacuum();
+    let mut world = vacuum();
+    world.ship_collisions = Some(false);
     let ours = ShipRequest::from(world.default_ship());
     let mut rig = Rig::new(world, 0.050, 0.0, 1);
     rig.add(ours);
@@ -358,6 +359,79 @@ fn two_pilots_with_different_ships_fly_in_one_world_at_100_ms_with_no_correction
     // And a few ticks behind the newest snapshot, as `D_r` says.
     let lag = f64::from(rig.clients[0].machine.base().expect("playing").tick) - at;
     assert!((2.4..=4.6).contains(&lag), "{lag}");
+}
+
+#[test]
+fn a_nearby_ship_is_drawn_in_the_own_ships_frame_and_smoothed() {
+    let mut world = vacuum();
+    for player in &mut world.players {
+        player.state = State::default();
+    }
+    world.players[0].state.x = 0.0;
+    world.players[1].state.x = 3.0;
+    world.players[1].state.vx = 5.0;
+    let ours = ShipRequest::from(world.default_ship());
+    let mut rig = Rig::new(world, 0.050, 0.0, 1);
+    rig.add(ours);
+    rig.add(ours);
+    rig.join_all(&[ours, ours]);
+    rig.run(0.5, &|_, _| Hands::default());
+
+    let other = rig.clients[1].ship().expect("the other is flying");
+    assert!(rig.clients[0].machine.company().contains(&other));
+    let now = rig.now;
+    let k = rig.clients[0].machine.tick().expect("playing");
+    let due = rig.clients[0].machine.next_deadline().expect("playing");
+    let h = rig.clients[0].h().expect("a world");
+    let fraction = (1.0 - (due - now) / h).clamp(0.0, 1.0);
+    let theirs = hermite(
+        &rig.clients[1].trail[&(k - 1)].state,
+        &rig.clients[1].trail[&k].state,
+        fraction,
+        h,
+    );
+    let seen = rig.clients[0].views(now);
+    let nearby = seen.iter().find(|view| view.ship == other).expect("drawn");
+    assert!((nearby.state.x - theirs.x).abs() < 1e-12);
+    assert!((nearby.state.y - theirs.y).abs() < 1e-12);
+    let phase = |t: f64| (t / h).rem_euclid(1.0);
+    assert!(
+        (phase(nearby.t) - phase(seen[0].t)).abs() < 1e-12,
+        "the same point within the tick"
+    );
+
+    let at = rig.clients[0].playout.tick.expect("playing");
+    let records: Vec<Remote> = rig.clients[0].machine.remotes().expect("playing")[&other]
+        .iter()
+        .copied()
+        .collect();
+    let task = rig.clients[0].task().expect("a ship");
+    let params = rig.clients[1].params().expect("the other has a ship");
+    let delayed = remote_view(&task, other, params, &records, at, h).expect("a remote view");
+    assert!(
+        nearby.state.x - delayed.state.x > 0.1,
+        "not the delayed snapshot: {} versus {}",
+        nearby.state.x,
+        delayed.state.x
+    );
+
+    rig.clients[0]
+        .company_smoothing
+        .get_mut(&other)
+        .expect("the company has its own offset")
+        .absorb(&Correction {
+            delta: State {
+                x: 0.25,
+                ..State::default()
+            },
+            jumped: false,
+        });
+    let smoothed = rig.clients[0].views(now);
+    let nearby = smoothed
+        .iter()
+        .find(|view| view.ship == other)
+        .expect("still drawn");
+    assert!((nearby.state.x - theirs.x + 0.25).abs() < 1e-12);
 }
 
 #[test]

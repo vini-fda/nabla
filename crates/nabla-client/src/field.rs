@@ -556,7 +556,7 @@ fn sampled(
 /// `cell`, so the grid always samples the same world points and a pan re-uses the samples
 /// it had (the lines don't wobble between recomputes). With a `spread`, `(focus, near)`,
 /// the lines are `cell` apart within `near` of the focus and, beyond, as many times farther
-/// apart as they are farther from it, in powers of two: each line `2^k` cells from the next
+/// apart as twice their distance from it, in powers of two: each line `2^k` cells from the next
 /// sits on a multiple of `2^k` cells, so those too stay on a world lattice.
 fn sample_lines(lo: f64, hi: f64, cell: f64, spread: Option<(f64, f64)>) -> Vec<f64> {
     let (start, end) = ((lo / cell).floor() as i64, (hi / cell).ceil() as i64);
@@ -565,11 +565,17 @@ fn sample_lines(lo: f64, hi: f64, cell: f64, spread: Option<(f64, f64)>) -> Vec<
     };
     let center = ((focus / cell).round() as i64).clamp(start, end);
     // The step outward from line `k`, in cells.
+    // Beyond `near`, twice as far apart as the distance alone would make them: the far
+    // field is under the fog, or small, and this halves the lines it takes.
     let step = |k: i64| -> i64 {
-        let ratio = ((k - center).unsigned_abs() as f64 * cell / near).max(1.0);
-        let power = (ratio.log2().floor() as u32)
-            .min(k.trailing_zeros())
-            .min(40);
+        let ratio = (k - center).unsigned_abs() as f64 * cell / near;
+        let power = if ratio < 1.0 {
+            0
+        } else {
+            ((2.0 * ratio).log2().floor() as u32)
+                .min(k.trailing_zeros())
+                .min(40)
+        };
         1 << power
     };
     let mut below = Vec::new();
@@ -1165,10 +1171,16 @@ mod tests {
                 "{} not on a multiple of its gap {gap}",
                 w[0]
             );
-            // The cell near the focus, and no more than as many times it as the line is
-            // eye distances from the focus, nor less than half that.
-            let ratio = ((w[0] - focus).abs().max((w[1] - focus).abs()) / near).max(1.0);
-            assert!(cells <= ratio, "gap {cells} cells at {ratio} eye distances");
+            // The cell near the focus, and beyond, no more than twice as many times it as
+            // the line is eye distances from the focus, nor less than a quarter of that.
+            let ratio = (w[0] - focus).abs().max((w[1] - focus).abs()) / near;
+            if ratio < 1.0 {
+                assert_eq!(cells, 1.0, "gap {cells} cells within an eye distance");
+            }
+            assert!(
+                cells <= 2.0 * ratio.max(1.0),
+                "gap {cells} cells at {ratio}"
+            );
             if (w[0] - focus).abs() > 4.0 * near && (w[1] - focus).abs() > 4.0 * near {
                 assert!(
                     cells >= ratio / 4.0,
@@ -1177,7 +1189,7 @@ mod tests {
             }
         }
         // Far fewer than a uniform grid's 3200.
-        assert!(lines.len() < 300, "{} lines", lines.len());
+        assert!(lines.len() < 200, "{} lines", lines.len());
         // A pan keeps the lines it had, near the focus and far from it.
         let panned = sample_lines(-397.3, 402.7, cell, Some((focus + 2.7, near)));
         let kept = lines.iter().filter(|x| panned.contains(x)).count();

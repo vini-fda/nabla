@@ -1040,6 +1040,7 @@ mod tests {
                     elevation: 0.5,
                 },
                 perspective,
+                scene_reach: 0.0,
             };
             let depth = DepthMap::with_reach(&camera, canvas, position, 1.1);
             let m = clip_from_world(&camera, canvas, &depth);

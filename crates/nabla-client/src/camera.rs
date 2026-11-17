@@ -215,9 +215,15 @@ const FIELD_OF_VIEW: f32 = 0.691_150_4;
 const NEAR: f32 = 0.02;
 /// In perspective, how far the plane `z = 0` is drawn (its grid, gravity field and field
 /// lines), in the eye's distances to the center: seen from the side, this far out the plane
-/// lies within a degree or so of the horizon. It fades out from `FOG_START` of that on.
+/// lies within a degree or so of the horizon. It fades out from `FOG_START` of that on, and
+/// never before `SCENE_MARGIN` times as far as the world's bodies reach from the center
+/// (`Camera::scene_reach`), however close the view comes, so the fog only ever falls on
+/// what is far from the bodies and the ship among them; but no farther out than
+/// `MAX_PLANE_REACH` eye distances, which bounds what the plane's drawings cost.
 const PLANE_REACH: f32 = 16.0;
 const FOG_START: f32 = 0.25;
+const SCENE_MARGIN: f32 = 1.5;
+const MAX_PLANE_REACH: f32 = 1024.0;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Camera {
@@ -232,6 +238,9 @@ pub struct Camera {
     pub orbit: Orbit,
     /// Perspective projection rather than orthographic.
     pub perspective: bool,
+    /// How far the world's bodies reach from the center along the plane, their far sides
+    /// included (`Self::frame_bodies`): the plane's fog starts beyond them. 0 with none.
+    pub scene_reach: f32,
 }
 
 impl Default for Camera {
@@ -242,6 +251,7 @@ impl Default for Camera {
             scale: 4.0,
             orbit: Orbit::TOP,
             perspective: false,
+            scene_reach: 0.0,
         }
     }
 }
@@ -335,7 +345,25 @@ impl Camera {
     /// plane's drawings have faded out (see [`Self::fog`]). `None` in orthographic, which
     /// draws all of the plane on screen.
     pub fn plane_reach(&self, rect: Rect) -> Option<f32> {
-        self.eye_distance(rect).map(|d| PLANE_REACH * d)
+        self.eye_distance(rect).map(|d| {
+            // Where the fog starts: past the bodies, as far as they reach from the center
+            // and the eye is from it, with a margin.
+            let start = (FOG_START * PLANE_REACH * d)
+                .max(d + SCENE_MARGIN * self.scene_reach)
+                .min(FOG_START * MAX_PLANE_REACH * d);
+            start / FOG_START
+        })
+    }
+
+    /// Take the reach of the world's `bodies` (at their places from the origin, as
+    /// [`Self::local_bodies`] gives them) from the center along the plane, for the fog to
+    /// start beyond.
+    pub fn frame_bodies(&mut self, bodies: &[crate::world::CelestialBody]) {
+        let center = Vec2::new(self.center.x, self.center.y);
+        self.scene_reach = bodies
+            .iter()
+            .map(|body| (Vec2::from(body.position) - center).length() + body.radius)
+            .fold(0.0, f32::max);
     }
 
     /// How much of the plane's drawings shows at world point `p`, 0 to 1: in perspective,
@@ -557,6 +585,7 @@ mod tests {
                 elevation: 0.4,
             },
             perspective: false,
+            scene_reach: 0.0,
         }
     }
 
@@ -585,6 +614,20 @@ mod tests {
         let d = camera.eye_distance(rect()).expect("perspective");
         let reach = camera.plane_reach(rect()).expect("perspective");
         assert_eq!(reach, PLANE_REACH * d);
+        // Bodies far from the center, next to the eye's distance: the fog starts past them,
+        // up to the most the plane is drawn.
+        let mut framed = camera;
+        framed.frame_bodies(&[crate::world::CelestialBody {
+            name: "planet".to_owned(),
+            position: [camera.center.x + 30.0 * d, camera.center.y + 40.0 * d],
+            radius: 10.0 * d,
+            mass: 1.0,
+        }]);
+        assert!((framed.scene_reach - 60.0 * d).abs() < 1e-4 * d);
+        let far = framed.plane_reach(rect()).expect("perspective");
+        assert!((FOG_START * far - (d + SCENE_MARGIN * 60.0 * d)).abs() < 1e-3 * far);
+        framed.scene_reach = 1e9;
+        assert_eq!(framed.plane_reach(rect()), Some(MAX_PLANE_REACH * d));
         // At the center, in full; past the reach, not at all; fading smoothly between, the
         // farther the fainter, along the line of sight.
         assert_eq!(camera.fog(camera.center, rect()), 1.0);
@@ -617,6 +660,7 @@ mod tests {
                     scale: 25.0,
                     orbit,
                     perspective,
+                    scene_reach: 0.0,
                 };
                 let r = rect();
                 for &(x, y) in &[(0.0, 0.0), (1.5, 4.2), (-10.0, 7.7), (12.456, -7.9)] {

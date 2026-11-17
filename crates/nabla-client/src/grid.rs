@@ -72,9 +72,10 @@ const FULL_FACING: f32 = 0.3;
 /// point seen at the canvas's center, its lines fading out with their distance from it, the
 /// minor lines out to half this many times the eye's distance and the major ones out to
 /// this many times it, each line drawn in this many pieces to fade. Farther out, where those
-/// would crowd together on screen, the major lines thin out: a line on a multiple of `2^k`
-/// major steps reaches `2^k` times as far, out to the plane's reach (`Camera::plane_reach`),
-/// so their spacing on screen stays about the same into the distance. Every line also fades
+/// would crowd together on screen, the major lines thin out: a line on an odd multiple of
+/// `2^k` major steps reaches `2^k` times as far, out to the plane's reach
+/// (`Camera::plane_reach`), so their spacing on screen stays about the same into the
+/// distance. Every line also fades
 /// with the plane's fog there (`Camera::fog`).
 const PERSPECTIVE_REACH: f32 = 3.0;
 const PERSPECTIVE_PIECES: usize = 8;
@@ -149,19 +150,15 @@ pub fn draw_grid(painter: &Painter, camera: &Camera, rect: Rect, style: &GridSty
 
     // Minors drawn first; majors overlay them at the same x/y, so we don't need
     // to skip-overlap. In perspective, the minor lines only reach halfway, and the major
-    // lines on coarser multiples of their step reach farther.
+    // lines thin out level by level beyond their reach: each level's lines are twice as far
+    // apart and reach twice as far, a line drawn at the coarsest level it belongs to, out
+    // to the plane's reach (which every line left at the last level reaches, the axes too).
     let (reach, farthest) = focus.map_or((f32::INFINITY, f32::INFINITY), |(_, reach, far)| {
         (reach, far)
     });
-    for (step, color, base, thinning) in [
-        (minor_step, minor_color, reach / 2.0, false),
-        (major_step, major_color, reach, true),
-    ] {
-        let lines_reach = if thinning { farthest } else { base };
-        let near = |range: (f64, f64), at: f64| {
-            let half = f64::from(lines_reach);
-            (range.0.max(at - half), range.1.min(at + half))
-        };
+    let lines = |step: f64, color: Color32, reach: f32, every: bool| {
+        let half = f64::from(reach);
+        let near = |range: (f64, f64), at: f64| (range.0.max(at - half), range.1.min(at + half));
         let (x0, x1) = near((world_min_x, world_max_x), center[0]);
         let (y0, y1) = near((world_min_y, world_max_y), center[1]);
         for (ticks, draw) in [
@@ -172,14 +169,23 @@ pub fn draw_grid(painter: &Painter, camera: &Camera, rect: Rect, style: &GridSty
             (major_ticks(y0, y1, step), &y_line),
         ] {
             for &at in &ticks {
-                let reach = if thinning {
-                    thinned_reach((at / step).round() as i64, base, farthest)
-                } else {
-                    base
-                };
-                draw(at, 1.0, color, reach);
+                // The even ones are the next level's, unless this is the last.
+                if every || (at / step).round().rem_euclid(2.0) == 1.0 {
+                    draw(at, 1.0, color, reach);
+                }
             }
         }
+    };
+    lines(minor_step, minor_color, reach / 2.0, true);
+    let (mut step, mut level_reach) = (major_step, reach);
+    loop {
+        let last = level_reach >= farthest;
+        lines(step, major_color, level_reach.min(farthest), last);
+        if last {
+            break;
+        }
+        step *= 2.0;
+        level_reach *= 2.0;
     }
 
     // Axes on top.
@@ -245,13 +251,6 @@ fn chord(range: (f64, f64), along: f64, across: f64, reach: Option<f32>) -> Opti
     let half = (reach * reach - across * across).sqrt();
     let (from, to) = (range.0.max(along - half), range.1.min(along + half));
     (half.is_finite() && from < to).then_some((from, to))
-}
-
-/// How far a major line `index` steps from 0 reaches in perspective: `base`, and twice as far
-/// for each time two divides the index, up to `farthest` (which the axis reaches).
-fn thinned_reach(index: i64, base: f32, farthest: f32) -> f32 {
-    let doublings = index.trailing_zeros().min(30).cast_signed();
-    (base * 2f32.powi(doublings)).min(farthest)
 }
 
 /// A part of the plane `z = 0`: its corners `(min, max)`, and, in perspective, its focus,

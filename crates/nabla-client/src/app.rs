@@ -1703,7 +1703,9 @@ impl ViewerApp {
         }
         // Panning may have taken the view far from the floating origin.
         self.camera.rebase();
-        self.camera.local_bodies(bodies)
+        let local = self.camera.local_bodies(bodies);
+        self.camera.frame_bodies(&local);
+        local
     }
 
     /// The flat view's draws, with no 3D renderer in front: the path flown, the goal, the

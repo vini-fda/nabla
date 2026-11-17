@@ -87,7 +87,7 @@ pub(super) struct Forecast {
 
 impl ViewerApp {
     /// The flight on a server, while that is the screen.
-    fn online_flight(&self) -> Option<&crate::online::Online> {
+    pub(super) fn online_flight(&self) -> Option<&crate::online::Online> {
         self.online
             .as_ref()
             .filter(|_| self.screen == super::Screen::Online)

@@ -895,8 +895,11 @@ impl ViewerApp {
         });
     }
 
-    /// The display options, and `in_flight`, the buttons that fit or reset the camera.
+    /// The display options, and `in_flight`, the buttons that fit or reset the camera. The
+    /// options are the same in a single-player flight and on a server; what the server decides,
+    /// the ship's size, shows but is not configurable there.
     fn display_ui(&mut self, ui: &mut egui::Ui, in_flight: bool) {
+        let online = self.online_flight().is_some();
         ui.heading("Display options");
         ui.add_enabled_ui(self.ship3d.is_some(), |ui| {
             ui.horizontal(|ui| {
@@ -905,17 +908,27 @@ impl ViewerApp {
                     .on_hover_text("Flat ship with velocity and acceleration arrows");
             });
         });
+        let mut size = if online {
+            self.flight_world().hull_radius()
+        } else {
+            self.circumradius
+        };
         ui.add_enabled(
-            !in_flight,
-            egui::Slider::new(&mut self.circumradius, 0.05..=10.0)
+            !in_flight && !online,
+            egui::Slider::new(&mut size, 0.05..=10.0)
                 .logarithmic(true)
                 .text("ship size (world units)"),
         )
-        .on_hover_text(
-            "Ship size, which its collision hull scales with; set before starting a flight",
-        );
+        .on_hover_text(if online {
+            "Ship size, which its collision hull scales with; the server decides it"
+        } else {
+            "Ship size, which its collision hull scales with; set before starting a flight"
+        });
+        if !online {
+            self.circumradius = size;
+        }
         ui.checkbox(&mut self.show_grid, "Grid");
-        if self.game.world.gravity_constant > 0.0 {
+        if self.flight_world().gravity_constant > 0.0 {
             ui.checkbox(&mut self.show_field, "Gravity field")
                 .on_hover_text(
                     "Bands and contour lines of the celestial bodies' gravitational potential",
@@ -952,11 +965,18 @@ impl ViewerApp {
         }
         ui.horizontal(|ui| {
             if ui.button("Fit view").clicked() {
-                self.fit_pending = true;
+                if online {
+                    self.online_fit = true;
+                } else {
+                    self.fit_pending = true;
+                }
             }
             if ui.button("Reset view").clicked() {
                 self.camera = Camera::default();
                 self.gizmo.stop();
+                if online {
+                    self.online_fit = true;
+                }
             }
         });
     }
@@ -1662,45 +1682,73 @@ impl ViewerApp {
                     ui.ctx().pixels_per_point(),
                 );
             }
-            _ => {
-                if self.show_path {
-                    self.draw_path(painter, rect, replay, k, &state);
-                }
-                if self.game.objective() == Objective::ReachTarget {
-                    self.draw_goal(painter, rect, replay, &state);
-                }
-                self.draw_ship(painter, rect, &state);
-                self.draw_arrows(painter, rect, replay, k, &state);
-                self.draw_orbits(painter, rect);
-                self.draw_prediction(painter, rect);
-            }
+            _ => self.draw_scene_flat(painter, rect, replay, k, &state),
         }
         if self.show_collision_meshes {
-            self.draw_collision_meshes(painter, rect, &state);
+            self.draw_collision_meshes(
+                painter,
+                rect,
+                std::slice::from_ref(&state),
+                self.game.world.players[0].radius,
+                &self.game.world.bodies,
+            );
         }
+    }
+
+    /// The flat view's draws, with no 3D renderer in front: the path flown, the goal, the
+    /// ship with its velocity and acceleration arrows, the orbits and the prediction.
+    fn draw_scene_flat(
+        &self,
+        painter: &egui::Painter,
+        rect: egui::Rect,
+        replay: &Replay,
+        k: usize,
+        state: &State,
+    ) {
+        if self.show_path {
+            self.draw_path(painter, rect, replay, k, state);
+        }
+        if self.game.objective() == Objective::ReachTarget {
+            self.draw_goal(painter, rect, replay, state);
+        }
+        self.draw_ship(painter, rect, state);
+        self.draw_arrows(painter, rect, replay, k, state);
+        self.draw_orbits(painter, rect);
+        self.draw_prediction(painter, rect);
     }
 
     /// The colliders' own shapes, at the displayed (between-sample) position, drawn last so
     /// meshes remain visible through the 3D models: the bodies as the balls their colliders
-    /// are, the ship as its hull, at the displayed heading.
-    fn draw_collision_meshes(&self, painter: &egui::Painter, rect: egui::Rect, state: &State) {
+    /// are, each ship as its hull, at the displayed heading.
+    fn draw_collision_meshes(
+        &self,
+        painter: &egui::Painter,
+        rect: egui::Rect,
+        states: &[State],
+        hull: f32,
+        bodies: &[crate::world::CelestialBody],
+    ) {
         let stroke = egui::Stroke::new(2.0, palette::PEACH);
-        let bodies = self
-            .game
-            .world
-            .bodies
-            .iter()
-            .map(|body| (egui::vec2(body.position[0], body.position[1]), body.radius));
-        crate::planets::draw_circles(painter, &self.camera, rect, bodies, stroke);
-        draw_collision_hull(
+        crate::planets::draw_circles(
             painter,
             &self.camera,
             rect,
-            world(state.x, state.y),
-            state.theta as f32,
-            self.game.world.players[0].radius,
+            bodies
+                .iter()
+                .map(|body| (egui::vec2(body.position[0], body.position[1]), body.radius)),
             stroke,
         );
+        for state in states {
+            draw_collision_hull(
+                painter,
+                &self.camera,
+                rect,
+                world(state.x, state.y),
+                state.theta as f32,
+                hull,
+                stroke,
+            );
+        }
     }
 
     /// The gravity field's lines, traced by `draw_scene` beforehand: glowing streamlines with
@@ -1718,7 +1766,7 @@ impl ViewerApp {
         let Some(streamlines) = &self.streamlines else {
             return;
         };
-        if self.game.world.gravity_constant == 0.0 {
+        if self.flight_world().gravity_constant == 0.0 {
             return;
         }
         if let Some(callback) = crate::streamlines::paint(
@@ -1750,23 +1798,22 @@ impl ViewerApp {
         rect: egui::Rect,
         debug: bool,
     ) {
-        if self.game.world.gravity_constant == 0.0 {
+        let world = self.flight_world();
+        let gravity = world.gravity_constant;
+        if gravity == 0.0 {
             return;
         }
-        if let Some(callback) = crate::field::paint(
-            &self.camera,
-            rect,
-            &self.game.world.bodies,
-            self.game.world.gravity_constant,
-        ) {
+        if let Some(callback) = crate::field::paint(&self.camera, rect, &world.bodies, gravity) {
             painter.add(callback);
         }
         if debug {
+            // Cloned so the contour cache can be borrowed mutably alongside.
+            let world = self.flight_world().clone();
             crate::field::draw_contours(
                 painter,
                 &self.camera,
                 rect,
-                &self.game.world,
+                &world,
                 self.field_line_width,
                 &mut self.field_contours,
                 ui.visuals(),
@@ -2173,9 +2220,10 @@ impl ViewerApp {
         }
         if self.show_acceleration {
             let thrust = replay.acceleration(k, state);
+            let world = self.flight_world();
             let gravity = crate::physics::gravity_acceleration(
-                &self.game.world.bodies,
-                self.game.world.gravity_constant,
+                &world.bodies,
+                world.gravity_constant,
                 [state.x, state.y],
             );
             arrow(

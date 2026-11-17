@@ -508,25 +508,7 @@ impl ViewerApp {
                 }
             }
             ui.separator();
-            ui.heading("Display options");
-            ui.add_enabled_ui(self.ship3d.is_some(), |ui| {
-                ui.horizontal(|ui| {
-                    ui.selectable_value(&mut self.view, super::CanvasView::Ship3d, "3D");
-                    ui.selectable_value(&mut self.view, super::CanvasView::Debug, "Debug")
-                        .on_hover_text("Flat ships");
-                });
-            });
-            ui.checkbox(&mut self.show_grid, "Grid");
-            ui.horizontal(|ui| {
-                if ui.button("Fit view").clicked() {
-                    self.online_fit = true;
-                }
-                if ui.button("Reset view").clicked() {
-                    self.camera = crate::camera::Camera::default();
-                    self.gizmo.stop();
-                    self.online_fit = true;
-                }
-            });
+            self.display_ui(ui, true);
             ui.separator();
             self.sound.ui(ui);
         });
@@ -641,16 +623,57 @@ impl ViewerApp {
         let depth = self.draw_online_scene(ui, &painter, rect, views);
         // The aim is read before the marks are drawn, which hold shared borrows of self.
         self.aiming = self.online_aim(&response, rect, &own.state);
+        self.draw_online_marks(ui, &painter, rect, views, depth.as_ref());
+        if let Some((pointer, heading)) = self.aiming {
+            self.draw_aim(&painter, rect, &own.state, pointer, heading);
+        }
+        if let Some(online) = &self.online
+            && online.assisted()
+        {
+            self.draw_goal_marker(&painter, rect, rect, &own.replay, &own.state);
+        }
+        self.draw_name_tags(&painter, rect, corner, views);
+        if self.show_gizmo {
+            self.gizmo.paint(ui, &painter, corner, &self.camera);
+        }
+        let buttons = self.online_canvas_buttons(ui, &painter, corner);
+        self.reserved = std::iter::once(buttons)
+            .chain(crate::gizmo::ViewGizmo::area(corner).filter(|_| self.show_gizmo))
+            .collect();
+        if self.show_help {
+            self.help_window(ui.ctx(), rect);
+        }
+    }
+
+    /// The marks over the scene: with the 3D view's `depth` map they are one pass of
+    /// depth-tested strokes (the field's contour lines, the orbits, the prediction, the path
+    /// flown and the goal, as their flat draws have them, the same widths, colors and dash
+    /// patterns); the flat view draws them with egui, where nothing hides them.
+    fn draw_online_marks(
+        &self,
+        ui: &egui::Ui,
+        painter: &egui::Painter,
+        rect: egui::Rect,
+        views: &[View],
+        depth: Option<&DepthMap>,
+    ) {
+        let own = &views[0];
         if let Some(depth) = depth {
-            // The marks on the plane, over everything whose depth they are tested
-            // against: the orbits, the prediction, the path flown and the goal, as
-            // their flat draws have them, the same widths, colors and dash patterns.
             let mut overlays = crate::overlays::Overlays::new(
                 &self.camera,
                 rect,
-                &depth,
+                depth,
                 ui.ctx().pixels_per_point(),
             );
+            if self.show_field {
+                crate::field::contour_strokes(
+                    &mut overlays,
+                    &self.camera,
+                    &self.field_contours,
+                    self.field_line_width,
+                    ui.visuals(),
+                );
+            }
             self.orbit_strokes(&mut overlays, rect);
             self.prediction_strokes(&mut overlays);
             if self.show_path {
@@ -673,15 +696,15 @@ impl ViewerApp {
             if let Some(online) = &self.online
                 && online.assisted()
             {
-                self.draw_goal_label(&painter, rect, &own.replay, &own.state);
+                self.draw_goal_label(painter, rect, &own.replay, &own.state);
             }
         } else {
-            self.draw_orbits(&painter, rect);
-            self.draw_prediction(&painter, rect);
+            self.draw_orbits(painter, rect);
+            self.draw_prediction(painter, rect);
             if self.show_path {
                 let k = (own.t / own.replay.h()).floor() as usize;
                 self.draw_path(
-                    &painter,
+                    painter,
                     rect,
                     &own.replay,
                     k.min(own.replay.last_frame()),
@@ -691,27 +714,8 @@ impl ViewerApp {
             if let Some(online) = &self.online
                 && online.assisted()
             {
-                self.draw_goal(&painter, rect, &own.replay, &own.state);
+                self.draw_goal(painter, rect, &own.replay, &own.state);
             }
-        }
-        if let Some((pointer, heading)) = self.aiming {
-            self.draw_aim(&painter, rect, &own.state, pointer, heading);
-        }
-        if let Some(online) = &self.online
-            && online.assisted()
-        {
-            self.draw_goal_marker(&painter, rect, rect, &own.replay, &own.state);
-        }
-        self.draw_name_tags(&painter, rect, corner, views);
-        if self.show_gizmo {
-            self.gizmo.paint(ui, &painter, corner, &self.camera);
-        }
-        let buttons = self.online_canvas_buttons(ui, &painter, corner);
-        self.reserved = std::iter::once(buttons)
-            .chain(crate::gizmo::ViewGizmo::area(corner).filter(|_| self.show_gizmo))
-            .collect();
-        if self.show_help {
-            self.help_window(ui.ctx(), rect);
         }
     }
 
@@ -834,6 +838,7 @@ impl ViewerApp {
         };
         let world_data = online.world()?;
         let bodies = world_data.bodies.clone();
+        let gravity = world_data.gravity_constant;
         let half_side = world_data.arena.map_or(0.0, |arena| arena.half_side);
         let hull = world_data.hull_radius();
         let debug = self.debug_view();
@@ -845,6 +850,29 @@ impl ViewerApp {
         let own = views[0].state;
         if self.follow_ship {
             self.camera.center = Vec3::plane(world(own.x, own.y));
+        }
+        if self.show_field {
+            self.draw_field(ui, painter, rect, debug);
+        }
+        // Warm the field's contour cache while the update can still touch it: the 3D view
+        // draws the lines after the planets and ships, which test their depth, reading the
+        // cache then.
+        if self.show_field && !debug && gravity > 0.0 {
+            crate::field::contours(
+                &self.camera,
+                rect,
+                &bodies,
+                gravity,
+                &mut self.field_contours,
+            );
+        }
+        // The field's lines likewise: traced here, when the world has changed, and drawn at
+        // once in the flat view, under the grid, where nothing hides them.
+        if self.show_streamlines && gravity > 0.0 {
+            crate::streamlines::streamlines(&bodies, gravity, &mut self.streamlines);
+            if debug {
+                self.draw_streamlines(ui, painter, rect, None);
+            }
         }
         if self.show_grid {
             draw_grid(painter, &self.camera, rect, &style);
@@ -864,11 +892,9 @@ impl ViewerApp {
                 egui::Stroke::new(2.0_f32, ARENA_COLOR),
             ));
         }
+        let states: Vec<_> = views.iter().map(|view| view.state).collect();
         if debug {
-            crate::planets::draw_debug(painter, &self.camera, rect, &bodies);
-            for view in views {
-                self.draw_ship_sized(painter, rect, &view.state, hull);
-            }
+            self.draw_online_debug(painter, rect, views, hull, &bodies, &states);
             return None;
         }
         let Some((renderer, plume)) = &self.ship3d else {
@@ -892,6 +918,9 @@ impl ViewerApp {
         {
             painter.add(callback);
         }
+        if self.show_streamlines {
+            self.draw_streamlines(ui, painter, rect, Some(&depth));
+        }
         // After the ships, whose depth they are tested against.
         if let Some(callback) = plume.paint(
             &self.camera,
@@ -902,7 +931,32 @@ impl ViewerApp {
         ) {
             painter.add(callback);
         }
+        if self.show_collision_meshes {
+            self.draw_collision_meshes(painter, rect, &states, hull, &bodies);
+        }
         Some(depth)
+    }
+
+    /// The flat view of the flight: the bodies and every ship as its hull, each with its
+    /// velocity and acceleration arrows, and the collision meshes on request.
+    fn draw_online_debug(
+        &self,
+        painter: &egui::Painter,
+        rect: egui::Rect,
+        views: &[View],
+        hull: f32,
+        bodies: &[crate::world::CelestialBody],
+        states: &[nabla_core::State],
+    ) {
+        crate::planets::draw_debug(painter, &self.camera, rect, bodies);
+        for view in views {
+            self.draw_ship_sized(painter, rect, &view.state, hull);
+            let k = ((view.t / view.replay.h()).floor() as usize).min(view.replay.last_frame());
+            self.draw_arrows(painter, rect, &view.replay, k, &view.state);
+        }
+        if self.show_collision_meshes {
+            self.draw_collision_meshes(painter, rect, states, hull, bodies);
+        }
     }
 }
 

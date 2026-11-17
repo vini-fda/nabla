@@ -4,12 +4,19 @@
 //! The pilot, or an autopilot, is a function from a stamp to a [`Command`], handed to
 //! [`ClientMachine::poll`], which issues the commands due by the client's own clock. Nothing
 //! here reads a clock: every call is told the time.
+//!
+//! Where ships collide, the prediction is of more than the own ship. A snapshot holds every
+//! ship, and the client folds forward the ones that could come to share a block with its own
+//! by the tick it issues next, or within [`COMPANY_LEAD`] ticks after it (its *company*), with
+//! the world's own map: its own ship under the commands it issued, and each of the others under
+//! the control it last flew, held. The ships beyond that cannot touch the own ship in that time,
+//! short of a contact of their own, and are left out.
 
 use std::collections::{BTreeMap, VecDeque};
 
 use nabla_core::{Control, Params, State};
 use nabla_sim::command::Command;
-use nabla_sim::ship::Ship;
+use nabla_sim::fleet::{Dynamics, Member};
 use nabla_sim::world::{ShipRequest, World};
 
 use crate::margin::MarginController;
@@ -48,6 +55,14 @@ pub const REMOTE_KEPT: usize = 32;
 /// The longest replay the client folds forward to measure a correction. A longer one is a stall,
 /// which is a jump and not a correction.
 const MAX_REPLAY: Tick = 1200;
+
+/// How many ticks further than the next tick to issue the prediction looks for the ships to
+/// carry: half a second at 60 Hz.
+///
+/// The ships carried are drawn in the own ship's frame, and the others in the past. With no
+/// lead, a ship would change frames just as it came to touch the own ship, and with this one
+/// it changes half a second before it can.
+pub const COMPANY_LEAD: Tick = 30;
 
 /// How far the own ship's predicted state moved when a snapshot was absorbed.
 ///
@@ -152,10 +167,143 @@ enum Phase {
     WrongPassword,
 }
 
+/// The prediction from one base: the own ship and its company, tick by tick.
+///
+/// It is a function of the base, the roster and the commands issued, and is kept only so that
+/// it is not computed again: a new base starts a new one.
+struct Forecast {
+    /// The tick of the base it starts from, `T_b`.
+    from: Tick,
+    /// How many ticks ahead its ships were chosen for: it is good for ticks up to
+    /// `from + horizon`.
+    horizon: Tick,
+    /// The ships it carries, in the order of their names: the block of the own ship in the
+    /// coupling partition of the base, over `horizon` ticks.
+    ids: Vec<ShipId>,
+    /// Where the own ship is among them.
+    own: usize,
+    /// What each ship is replayed with: for the others, the control of the base, held. The own
+    /// ship's place is filled at each tick.
+    held: Vec<Command>,
+    /// `rows[m]`: the ships at tick `from + m`.
+    rows: Vec<Vec<Member>>,
+    /// `used[m]`: the command the own ship replayed at tick `from + m`.
+    used: Vec<Command>,
+    /// `blocks[m]`: the blocks tick `from + m` was stepped by, as places in `ids`.
+    blocks: Vec<Vec<Vec<usize>>>,
+}
+
+impl Forecast {
+    fn new(
+        dynamics: &Dynamics,
+        roster: &BTreeMap<ShipId, RosterEntry>,
+        ship: ShipId,
+        params: Params,
+        base: &Base,
+        around: &[ShipRecord],
+        horizon: Tick,
+    ) -> Self {
+        let own = Member {
+            params,
+            state: base.state,
+            hold: base.hold,
+            control: Control::default(),
+        };
+        let mut all = vec![(ship, own, Command::default())];
+        for record in around {
+            // A ship the roster has not told of yet has no parameters to fly it with.
+            let Some(entry) = roster.get(&record.ship) else {
+                continue;
+            };
+            if record.ship == ship {
+                continue;
+            }
+            let control = Control {
+                thrust: f64::from(record.thrust),
+                torque: f64::from(record.torque),
+            };
+            let member = Member {
+                params: entry.params,
+                state: record.state,
+                hold: record.hold,
+                control,
+            };
+            let held = Command::Direct {
+                thrust: control.thrust,
+                torque: control.torque,
+            };
+            all.push((record.ship, member, held));
+        }
+        all.sort_by_key(|&(id, ..)| id);
+        all.dedup_by_key(|&mut (id, ..)| id);
+        let members: Vec<Member> = all.iter().map(|&(_, member, _)| member).collect();
+        let me = all
+            .iter()
+            .position(|&(id, ..)| id == ship)
+            .expect("the own ship is among them");
+        let block = dynamics
+            .blocks(&members, horizon.max(1))
+            .into_iter()
+            .find(|block| block.contains(&me))
+            .expect("every ship is in a block");
+        Self {
+            from: base.tick,
+            horizon,
+            ids: block.iter().map(|&i| all[i].0).collect(),
+            own: block
+                .iter()
+                .position(|&i| i == me)
+                .expect("the own ship is in its block"),
+            held: block.iter().map(|&i| all[i].2).collect(),
+            rows: vec![block.iter().map(|&i| members[i]).collect()],
+            used: Vec::new(),
+            blocks: Vec::new(),
+        }
+    }
+
+    /// The last tick computed.
+    fn end(&self) -> Tick {
+        self.from + self.used.len() as Tick
+    }
+
+    /// Fold forward to tick `upto`, the own ship under the commands issued (a stamp with none
+    /// replays as the one before it, as the hold rule would), the others under theirs, held.
+    fn extend(&mut self, dynamics: &Dynamics, cmds: &BTreeMap<Tick, Command>, upto: Tick) {
+        while self.end() < upto {
+            let stamp = self.end();
+            let previous = self.used.last().copied().unwrap_or_default();
+            let command = cmds.get(&stamp).copied().unwrap_or(previous);
+            let mut commands = self.held.clone();
+            commands[self.own] = command;
+            let mut next = self.rows[self.used.len()].clone();
+            let report = dynamics.tick(&mut next, &commands);
+            self.rows.push(next);
+            self.used.push(command);
+            self.blocks.push(report.blocks);
+        }
+    }
+
+    /// Forget what was computed past tick `upto`, whose commands were not yet issued then.
+    fn truncate(&mut self, upto: Tick) {
+        let keep = upto.saturating_sub(self.from) as usize;
+        self.used.truncate(keep);
+        self.blocks.truncate(keep);
+        self.rows.truncate(keep + 1);
+    }
+
+    /// The ships at `tick`, which must have been computed.
+    fn row(&self, tick: Tick) -> &[Member] {
+        &self.rows[(tick - self.from) as usize]
+    }
+}
+
 /// A ship being flown.
 struct Play {
     ship: ShipId,
-    sim: Ship,
+    /// The ship as granted, with the world's `h`.
+    params: Params,
+    /// The world's map from tick to tick, the same as the server's.
+    dynamics: Dynamics,
     /// `k`: the stamp the client issues next.
     k: Tick,
     /// When the client issues it, on its own clock.
@@ -163,9 +311,15 @@ struct Play {
     /// `cmd`: what the client has issued, for the stamps it still needs.
     cmds: BTreeMap<Tick, Command>,
     base: Base,
+    /// The other ships of the base's snapshot: with the base, the world at `T_b`.
+    around: Vec<ShipRecord>,
+    /// The prediction from the base, as far as it has been asked for.
+    forecast: Option<Forecast>,
     margin: MarginController,
     /// The corrections of the snapshots absorbed since they were last taken, summed.
     pending: Option<Correction>,
+    /// The same for each ship of the company that was in it before the snapshot too.
+    company_pending: BTreeMap<ShipId, Correction>,
     stats: CorrectionStats,
     /// The round trip of the exchange that took the ship, in seconds: `Join` to `Welcome`.
     round_trip: f64,
@@ -173,69 +327,142 @@ struct Play {
     remote: BTreeMap<ShipId, VecDeque<Remote>>,
 }
 
+fn difference(after: &State, before: &State) -> State {
+    State {
+        x: after.x - before.x,
+        y: after.y - before.y,
+        vx: after.vx - before.vx,
+        vy: after.vy - before.vy,
+        theta: after.theta - before.theta,
+        omega: after.omega - before.omega,
+    }
+}
+
+fn sum(a: Correction, b: Correction) -> Correction {
+    Correction {
+        delta: State {
+            x: a.delta.x + b.delta.x,
+            y: a.delta.y + b.delta.y,
+            vx: a.delta.vx + b.delta.vx,
+            vy: a.delta.vy + b.delta.vy,
+            theta: a.delta.theta + b.delta.theta,
+            omega: a.delta.omega + b.delta.omega,
+        },
+        jumped: a.jumped || b.jumped,
+    }
+}
+
 impl Play {
-    /// `Pred(n)` from `base`: the state folded forward with the commands issued.
-    fn fold(&mut self, world: &World, base: Base, n: Tick) -> State {
-        self.sim.restore(world, base.state, base.hold);
-        let mut previous = Command::default();
-        for stamp in base.tick..n {
-            let command = self.cmds.get(&stamp).copied().unwrap_or(previous);
-            self.sim.tick(world, &command);
-            previous = command;
-        }
-        self.sim.state()
+    /// The prediction from the base, folded forward to tick `upto` at least.
+    fn forecast(&mut self, roster: &BTreeMap<ShipId, RosterEntry>, upto: Tick) -> &Forecast {
+        let needed = upto.saturating_sub(self.base.tick);
+        let fresh = self
+            .forecast
+            .take()
+            .filter(|forecast| forecast.from == self.base.tick && forecast.horizon >= needed);
+        let mut forecast = fresh.unwrap_or_else(|| {
+            Forecast::new(
+                &self.dynamics,
+                roster,
+                self.ship,
+                self.params,
+                &self.base,
+                &self.around,
+                needed.saturating_add(COMPANY_LEAD),
+            )
+        });
+        forecast.extend(&self.dynamics, &self.cmds, upto);
+        self.forecast.insert(forecast)
     }
 
-    /// The base has just moved on from `old`: say how far the prediction at `k` moved with it.
-    fn correct(&mut self, world: &World, old: Base) {
+    /// `Pred(n)` from the base: the own ship's state folded forward with the commands issued.
+    fn fold(&mut self, roster: &BTreeMap<ShipId, RosterEntry>, n: Tick) -> State {
+        let forecast = self.forecast(roster, n);
+        forecast.row(n)[forecast.own].state
+    }
+
+    /// Take `base` and the ships `around` it as the newest snapshot, and say how far the
+    /// prediction at `k` moved with it: of the own ship, and of each ship carried both before
+    /// and after.
+    fn rebase(
+        &mut self,
+        roster: &BTreeMap<ShipId, RosterEntry>,
+        base: Base,
+        around: Vec<ShipRecord>,
+    ) {
         let k = self.k;
-        let correction = if k.saturating_sub(old.tick) > MAX_REPLAY {
-            Correction {
+        let jumped = k.saturating_sub(self.base.tick) > MAX_REPLAY;
+        let before: Vec<(ShipId, State)> = if jumped {
+            Vec::new()
+        } else {
+            let forecast = self.forecast(roster, k);
+            let row = forecast.row(k);
+            forecast
+                .ids
+                .iter()
+                .zip(row)
+                .map(|(&id, member)| (id, member.state))
+                .collect()
+        };
+        self.base = base;
+        self.around = around;
+        self.forecast = None;
+        self.stats.snapshots += 1;
+        if jumped {
+            self.stats.jumps += 1;
+            self.company_pending.clear();
+            let jump = Correction {
                 delta: State::default(),
                 jumped: true,
-            }
-        } else {
-            let before = self.fold(world, old, k);
-            let after = self.fold(world, self.base, k);
-            Correction {
-                delta: State {
-                    x: after.x - before.x,
-                    y: after.y - before.y,
-                    vx: after.vx - before.vx,
-                    vy: after.vy - before.vy,
-                    theta: after.theta - before.theta,
-                    omega: after.omega - before.omega,
-                },
-                jumped: false,
-            }
-        };
-        self.stats.snapshots += 1;
-        if correction.jumped {
-            self.stats.jumps += 1;
-        } else if correction.size() > 0.0 {
-            let d = &correction.delta;
-            self.stats.nonzero += 1;
-            let (position, heading) = (d.x.hypot(d.y), d.theta.abs());
-            self.stats.visible += u64::from(position > VISIBLE || heading > VISIBLE);
-            self.stats.snapped += u64::from(position > SNAP_POSITION || heading > SNAP_HEADING);
-            self.stats.max_position = self.stats.max_position.max(d.x.hypot(d.y));
-            self.stats.max_velocity = self.stats.max_velocity.max(d.vx.hypot(d.vy));
-            self.stats.max_heading = self.stats.max_heading.max(d.theta.abs());
+            };
+            self.pending = Some(
+                self.pending
+                    .map_or(jump, |sum_so_far| sum(sum_so_far, jump)),
+            );
+            return;
         }
-        self.pending = Some(match self.pending {
-            None => correction,
-            Some(sum) => Correction {
-                delta: State {
-                    x: sum.delta.x + correction.delta.x,
-                    y: sum.delta.y + correction.delta.y,
-                    vx: sum.delta.vx + correction.delta.vx,
-                    vy: sum.delta.vy + correction.delta.vy,
-                    theta: sum.delta.theta + correction.delta.theta,
-                    omega: sum.delta.omega + correction.delta.omega,
-                },
-                jumped: sum.jumped || correction.jumped,
-            },
-        });
+        let forecast = self.forecast(roster, k);
+        let after: Vec<(ShipId, State)> = forecast
+            .ids
+            .iter()
+            .zip(forecast.row(k))
+            .map(|(&id, member)| (id, member.state))
+            .collect();
+        let own = self.ship;
+        let mut carried = BTreeMap::new();
+        for (id, state) in &after {
+            let Some((_, was)) = before.iter().find(|(other, _)| other == id) else {
+                continue;
+            };
+            let correction = Correction {
+                delta: difference(state, was),
+                jumped: false,
+            };
+            if *id != own {
+                let summed = self
+                    .company_pending
+                    .get(id)
+                    .map_or(correction, |&so_far| sum(so_far, correction));
+                carried.insert(*id, summed);
+                continue;
+            }
+            if correction.size() > 0.0 {
+                let d = &correction.delta;
+                self.stats.nonzero += 1;
+                let (position, heading) = (d.x.hypot(d.y), d.theta.abs());
+                self.stats.visible += u64::from(position > VISIBLE || heading > VISIBLE);
+                self.stats.snapped += u64::from(position > SNAP_POSITION || heading > SNAP_HEADING);
+                self.stats.max_position = self.stats.max_position.max(d.x.hypot(d.y));
+                self.stats.max_velocity = self.stats.max_velocity.max(d.vx.hypot(d.vy));
+                self.stats.max_heading = self.stats.max_heading.max(d.theta.abs());
+            }
+            self.pending = Some(
+                self.pending
+                    .map_or(correction, |so_far| sum(so_far, correction)),
+            );
+        }
+        // A ship that has left the company has no prediction left to correct.
+        self.company_pending = carried;
     }
 }
 
@@ -448,11 +675,13 @@ impl ClientMachine {
         let lead = ((round_trip + self.config.target_margin) / h)
             .round()
             .max(1.0);
-        let mut ship = Ship::new(world, welcome.params, own.state);
-        ship.restore(world, own.state, own.hold);
         self.phase = Phase::Playing(Box::new(Play {
             ship: welcome.ship,
-            sim: ship,
+            params: Params {
+                h,
+                ..welcome.params
+            },
+            dynamics: Dynamics::new(world),
             k: welcome.tick + lead as Tick,
             next_issue: now,
             cmds: BTreeMap::new(),
@@ -461,9 +690,17 @@ impl ClientMachine {
                 state: own.state,
                 hold: own.hold,
             },
+            around: welcome
+                .ships
+                .iter()
+                .filter(|record| record.ship != welcome.ship)
+                .copied()
+                .collect(),
+            forecast: None,
             margin: MarginController::new(h, self.config.target_margin, round_trip / h),
             round_trip,
             pending: None,
+            company_pending: BTreeMap::new(),
             stats: CorrectionStats::default(),
             remote: BTreeMap::new(),
         }));
@@ -515,19 +752,26 @@ impl ClientMachine {
             let ticks_ahead = tick_now - f64::from(snapshot.label - 1);
             play.margin.observe(margin, ticks_ahead);
         }
-        let old = play.base;
-        play.base = Base {
-            tick: snapshot.label,
-            state: own.state,
-            hold: own.hold,
-        };
         // Advance: the client's tick never trails the world's.
         play.k = play.k.max(snapshot.label);
         // Far too late, as after a stall: jump to the lead the lemma gives, `k := T_b + L`.
         if play.margin.far_behind() {
             play.k = play.k.max(snapshot.label - 1 + play.margin.lead_ticks());
         }
-        play.correct(world, old);
+        play.rebase(
+            &self.roster,
+            Base {
+                tick: snapshot.label,
+                state: own.state,
+                hold: own.hold,
+            },
+            snapshot
+                .ships
+                .iter()
+                .filter(|record| record.ship != play.ship)
+                .copied()
+                .collect(),
+        );
         for record in &snapshot.ships {
             if record.ship != play.ship && self.roster.contains_key(&record.ship) {
                 let seen = play.remote.entry(record.ship).or_default();
@@ -555,7 +799,7 @@ impl ClientMachine {
     /// at a keyboard ignores the state, and an autopilot flies by it. Returns the datagrams to
     /// send.
     pub fn poll(&mut self, now: f64, pilot: &mut dyn FnMut(Tick, &State) -> Command) -> Vec<Kind> {
-        let (Phase::Playing(play), Some(world)) = (&mut self.phase, &self.world) else {
+        let Phase::Playing(play) = &mut self.phase else {
             return Vec::new();
         };
         if now - play.next_issue > MAX_CATCH_UP {
@@ -569,8 +813,12 @@ impl ClientMachine {
         let mut out = Vec::new();
         while now >= play.next_issue {
             let stamp = play.k;
-            let predicted = play.fold(world, play.base, stamp);
+            let predicted = play.fold(&self.roster, stamp);
             play.cmds.insert(stamp, pilot(stamp, &predicted));
+            // Anything foreseen past this stamp held the command before it.
+            if let Some(forecast) = &mut play.forecast {
+                forecast.truncate(stamp);
+            }
             play.k += 1;
             play.next_issue += play.margin.tick_length();
             let cmds = (0..self.config.copies as Tick)
@@ -669,7 +917,7 @@ impl ClientMachine {
 
     /// The ship the pilot flies, as granted.
     pub fn params(&self) -> Option<Params> {
-        self.play().map(|p| *p.sim.params())
+        self.play().map(|p| p.params)
     }
 
     /// The command the client issued for `stamp`, if it still holds it.
@@ -681,41 +929,113 @@ impl ClientMachine {
     /// commands issued. A stamp with no command replays as the one before it, as the hold rule
     /// would.
     pub fn predict(&mut self, n: Tick) -> Option<State> {
-        let (Phase::Playing(play), Some(world)) = (&mut self.phase, &self.world) else {
+        self.predict_company(n)?
+            .into_iter()
+            .find(|&(ship, _)| Some(ship) == self.ship())
+            .map(|(_, state)| state)
+    }
+
+    /// The prediction at tick `n` of every ship it carries, the own ship among them.
+    pub fn predict_company(&mut self, n: Tick) -> Option<Vec<(ShipId, State)>> {
+        let Phase::Playing(play) = &mut self.phase else {
             return None;
         };
         if n < play.base.tick {
             return None;
         }
-        Some(play.fold(world, play.base, n))
+        let forecast = play.forecast(&self.roster, n);
+        Some(
+            forecast
+                .ids
+                .iter()
+                .zip(forecast.row(n))
+                .map(|(&id, member)| (id, member.state))
+                .collect(),
+        )
+    }
+
+    /// The blocks the prediction stepped tick `n` by, which are those of its own ships as it has
+    /// them at `n`, and not the server's where a ship it carries is not where the server has it.
+    pub fn predicted_blocks(&mut self, n: Tick) -> Option<Vec<Vec<ShipId>>> {
+        let Phase::Playing(play) = &mut self.phase else {
+            return None;
+        };
+        if n < play.base.tick {
+            return None;
+        }
+        let forecast = play.forecast(&self.roster, n + 1);
+        let blocks = &forecast.blocks[(n - forecast.from) as usize];
+        Some(
+            blocks
+                .iter()
+                .map(|block| block.iter().map(|&i| forecast.ids[i]).collect())
+                .collect(),
+        )
+    }
+
+    /// The ships the prediction to the next tick to issue carries, in the order of their names:
+    /// the own ship, and the ones that could come to share a block with it by then.
+    pub fn company(&mut self) -> Vec<ShipId> {
+        let Phase::Playing(play) = &mut self.phase else {
+            return Vec::new();
+        };
+        let k = play.k;
+        play.forecast(&self.roster, k).ids.clone()
+    }
+
+    /// The control the prediction holds for another ship: the one its last tick before the
+    /// base flew.
+    pub fn held(&self, ship: ShipId) -> Option<Control> {
+        let record = self.play()?.around.iter().find(|r| r.ship == ship)?;
+        Some(Control {
+            thrust: f64::from(record.thrust),
+            torque: f64::from(record.torque),
+        })
     }
 
     /// The own ship's predicted flight from the newest snapshot to the next tick to issue, one
     /// [`Step`] a tick: for drawing the ship, and the plume it leaves.
     pub fn trajectory(&mut self) -> Vec<Step> {
-        let (Phase::Playing(play), Some(world)) = (&mut self.phase, &self.world) else {
+        let own = self.ship();
+        self.flights()
+            .into_iter()
+            .find(|(ship, _)| Some(*ship) == own)
+            .map_or_else(Vec::new, |(_, steps)| steps)
+    }
+
+    /// The predicted flight of every other ship the prediction carries, as [`Self::trajectory`]
+    /// is the own ship's: these are the ships drawn in the own ship's frame, where they may
+    /// touch it.
+    pub fn company_trajectories(&mut self) -> Vec<(ShipId, Vec<Step>)> {
+        let own = self.ship();
+        let mut flights = self.flights();
+        flights.retain(|(ship, _)| Some(*ship) != own);
+        flights
+    }
+
+    /// The flight of each ship of the prediction, from the base to the next tick to issue.
+    fn flights(&mut self) -> Vec<(ShipId, Vec<Step>)> {
+        let Phase::Playing(play) = &mut self.phase else {
             return Vec::new();
         };
-        play.sim.restore(world, play.base.state, play.base.hold);
-        let mut previous = Command::default();
-        let mut steps = Vec::new();
-        for tick in play.base.tick..play.k {
-            let command = play.cmds.get(&tick).copied().unwrap_or(previous);
-            let state = play.sim.state();
-            play.sim.tick(world, &command);
-            steps.push(Step {
-                tick,
-                state,
-                control: Some(play.sim.control()),
-            });
-            previous = command;
-        }
-        steps.push(Step {
-            tick: play.k,
-            state: play.sim.state(),
-            control: None,
-        });
-        steps
+        let (from, k) = (play.base.tick, play.k);
+        let forecast = play.forecast(&self.roster, k);
+        forecast
+            .ids
+            .iter()
+            .enumerate()
+            .map(|(n, &id)| {
+                let steps = (from..=k)
+                    .map(|tick| Step {
+                        tick,
+                        state: forecast.row(tick)[n].state,
+                        // The control a tick flew is on the ship at the end of it.
+                        control: (tick < k).then(|| forecast.row(tick + 1)[n].control),
+                    })
+                    .collect();
+                (id, steps)
+            })
+            .collect()
     }
 
     /// The correction made by the snapshots absorbed since the last call, summed.
@@ -723,6 +1043,15 @@ impl ClientMachine {
         match &mut self.phase {
             Phase::Playing(play) => play.pending.take(),
             _ => None,
+        }
+    }
+
+    /// The corrections the snapshots absorbed since the last call made to the other ships the
+    /// prediction carries, summed for each.
+    pub fn take_company_corrections(&mut self) -> BTreeMap<ShipId, Correction> {
+        match &mut self.phase {
+            Phase::Playing(play) => std::mem::take(&mut play.company_pending),
+            _ => BTreeMap::new(),
         }
     }
 

@@ -14,6 +14,8 @@ pub struct Metrics {
     pub pilots: usize,
     /// Ticks of ships under command that came with no command for them.
     pub held: u64,
+    /// Ticks of pairs of ships whose hulls pushed on each other.
+    pub touches: u64,
     /// Connections ever accepted, and refused for want of room.
     pub accepted: u64,
     pub refused: u64,
@@ -79,12 +81,13 @@ impl std::fmt::Display for Metrics {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{} ticks, {} pilots, {} held; tick work p50 {} us, p99 {} us, max {} us; start lateness p99 {} us; \
+            "{} ticks, {} pilots, {} held, {} touches; tick work p50 {} us, p99 {} us, max {} us; start lateness p99 {} us; \
              {} datagrams in ({} B), {} out ({} B, largest {} B); dropped {} in, {} out, {} oversize; \
              {} connections, {} refused",
             self.ticks,
             self.pilots,
             self.held,
+            self.touches,
             self.work_percentile(0.5),
             self.work_percentile(0.99),
             self.work_percentile(1.0),

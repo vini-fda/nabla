@@ -5,3 +5,8 @@
 # Signing keys: never commit them (see docs/releasing.md, "Signing the macOS app").
 *.p12
 *.p8
+
+nabla-server
+password.txt
+addr.txt
+.claude/worktrees/

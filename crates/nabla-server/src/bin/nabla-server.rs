@@ -2,10 +2,13 @@
 //!
 //! ```text
 //! nabla-server [--bind 0.0.0.0:4433] [--world vacuum|planet|planet-moon|FILE.toml]
-//!              [--tick-rate 60] [--arena 1000] [--max-pilots 16]
+//!              [--tick-rate 60] [--arena 1000] [--max-pilots 16] [--no-ship-collisions]
 //!              [--cert cert.pem --key key.pem] [--name localhost --name 192.168.0.5]
 //!              [--password-file FILE]
 //! ```
+//!
+//! Ships collide with each other unless the world file says `ship_collisions = false`, or
+//! `--no-ship-collisions` is given, which makes any world one where they pass through each other.
 //!
 //! Without `--cert` it makes a self-signed certificate, good for two weeks, whose hash is printed
 //! in the address clients connect to. With one, clients need no hash.
@@ -21,7 +24,8 @@ use nabla_server::{Server, Settings};
 use wtransport::Identity;
 
 const HELP: &str = "nabla-server [--bind ADDR] [--world NAME|FILE] [--tick-rate N] [--arena S] \
-[--max-pilots N] [--cert PEM --key PEM] [--name HOST]... [--password-file FILE]";
+[--max-pilots N] [--no-ship-collisions] [--cert PEM --key PEM] [--name HOST]... \
+[--password-file FILE]";
 
 #[tokio::main]
 async fn main() {
@@ -47,7 +51,15 @@ async fn run() -> Result<(), String> {
     let arena: f64 = parsed(&args, "--arena", 1000.0)?;
     let max_pilots: usize = parsed(&args, "--max-pilots", nabla_sim::world::MAX_PILOTS)?;
     let name = flag(&args, "--world").unwrap_or_else(|| "planet-moon".to_owned());
-    let world = world(&name, tick_rate, arena, nabla_sim::world::MAX_PILOTS)?;
+    let mut world = world(&name, tick_rate, arena, nabla_sim::world::MAX_PILOTS)?;
+    if args.iter().any(|a| a == "--no-ship-collisions") {
+        world.ship_collisions = Some(false);
+    }
+    let collisions = if world.ship_collisions() {
+        "ships collide"
+    } else {
+        "ships pass through each other"
+    };
     let password = password_file(&args)?;
     let private = password.is_some();
 
@@ -88,7 +100,9 @@ async fn run() -> Result<(), String> {
         bind.ip().to_string()
     };
     let address = server.address(&host).map_err(|e| e.to_string())?;
-    log::info!("world {name}, {tick_rate} Hz, arena {arena}, up to {max_pilots} pilots");
+    log::info!(
+        "world {name}, {tick_rate} Hz, arena {arena}, up to {max_pilots} pilots, {collisions}"
+    );
     log::info!("connect to {address}");
     if private {
         log::info!("pilots need the password to get in");

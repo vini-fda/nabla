@@ -5,9 +5,11 @@
 //! from the web app), so that the two can be put side by side.
 //!
 //! The replay table restores a ship from a recorded state, as a client does at each snapshot,
-//! and compares the replay to the flight that was not interrupted. The digest hashes the bits of
-//! such a flight: if two platforms agree on it, they agree on every tick. The timings are those
-//! of one `Controller::control`, which a client must produce within a tick.
+//! and compares the replay to the flight that was not interrupted. A tick is a function of the
+//! state alone (see [`crate::fleet`]), so on one platform every error in it is zero, in contact
+//! with a body too, and the table is there to show it. The digest hashes the bits of such a
+//! flight: if two platforms agree on it, they agree on every tick. The timings are those of one
+//! `Controller::control`, which a client must produce within a tick.
 
 use std::fmt::Write as _;
 
@@ -90,7 +92,7 @@ fn flight(
                 torque: rng.range(-params.tau_max, params.tau_max),
             };
         }
-        ship.tick(world, &held);
+        ship.tick(&held);
         commands.push(held);
         states.push(ship.state());
     }
@@ -113,9 +115,9 @@ fn windows(world: &World, commands: &[Command], states: &[State], rows: &mut [Ro
     for row in rows {
         let mut ship = Ship::new(world, params, states[0]);
         for start in 0..commands.len().saturating_sub(row.length) {
-            ship.restore(world, states[start], None);
+            ship.restore(states[start], None);
             for command in &commands[start..start + row.length] {
-                ship.tick(world, command);
+                ship.tick(command);
             }
             let end = start + row.length;
             let kind = if states[start..=end].iter().any(|s| touching(world, s)) {
@@ -278,15 +280,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_replay_table_has_free_and_contact_windows_and_small_errors() {
+    fn the_replay_table_has_free_and_contact_windows_and_no_error_at_all() {
         let rows = replay_table(1, 1500);
         assert_eq!(rows.len(), LENGTHS.len());
         for row in &rows {
             assert!(row.free.windows > 100, "{row:?}");
             assert!(row.contact.windows > 20, "{row:?}");
-            // `tab-replay`: far below one tick of thrust, which is 0.17.
-            assert!(row.free.velocity < 0.05, "{row:?}");
-            assert!(row.contact.velocity < 0.5, "{row:?}");
+            // The flights were not commanded by hand, so the hold is `None` throughout, and a
+            // replay from a state is the flight itself.
+            for worst in [row.free, row.contact] {
+                assert_eq!(
+                    (worst.position, worst.velocity, worst.heading, worst.spin),
+                    (0.0, 0.0, 0.0, 0.0),
+                    "{row:?}"
+                );
+            }
         }
     }
 

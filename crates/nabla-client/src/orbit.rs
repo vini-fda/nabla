@@ -388,14 +388,15 @@ impl Check {
     }
 
     fn verdict(&self) -> Result<Prediction, String> {
-        // Holding flickers through burns: a ring kept within tolerance off a perturbing body
-        // still corrects now and then, so the phase at the horizon says nothing. The verdict
-        // is the capture the run actually found.
-        self.captured
-            .map(|capture_seconds| Prediction { capture_seconds })
-            .ok_or_else(|| {
-                "No settled capture found in the prediction. Adjust altitude or approach".to_owned()
-            })
+        if self.pilot.phase != Phase::Holding {
+            return Err(
+                "No settled capture found in the prediction. Adjust altitude or approach"
+                    .to_owned(),
+            );
+        }
+        Ok(Prediction {
+            capture_seconds: self.captured.expect("holding capture"),
+        })
     }
 }
 
@@ -455,11 +456,10 @@ mod tests {
         // The ship starts where a ring around the planet would run through the moon.
         let current = Target::at_current_altitude(&world, &start, 0).expect("planet");
         assert!(current.validate(&world).is_err(), "crosses the moon");
-        assert!((around(0).altitude - 779.5).abs() < 1e-9, "{:?}", around(0));
+        assert!((around(0).altitude - 20.0).abs() < 1e-9, "{:?}", around(0));
         assert_eq!(around(0).clockwise, current.clockwise, "keeps direction");
         for body in [0, 1] {
-            predict(&world, start, around(body))
-                .unwrap_or_else(|error| panic!("a capture from the start, body {body}: {error}"));
+            predict(&world, start, around(body)).expect("a capture from the start");
         }
         assert_eq!(Target::suggested(&world, &start, 99), None, "unknown body");
     }
@@ -477,16 +477,15 @@ mod tests {
             let suggested = Target::suggested(&world, &state, body).expect("a body");
             (current.altitude, suggested.altitude)
         };
-        // Altitudes around the planet, centered at (0, -600): the moon rules out about
-        // 523.5 to 776.5. (Everything but the suggested margin scales with the world.)
-        for clear in [250.0, 1250.0] {
-            let (current, suggested) = at(0.0, clear - 250.0, 0);
+        // Altitudes around the planet, centered at (0, -12): the moon rules out 9 to 17.
+        for clear in [5.0, 25.0] {
+            let (current, suggested) = at(0.0, 7.0 + clear - 12.0, 0);
             assert!((current - clear).abs() < 1e-9);
             assert_eq!(suggested, current, "nothing in the way at {clear}");
         }
-        for blocked in [550.0, 750.0] {
-            let (_, suggested) = at(0.0, blocked - 250.0, 0);
-            assert!((suggested - 779.5).abs() < 1e-9, "from {blocked}");
+        for blocked in [10.0, 17.5] {
+            let (_, suggested) = at(0.0, 7.0 + blocked - 12.0, 0);
+            assert!((suggested - 20.0).abs() < 1e-9, "from {blocked}");
         }
     }
 
@@ -495,22 +494,22 @@ mod tests {
         let mut world = Preset::PlanetAndMoon.world();
         let start = State {
             x: 0.0,
-            y: 400.0,
+            y: 8.0,
             ..State::default()
         };
         // Listed out of order, with the second moon's band reaching well past the first's.
         let mut outer = world.bodies[1].clone();
-        outer.position = [0.0, 600.0];
+        outer.position = [0.0, 12.0];
         world.bodies.insert(1, outer);
         let target = Target::suggested(&world, &start, 0).expect("planet");
         target.validate(&world).expect("clear of both moons");
-        assert!((target.altitude - 979.5).abs() < 1e-9, "{target:?}");
+        assert!((target.altitude - 24.0).abs() < 1e-9, "{target:?}");
         // A band straddling the top of the range: the climb stops at the limit.
-        world.bodies[1].position = [0.0, 99_750.0];
-        world.bodies[2].position = [0.0, 99_750.0];
+        world.bodies[1].position = [0.0, 99_995.0];
+        world.bodies[2].position = [0.0, 99_995.0];
         let high = State {
             x: 0.0,
-            y: 99_748.0,
+            y: 99_993.0,
             ..start
         };
         let capped = Target::suggested(&world, &high, 0).expect("planet");
@@ -544,14 +543,14 @@ mod tests {
     fn accounts_for_the_other_bodys_gravity_when_orbiting_the_moon() {
         let mut world = Preset::PlanetAndMoon.world();
         world.players[0].state = State {
-            x: 900.0,
-            y: 200.0,
-            vy: 1.5 * 50.0_f64.sqrt(),
+            x: 18.0,
+            y: 4.0,
+            vy: 1.5,
             ..State::default()
         };
         let target = Target {
             body: 1,
-            altitude: 175.0,
+            altitude: 3.5,
             clockwise: false,
         };
         predict(&world, world.players[0].state, target).expect("powered moon orbit");
@@ -578,14 +577,7 @@ mod tests {
         world.bodies[0].mass = 0.0;
         assert!(predict(&world, s, target).is_err(), "massless target");
         world = Preset::PlanetAndMoon.world();
-        let planet = &world.bodies[0];
-        let crossing = Target {
-            altitude: f64::from(world.bodies[1].position[0] - planet.position[0])
-                .hypot(f64::from(world.bodies[1].position[1] - planet.position[1]))
-                - f64::from(planet.radius),
-            ..target
-        };
-        assert!(crossing.validate(&world).is_err(), "ring intersects moon");
+        assert!(target.validate(&world).is_err(), "ring intersects moon");
         world = Preset::Planet.world();
         let incoming = State {
             x: -9.0,
@@ -624,7 +616,7 @@ mod tests {
         let moon_start = moon.players[0].state;
         let around_moon = Target {
             body: 0,
-            altitude: 1700.0,
+            altitude: 34.0,
             ..capture
         };
         let cases = [

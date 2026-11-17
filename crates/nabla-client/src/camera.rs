@@ -445,11 +445,29 @@ impl Camera {
         Some(Vec2::new(p.x, p.y))
     }
 
-    /// Translate the view by a screen-space drag delta (egui convention:
-    /// positive y is downward). The scene appears to follow the cursor.
-    pub fn pan_by_screen(&mut self, delta: Vec2) {
-        let [right, up, _] = self.orbit.basis();
-        self.center = self.center - right * (delta.x / self.scale) + up * (delta.y / self.scale);
+    /// How far to move the center along the plane `z = 0` for the point of it seen at `from`
+    /// to be seen at `to`, or `None` when either sees no point of it. Moving the center along
+    /// the plane moves the eye with it, and so moves what every pixel sees of the plane by as
+    /// much.
+    fn plane_shift(&self, from: Pos2, to: Pos2, rect: Rect) -> Option<Vec3> {
+        let seen_from = self.screen_to_world(from, rect)?;
+        let seen_to = self.screen_to_world(to, rect)?;
+        Some(Vec3::plane(seen_from - seen_to))
+    }
+
+    /// Translate the view by a drag of `delta` on the screen (egui convention: positive y is
+    /// downward) that ends at `at`: the point of the plane `z = 0` that was under the cursor
+    /// stays under it, and the center keeps its height, on the plane.
+    ///
+    /// With the cursor where it sees no point of the plane, above the horizon in
+    /// perspective, the point at the screen's center follows the drag instead; edge on to
+    /// the plane, the view slides across the screen only.
+    pub fn pan_by_screen(&mut self, delta: Vec2, at: Pos2, rect: Rect) {
+        let shift = self
+            .plane_shift(at - delta, at, rect)
+            .or_else(|| self.plane_shift(rect.center(), rect.center() + delta, rect))
+            .unwrap_or_else(|| self.orbit.basis()[0] * (-delta.x / self.scale));
+        self.center = self.center + shift;
     }
 
     /// Set the zoom to `scale` pixels per world unit, within its limits.
@@ -457,17 +475,22 @@ impl Camera {
         self.scale = scale.clamp(MIN_SCALE, MAX_SCALE);
     }
 
-    /// Multiply scale by `factor`, keeping the world point under
-    /// `screen_anchor` (on the plane through the center facing the viewer) fixed on screen.
+    /// Multiply scale by `factor`, keeping the point of the plane `z = 0` under
+    /// `screen_anchor` fixed on screen, and the center at its height, on the plane.
+    ///
+    /// Keeping the point of the plane through the center facing the viewer fixed, as it once
+    /// did, moved the center off the plane in a tilted view, a little with each step, until in
+    /// perspective the eye could sink below the plane and see nothing of it. Where the anchor
+    /// sees no point of the plane, above the horizon or edge on, the zoom is about the center.
     pub fn zoom_at(&mut self, factor: f32, screen_anchor: Pos2, rect: Rect) {
         if !factor.is_finite() || factor <= 0.0 {
             return;
         }
-        let world_anchor = self.screen_to_view_plane(screen_anchor, rect);
+        let before = self.screen_to_world(screen_anchor, rect);
         self.scale = (self.scale * factor).clamp(MIN_SCALE, MAX_SCALE);
-        let [right, up, _] = self.orbit.basis();
-        let d = (screen_anchor - rect.center()) / self.scale;
-        self.center = world_anchor - right * d.x + up * d.y;
+        if let (Some(before), Some(after)) = (before, self.screen_to_world(screen_anchor, rect)) {
+            self.center = self.center + Vec3::plane(before - after);
+        }
     }
 }
 
@@ -641,37 +664,70 @@ mod tests {
         );
     }
 
+    /// The cameras the zoom and pan tests try: from above, tilted, and tilted in
+    /// perspective, each centered on the plane, where every way of moving the view keeps it.
+    fn on_the_plane() -> [Camera; 3] {
+        let tilted = Camera {
+            center: Vec3::new(1.0, -2.0, 0.0),
+            ..tilted()
+        };
+        [Camera::default(), tilted, in_perspective(tilted)]
+    }
+
     #[test]
     fn zoom_anchor_is_fixed_point() {
-        for mut cam in [Camera::default(), tilted(), in_perspective(tilted())] {
+        for mut cam in on_the_plane() {
             let r = rect();
             let anchor = Pos2::new(200.0, 150.0);
-            let world_before = cam.screen_to_view_plane(anchor, r);
+            let world_before = cam.screen_to_world(anchor, r).expect("below the horizon");
             cam.zoom_at(2.5, anchor, r);
             assert_near(
-                project(&cam, world_before).to_vec2(),
+                cam.world_to_screen(world_before, r)
+                    .expect("in front")
+                    .to_vec2(),
                 anchor.to_vec2(),
-                1e-3,
+                1e-2,
             );
+            assert_eq!(cam.center.z, 0.0);
+        }
+    }
+
+    /// Zooming in about one corner and out about another, again and again, keeps the
+    /// center on the plane, and the plane in view: the center left it a little with each
+    /// step, until in perspective the eye sank below it and the screen went black.
+    #[test]
+    fn zooming_about_the_corners_keeps_the_plane_in_view() {
+        let r = rect();
+        for mut cam in on_the_plane() {
+            for _ in 0..20 {
+                cam.zoom_at(1.5, r.left_top() + egui::vec2(60.0, 220.0), r);
+                cam.zoom_at(1.0 / 1.4, r.right_bottom() - egui::vec2(60.0, 40.0), r);
+            }
+            assert_eq!(cam.center.z, 0.0);
+            let seen = cam
+                .screen_to_world(r.center(), r)
+                .expect("the plane at the screen's center");
+            assert_near(seen, Vec2::new(cam.center.x, cam.center.y), 1e-2);
         }
     }
 
     #[test]
     fn pan_is_invertible_and_follows_the_cursor() {
-        for mut cam in [Camera::default(), tilted(), in_perspective(tilted())] {
-            // On the plane through the center facing the viewer, which pans with the cursor
-            // in perspective too.
-            let [right, up, _] = cam.orbit.basis();
-            let point = cam.center + right * 2.0 + up * 3.0;
-            let before = project(&cam, point);
+        let r = rect();
+        let (at, delta) = (Pos2::new(300.0, 400.0), Vec2::new(40.0, -30.0));
+        for mut cam in on_the_plane() {
+            let grabbed = cam
+                .screen_to_world(at - delta, r)
+                .expect("below the horizon");
             let center = cam.center;
-            cam.pan_by_screen(Vec2::new(40.0, -30.0));
+            cam.pan_by_screen(delta, at, r);
             assert_near(
-                project(&cam, point).to_vec2(),
-                (before + Vec2::new(40.0, -30.0)).to_vec2(),
-                1e-3,
+                cam.world_to_screen(grabbed, r).expect("in front").to_vec2(),
+                at.to_vec2(),
+                1e-2,
             );
-            cam.pan_by_screen(Vec2::new(-40.0, 30.0));
+            assert_eq!(cam.center.z, 0.0);
+            cam.pan_by_screen(-delta, at - delta, r);
             assert_near3(cam.center, center);
         }
     }
@@ -785,7 +841,7 @@ mod tests {
             cam.look_at(40_000.5, 1.0);
             assert!(cam.origin[0] > 39_000.0, "{:?}", cam.origin);
             // Panned far, so that the center has left the origin's cell.
-            cam.pan_by_screen(Vec2::new(-80_000.0, 30_000.0));
+            cam.center = cam.center + Vec3::new(2_500.0, -1_700.0, 0.0);
             let points = [(40_000.0, 1.0), (43_500.25, -1_200.5), (41_000.0, 900.0)];
             let before: Vec<_> = points
                 .iter()

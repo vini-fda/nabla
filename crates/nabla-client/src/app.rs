@@ -1462,7 +1462,10 @@ impl ViewerApp {
                 self.gizmo.orbit(&mut self.camera, response.drag_delta());
                 ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
             } else if !self.follow_ship {
-                self.camera.pan_by_screen(response.drag_delta());
+                let at = response
+                    .interact_pointer_pos()
+                    .unwrap_or_else(|| rect.center());
+                self.camera.pan_by_screen(response.drag_delta(), at, rect);
             }
         }
 

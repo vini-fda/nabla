@@ -6,11 +6,24 @@ use crate::world::CelestialBody;
 use eframe::egui_wgpu::{self, CallbackResources, CallbackTrait, ScreenDescriptor};
 use eframe::wgpu::{self, util::DeviceExt as _};
 
+/// The sphere mesh's rings, pole to pole, and segments around: a UV sphere with poles along
+/// the world's z axis. The outline a body leaves in the plane, where ships fly and land, is
+/// its equator, a ring of `SEGMENTS` chords, which come within `1 - cos(PI / SEGMENTS)`,
+/// about `2e-5`, of its radius: `0.007` units for a planet `350` across, a hair against a
+/// ship's hull. Even, so that the equator is a ring of the mesh.
+const RINGS: u32 = 256;
+const SEGMENTS: u32 = 512;
+
 struct Resources {
     pipeline: wgpu::RenderPipeline,
     bind_group: wgpu::BindGroup,
     uniforms: wgpu::Buffer,
+    /// The unit sphere's points, which are also its normals.
     vertices: wgpu::Buffer,
+    indices: wgpu::Buffer,
+    index_count: u32,
+    /// Each body's center in the plane and radius.
+    instances: wgpu::Buffer,
     count: u32,
     bodies: Vec<CelestialBody>,
 }
@@ -60,11 +73,18 @@ pub fn init(render: &egui_wgpu::RenderState, samples: u32, depth: Option<wgpu::T
             module: &shader,
             entry_point: Some("vs_main"),
             compilation_options: Default::default(),
-            buffers: &[Some(wgpu::VertexBufferLayout {
-                array_stride: 24,
-                step_mode: wgpu::VertexStepMode::Vertex,
-                attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3],
-            })],
+            buffers: &[
+                Some(wgpu::VertexBufferLayout {
+                    array_stride: 12,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x3],
+                }),
+                Some(wgpu::VertexBufferLayout {
+                    array_stride: 12,
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &wgpu::vertex_attr_array![1 => Float32x3],
+                }),
+            ],
         },
         primitive: wgpu::PrimitiveState::default(),
         depth_stencil: depth.map(|format| wgpu::DepthStencilState {
@@ -87,9 +107,10 @@ pub fn init(render: &egui_wgpu::RenderState, samples: u32, depth: Option<wgpu::T
         multiview_mask: None,
         cache: None,
     });
-    let vertices = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("empty planet mesh"),
-        size: 24,
+    let (vertices, indices, index_count) = sphere_buffers(device);
+    let instances = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("no planets"),
+        size: 12,
         usage: wgpu::BufferUsages::VERTEX,
         mapped_at_creation: false,
     });
@@ -102,9 +123,31 @@ pub fn init(render: &egui_wgpu::RenderState, samples: u32, depth: Option<wgpu::T
             bind_group,
             uniforms,
             vertices,
+            indices,
+            index_count,
+            instances,
             count: 0,
             bodies: Vec::new(),
         });
+}
+
+/// The unit sphere's vertex and index buffers, and how many indices it draws.
+fn sphere_buffers(device: &wgpu::Device) -> (wgpu::Buffer, wgpu::Buffer, u32) {
+    let (points, triangles) = unit_sphere();
+    let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("planet mesh"),
+        contents: &to_bytes(&points),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+    let indices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("planet mesh indices"),
+        contents: &triangles
+            .iter()
+            .flat_map(|i| i.to_ne_bytes())
+            .collect::<Vec<_>>(),
+        usage: wgpu::BufferUsages::INDEX,
+    });
+    (vertices, indices, triangles.len() as u32)
 }
 
 pub fn draw_debug(
@@ -167,42 +210,42 @@ pub fn paint(
     )
 }
 
-/// Positions and radial normals; uploaded only when a world's bodies change.
-fn mesh(bodies: &[CelestialBody]) -> Vec<f32> {
-    const RINGS: usize = 32;
-    const SEGMENTS: usize = 64;
-    let mut vertices = Vec::with_capacity(bodies.len() * RINGS * SEGMENTS * 36);
-    for body in bodies {
-        for ring in 0..RINGS {
-            for segment in 0..SEGMENTS {
-                for (r, s) in [
-                    (ring, segment),
-                    (ring + 1, segment),
-                    (ring, segment + 1),
-                    (ring, segment + 1),
-                    (ring + 1, segment),
-                    (ring + 1, segment + 1),
-                ] {
-                    let latitude = std::f32::consts::PI * r as f32 / RINGS as f32;
-                    let longitude = std::f32::consts::TAU * s as f32 / SEGMENTS as f32;
-                    let n = [
-                        latitude.sin() * longitude.cos(),
-                        latitude.sin() * longitude.sin(),
-                        latitude.cos(),
-                    ];
-                    vertices.extend([
-                        body.position[0] + body.radius * n[0],
-                        body.position[1] + body.radius * n[1],
-                        body.radius * n[2],
-                        n[0],
-                        n[1],
-                        n[2],
-                    ]);
-                }
-            }
+/// The unit sphere: its points, which are also its normals, as `x, y, z` runs, and its
+/// triangles, as runs of three indices into them. Uploaded once; each body draws it scaled
+/// by its radius about its center.
+fn unit_sphere() -> (Vec<f32>, Vec<u32>) {
+    let mut points = Vec::with_capacity(((RINGS + 1) * (SEGMENTS + 1) * 3) as usize);
+    for ring in 0..=RINGS {
+        let (sin_lat, cos_lat) = (std::f32::consts::PI * ring as f32 / RINGS as f32).sin_cos();
+        for segment in 0..=SEGMENTS {
+            let (sin_lon, cos_lon) =
+                (std::f32::consts::TAU * segment as f32 / SEGMENTS as f32).sin_cos();
+            points.extend([sin_lat * cos_lon, sin_lat * sin_lon, cos_lat]);
         }
     }
-    vertices
+    let index = |ring: u32, segment: u32| ring * (SEGMENTS + 1) + segment;
+    let mut triangles = Vec::with_capacity((RINGS * SEGMENTS * 6) as usize);
+    for ring in 0..RINGS {
+        for segment in 0..SEGMENTS {
+            triangles.extend([
+                index(ring, segment),
+                index(ring + 1, segment),
+                index(ring, segment + 1),
+                index(ring, segment + 1),
+                index(ring + 1, segment),
+                index(ring + 1, segment + 1),
+            ]);
+        }
+    }
+    (points, triangles)
+}
+
+/// Each body's center in the plane and radius, as `x, y, radius` runs.
+fn instances(bodies: &[CelestialBody]) -> Vec<f32> {
+    bodies
+        .iter()
+        .flat_map(|body| [body.position[0], body.position[1], body.radius])
+        .collect()
 }
 
 impl CallbackTrait for Callback {
@@ -216,12 +259,12 @@ impl CallbackTrait for Callback {
     ) -> Vec<wgpu::CommandBuffer> {
         if let Some(res) = resources.get_mut::<Resources>() {
             if res.bodies != self.bodies {
-                let vertices = mesh(&self.bodies);
-                res.count = (vertices.len() / 6) as u32;
-                if !vertices.is_empty() {
-                    res.vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("planet mesh"),
-                        contents: &to_bytes(&vertices),
+                let instances = instances(&self.bodies);
+                res.count = self.bodies.len() as u32;
+                if !instances.is_empty() {
+                    res.instances = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("planets"),
+                        contents: &to_bytes(&instances),
                         usage: wgpu::BufferUsages::VERTEX,
                     });
                 }
@@ -242,7 +285,46 @@ impl CallbackTrait for Callback {
             pass.set_pipeline(&res.pipeline);
             pass.set_bind_group(0, &res.bind_group, &[]);
             pass.set_vertex_buffer(0, res.vertices.slice(..));
-            pass.draw(0..res.count, 0..1);
+            pass.set_vertex_buffer(1, res.instances.slice(..));
+            pass.set_index_buffer(res.indices.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..res.index_count, 0, 0..res.count);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The mesh is a unit sphere whose every edge, the cells' diagonals among them, stays
+    /// within `4e-5` of it, and whose outline in the plane stays within `2e-5`: the 32 by 64
+    /// mesh before let it come within `1.2e-3`, half a ship's size for a planet `350` across,
+    /// so its outline showed as straight runs.
+    #[test]
+    fn the_sphere_mesh_hugs_the_sphere() {
+        let (points, triangles) = unit_sphere();
+        let point = |i: u32| {
+            let i = i as usize * 3;
+            Vec3::new(points[i], points[i + 1], points[i + 2])
+        };
+        for i in 0..(points.len() / 3) as u32 {
+            assert!((point(i).length() - 1.0).abs() < 1e-6);
+        }
+        assert_eq!(triangles.len() as u32, RINGS * SEGMENTS * 6);
+        let mut sag = 0.0_f32;
+        for triangle in triangles.as_chunks::<3>().0 {
+            for (a, b) in [(0, 1), (1, 2), (2, 0)] {
+                let middle = (point(triangle[a]) + point(triangle[b])) * 0.5;
+                sag = sag.max(1.0 - middle.length());
+            }
+        }
+        assert!(sag < 4e-5, "sag {sag}");
+        // The equator is a ring of the mesh, in the plane, its chords within `2e-5`.
+        let equator = (RINGS / 2) * (SEGMENTS + 1);
+        for segment in 0..SEGMENTS {
+            let (a, b) = (point(equator + segment), point(equator + segment + 1));
+            assert!(a.z.abs() < 1e-6);
+            assert!(1.0 - ((a + b) * 0.5).length() < 2e-5);
         }
     }
 }

@@ -11,9 +11,15 @@ pub const MAX_SAVE_BYTES: usize = 1024 * 1024;
 pub const MAX_GRAVITY_CONSTANT: f64 = 1e4;
 /// The most pilots a world can hold at once (`N_max`): a whole snapshot then fits one datagram.
 pub const MAX_PILOTS: usize = 16;
-/// The largest half side `S` of a world's arena. Beyond it `f32` positions are too coarse for
-/// Rapier to move a slow ship (`specs/multiplayer.typ`, "The arena").
-pub const MAX_ARENA_HALF_SIDE: f64 = 2048.0;
+/// The largest half side `S` of a world's arena.
+///
+/// Rapier works around each block's own origin, so it is not precision that bounds it but
+/// speed: up to it, two ships of the bundled kind closing head-on at the arena's top speed
+/// still get the substeps ([`crate::fleet::MAX_SUBSTEPS`]) that keep them from passing through
+/// each other (`specs/multiplayer.typ`, "The arena").
+pub const MAX_ARENA_HALF_SIDE: f64 = 65_536.0;
+/// The half side `S` of a server's arena unless it is told another.
+pub const DEFAULT_ARENA_HALF_SIDE: f64 = 50_000.0;
 /// The slowest and the fastest tick a version 2 world may have, in ticks per second: `h` is
 /// then in `[0.01, 0.1]`, as in version 1.
 pub const TICK_RATES: std::ops::RangeInclusive<u32> = 10..=100;
@@ -649,7 +655,11 @@ mod tests {
         bad(&|w| w.ships = None);
         bad(&|w| w.tick_rate = Some(5));
         bad(&|w| w.tick_rate = Some(101));
-        bad(&|w| w.arena = Some(Arena { half_side: 2049.0 }));
+        bad(&|w| {
+            w.arena = Some(Arena {
+                half_side: MAX_ARENA_HALF_SIDE + 1.0,
+            });
+        });
         let nan_arena = Arena {
             half_side: f64::NAN,
         };

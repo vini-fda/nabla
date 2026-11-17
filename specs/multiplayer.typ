@@ -348,7 +348,7 @@ Four remarks.
 
 == The arena <arena>
 
-Free flight lets a ship thrust forever, and worlds with bodies keep positions in `f32`, so a world needs an edge well before `f32` gives out. By R6 the edge is a square. Let $S$ be its half-side and $S' = S - rho$, so that the hull is inside when the center is in $[-S', S']^2$.
+Free flight lets a ship thrust forever, so a world needs an edge. By R6 the edge is a square. Let $S$ be its half-side and $S' = S - rho$, so that the hull is inside when the center is in $[-S', S']^2$.
 
 #definition(name: [Wall])[
   $Wall(p, v)$ treats each axis $xi$ separately. If $p_xi > S'$ it sets $(p_xi, v_xi) := (S', min(v_xi, 0))$, if $p_xi < -S'$ it sets $(p_xi, v_xi) := (-S', max(v_xi, 0))$, and otherwise it changes nothing. It leaves $theta$ and $omega$ alone. So the wall is plastic and frictionless.
@@ -383,23 +383,28 @@ Adversarial pilots reached $0.9993$ of this bound and never passed it. With grav
 
 A wall is the mildest contact there is. Two nearby replicas that hit it on different ticks differ in velocity by the normal speed only for the ticks in between, and once both have hit, their errors along the normal are exactly zero. The wall forgets them.
 
-*Choosing $S$.* A body in Rapier moves once per solver iteration, four times a substep by default, so 480 times a second at this tick. A move smaller than half the `f32` spacing at the ship's coordinate is lost. Hence a coasting ship slower than $240$ spacings per second does not move at all, and a faster one advances in whole multiples of $480$ spacings per second. We measured this and it agrees to all digits: at $x = 990$, speed $0.01$ goes nowhere in 10 s, and speed $0.02$ covers $0.293$ rather than $0.2$; at $x = 4055$, speed $0.05$ goes nowhere.
+*Precision.* A body in Rapier moves once per solver iteration, four times a substep by default, so 480 times a second at this tick. A move smaller than half the `f32` spacing at the body's coordinate is lost. Hence a coasting ship slower than $240$ spacings per second does not move at all, and a faster one advances in whole multiples of $480$ spacings per second. We measured this and it agrees to all digits: laid out around the world's origin, at $x = 990$, speed $0.01$ goes nowhere in 10 s, and speed $0.02$ covers $0.293$ rather than $0.2$; at $x = 4055$, speed $0.05$ goes nowhere. That once capped $S$ at $2048$, where this *dead speed* is $0.029$, below the $0.05$ autopilots are asked to settle at (`suite::TOLERANCE`).
+
+So Rapier does not work around the world's origin. Each block's Rapier world is built for the tick around a point of a grid of $256$ units, the one nearest its first ship whose place is a number, and holds offsets from it. States go in and come out in `f64`, and gravity is found at the point plus the offset. The ships of a block are within its reach of each other, a few units, so offsets are at most about $128$ units and that reach, where the spacing is at most $1.5 dot 10^(-5)$ and the dead speed at most $0.004$, wherever the block is: an arena of half side $128$ laid out around the world's origin. The grid is a power of two, so its points, and a place's offset from one, are exact in `f64`, and a ship far out moves to the last bit as one at the same offset from a point near the center does. Laid out around the world's origin, a ship at $0.99$ of the largest $S$ would not have moved below $1.9$ units/s. A body is inserted only within the block's reach, so its offset is at most its radius and that reach.
+
+The origin is a function of the states, so client and server lay out a block alike, and @thm-exact is untouched. Why a grid, and not the first ship's own place: a client holds the others' last controls, so it may predict the first ship of its own ship's block only nearly, and with the first ship's own place as the origin, its own ship's rounding would follow that error even where the two never touch. With a grid, both lay the block out around the same point, short of the rare tick when the two places of the first ship fall on either side of a line of the grid.
+
+*Choosing $S$.* What bounds $S$ now is speed. At full thrust a ship can reach the top axis speed of @lem-arena, and two ships closing head-on on a diagonal close at $2 sqrt(2)$ times it, which the substep rule of B7 (@collisions) divides into steps of $rho slash 4$.
 
 #keep[#figure(
   rules(
-    columns: (auto, auto, auto, auto, auto, auto),
-    align: (right, right, right, right, right, right),
-    ([$S$], [Spacing near the wall], [Dead speed], [Center to wall], [Flip and burn across], [Top axis speed]),
-    [500], [$3.1 dot 10^(-5)$], [0.007], [10 s], [20 s], [141],
-    [*1000*], [$6.1 dot 10^(-5)$], [0.015], [14 s], [28 s], [200],
-    [2048], [$1.2 dot 10^(-4)$], [0.029], [20 s], [40 s], [286],
-    [4096], [$2.4 dot 10^(-4)$], [0.059], [29 s], [57 s], [405],
-    [10000], [$9.8 dot 10^(-4)$], [0.234], [45 s], [89 s], [632],
+    columns: (auto, auto, auto, auto, auto),
+    align: (right, right, right, right, right),
+    ([$S$], [Center to wall], [Flip and burn across], [Top axis speed], [Head-on substeps]),
+    [1000], [14 s], [28 s], [200], [38],
+    [10000], [45 s], [89 s], [632], [120],
+    [*50000*], [100 s], [200 s], [1414], [267],
+    [65536], [114 s], [229 s], [1619], [306],
   ),
-  caption: [What an arena's size means, for the bundled ship ($a = 10$). "Center to wall" is at full thrust from rest. The top axis speed is that of @lem-arena, without the small terms.],
+  caption: [What an arena's size means, for the bundled ship ($a = 10$). "Center to wall" is at full thrust from rest. The top axis speed is that of @lem-arena, without the small terms. "Head-on substeps" are those two such ships closing on a diagonal at it take, with $rho = 1$ and no spin.],
 ) <tab-arena>]
 
-The dead speed should be well below the speed autopilots are asked to settle at, the $0.05$ of `suite::TOLERANCE`, or they could not arrive everywhere. That excludes anything above $S = 2048$. *We take $S = 1000$*: it has more than three times that margin, a crossing takes half a minute, and sixteen pilots get $500 times 500$ units each. It is configurable in the world file, up to $2048$. Replay is not what limits it. Replays near the corners of arenas of up to $16000$ gave $|e_p| = 0$ and $|e_v| <= 4 dot 10^(-6)$, as client and server round alike. The limit is on the quality of the physics, not the protocol. Vacuum worlds use `f64` and have no dead speed, but Phase B puts every ship in Rapier, so all worlds share one limit.
+*We take $S = 50000$*, fifty times the bodies' scale of the bundled planet and moon: a crossing takes over three minutes, and sixteen pilots get $25000 times 25000$ units each. It is configurable in the world file, up to $65536$, where head-on ships of the bundled kind still take fewer than the $512$ substeps a block may (@collisions). Replay does not limit it either: replays near the corners of arenas of up to $16000$ gave $|e_p| = 0$ and $|e_v| <= 4 dot 10^(-6)$ even before the local origin, as client and server round alike.
 
 == The ships <lobby>
 
@@ -1140,7 +1145,7 @@ The lobby lets a pilot pick a stronger ship than the bundled one. The bounds abo
     [Floor for any display, at $0.1$ s], [0.025], [0.05], [@thm-nopresent],
     [Extrapolation, worst case, at $0.1$ s], [0.1], [0.2], [@prop-zoh],
     [Interpolation at $q = 6$, with planet and moon], [0.012], [0.018], [@prop-hermite],
-    [Top axis speed at $S = 1000$, in vacuum], [200], [283], [@lem-arena],
+    [Top axis speed at $S = 50000$, in vacuum], [1414], [2000], [@lem-arena],
     [Horizon of two alike, gap 5, closing at 10], [0.31 s], [0.28 s], [@lem-horizon],
     [Horizon of two alike, gap 2, closing at 10], [0.15 s], [0.14 s], [@lem-horizon],
   ),
@@ -1168,7 +1173,7 @@ A persistent Rapier world would hide contact caches and insertion history outsid
   $2 rho + sigma + D_A(L) + D_B(L)$ apart, where $sigma = rho slash 8 + 0.05$. The *coupling partition* $Pi_L$ is the finest partition with no near sets in different blocks. It is computed by merging near blocks until none remain; a merge only increases reach, so the result does not depend on merge order. A tick steps the blocks of $Pi_1$.
 ] <def-blocks>
 
-The first two terms of @eq:reach bound translation. Rapier's semi-implicit step advances by the velocity after the force update, hence $L(L+1) slash 2$ rather than $L^2 slash 2$. The last bounds a hull point's sweep during one tick, at the spin torque can produce by tick $L$. The skin covers Rapier's contact margin and rounding positions to `f32`.
+The first two terms of @eq:reach bound translation. Rapier's semi-implicit step advances by the velocity after the force update, hence $L(L+1) slash 2$ rather than $L^2 slash 2$. The last bounds a hull point's sweep during one tick, at the spin torque can produce by tick $L$. The skin covers Rapier's contact margin and rounding offsets from the block's origin to `f32`.
 
 #theorem(name: [Locality])[
   If $S$ is a union of blocks of $Pi_1(W)$, the next states of $S$ under $F(W,c)$ are exactly its next states under $F(W|_S,c|_S)$, to the last bit on one platform.
@@ -1228,7 +1233,7 @@ The property tests in `nabla-sim` name the following requirements, over seeded w
 + *Locality (B3).* A union of blocks steps exactly as it does in the whole world; with collisions disabled, $F$ is the product of the ships' individual maps.
 + *Separation (B4).* In the tested flight envelope, ships in different blocks end a tick more than $2 rho$ apart. This is the empirical counterpart of @lem-blocks, whose hypothesis excludes prior contacts.
 + *Conservation (B5, B6).* Away from bodies and walls, coasting collisions preserve linear and total angular momentum and do not increase kinetic energy. The resulting center-of-mass speed bounds the shove a ship can receive.
-+ *No tunneling (B7).* A coupled block takes enough substeps that two hull points close by at most $rho slash 4$ per substep, up to 64; continuous detection remains enabled against fixed bodies. Seeded head-on and glancing encounters at the arena speeds tested never pass through one another.
++ *No tunneling (B7).* A coupled block takes enough substeps that two hull points close by at most $rho slash 4$ per substep, up to 512; continuous detection remains enabled against fixed bodies. Seeded head-on and glancing encounters, anywhere in the largest arena and at up to the top speed it allows the bundled ship on a diagonal, never pass through one another.
 
 `Join` chooses the first spawn template or nearby ring position that is a singleton in $Pi_1$, inside the arena and clear of bodies, so joining moves no existing ship. Rapier's result can depend on ship-id insertion order, which determinism permits; a seeded two-order test checks that this produces no systematic advantage to the lower id.
 
@@ -1328,7 +1333,7 @@ version = 2
 tick_rate = 60            # h = 1 / tick_rate
 
 [arena]
-half_side = 1000.0        # S, at most 2048
+half_side = 50000.0       # S, at most 65536
 
 [ships]                   # the set of allowed ships, and the server's final word
 mass = [0.1, 10.0]
@@ -1339,7 +1344,7 @@ acceleration_cap = 20.0   # a_cap
 angular_cap = 50.0        # beta_cap
 ```
 
-The same defaults, and the ceilings of 2048 for $S$ and 16 for `max_pilots`, are constants in `nabla-sim`. Version 1 saves keep loading and flying as they do today. The client's `Task` (goal, tolerance, step budget) stops mattering to the server, and is used only locally, by autopilots.
+The same defaults, and the ceilings of 65536 for $S$ and 16 for `max_pilots`, are constants in `nabla-sim`. Version 1 saves keep loading and flying as they do today. The client's `Task` (goal, tolerance, step budget) stops mattering to the server, and is used only locally, by autopilots.
 
 The protocol's constants start at the values below. All are to be tuned at M7.
 
@@ -1349,7 +1354,7 @@ The protocol's constants start at the values below. All are to be tuned at M7.
     ([Constant], [Start at], [Why]),
     [$h$], [$1 slash 60$ s], [@tick-rate. Every number here was computed at it.],
     [$N_max$], [$16$], [R1. A whole snapshot then fits one datagram (@bandwidth).],
-    [$S$], [$1000$], [@arena. At most $2048$.],
+    [$S$], [$50000$], [@arena. At most $65536$.],
     [$a_"cap"$, $beta_"cap"$], [$20$, $50$], [@lobby. Twice the bundled ship.],
     [$K$], [$5$], [@loss.],
     [$N_d$], [$60$ ticks], [One second of silence before a ship goes neutral. Must exceed the longest stall worth riding out.],
@@ -1467,7 +1472,7 @@ All measurements were taken on a copy of the repository at commit `268a24f`, wit
 - *@thm-sens against the code.* 20,000 flights of `nabla_core::step` with the bundled ship, of 1 to 50 ticks, with random admissible controls and starting perturbations between $10^(-4)$ and $10^(-1)$. The gravity version used RK4 on @eq:ode, with the planet-and-moon field, over 1,500 runs of up to 100 ticks.
 - *@tab-replay.* The planet-and-moon world under random controls for 7,200 ticks, in two flights, and the planet world starting on the surface with random hops, for contact. 2,286 of the 7,200 ticks of that last flight were within $0.05$ of contact. Each window restores with `Physics::new` and replays. These are worst cases over what these flights reached, not bounds. In particular, they do not cover ship-ship contact, or a restore across platforms.
 - *@tick-rate.* The unit tests of `nabla-client`, with the three bundled worlds edited to `h = 0.016666666666666666`. The accuracy figures are one flight of 30 s of the planet-and-moon world under random controls, at each tick, against RK4 at 16 steps per tick. `Physics::step` at each tick in a loop.
-- *@arena.* For the dead speed: a ship coasting for 10 s without gravity at $0.99 S$, for $S$ from 1000 to 16000 and speeds from $0.002$ to $0.1$. The figure of 480 moves per second fits every result, and is 60 ticks times 2 substeps times Rapier's default of 4 solver iterations. For replay: $L = 6$ from flights starting at $0.97 S$. For @lem-arena: 400 flights per setting of a Python model of the wall and the ship, with pilots that thrust along an axis, along the diagonal, along the velocity, and at random.
+- *@arena.* For the dead speed: a ship coasting for 10 s without gravity at $0.99 S$, for $S$ from 1000 to 16000 and speeds from $0.002$ to $0.1$, laid out around the world's origin. With the local origin, ships at three offsets from a point of the grid near $0.99 S$ of $S = 65536$, in each corner but one, and from the world's origin, for speeds from $0.002$ to $1$, in the planet-and-moon world with gravity off so that Rapier steps the ship: the corners move as the center does, to the last bit. And 500 pairs of ships sharing a block without touching, near points of the grid all over that arena, one of them nudged by up to $10^(-3)$: the other's tick did not change. The figure of 480 moves per second fits every result, and is 60 ticks times 2 substeps times Rapier's default of 4 solver iterations. For replay: $L = 6$ from flights starting at $0.97 S$. For @lem-arena: 400 flights per setting of a Python model of the wall and the ship, with pilots that thrust along an axis, along the diagonal, along the velocity, and at random.
 - *@lem-grant.* 200,000 random requests to a Python model of $Grant$, a third of the numbers being NaN, infinite, zero, negative or extreme. No result fell outside $Pset$, $Grant$ was idempotent on all, and the 365 that were already allowed were granted as asked. M2 repeats this on the real code.
 - *@autopilots.* `cargo test --release` on `nabla-core`. Flights are the 80 cases of `suite::standard` and `suite::holdout`, with the tick and ship replaced and `max_steps` set to 400 s. `mpc` was not flown on the weakest ship of @lobby, since it takes minutes timing out. An earlier run on a weaker ship ($a = beta = 0.01$) is where the panic appeared, at `mpc.rs:969`.
 - *NaN.* `steer` with `aim.heading` of NaN and of infinity, and `Physics::step` with a NaN torque, as described in @steering.

@@ -8,7 +8,7 @@ use super::*;
 use crate::rng::Rng;
 use crate::ship::Ship;
 use crate::steering::{Aim, Input, Steering};
-use crate::world::{Preset, ShipRequest};
+use crate::world::{MAX_ARENA_HALF_SIDE, Preset, ShipRequest};
 
 const S: f64 = 1000.0;
 
@@ -544,14 +544,24 @@ fn a_collision_keeps_the_momentum_of_its_ships_and_makes_no_energy() {
 /// a block takes the substeps its speed calls for.
 #[test]
 fn two_ships_on_a_collision_course_never_pass_through_each_other() {
-    let world = arena(Preset::Vacuum);
+    // Anywhere in the largest arena, at up to the top speed it allows a ship of the bundled
+    // kind: that of "The arena holds" on each axis, so on a diagonal sqrt(2) times as much.
+    let world = Preset::Vacuum
+        .world()
+        .multiplayer(60, MAX_ARENA_HALF_SIDE, 4)
+        .expect("a valid world");
     let dynamics = Dynamics::new(&world);
+    let bundled = world.default_ship();
+    let reach = MAX_ARENA_HALF_SIDE - dynamics.radius();
+    let top = std::f64::consts::SQRT_2 * (4.0 * bundled.f_max / bundled.mass * reach).sqrt();
     let mut most_substeps = 0;
     for seed in 0..3000 {
         let mut rng = Rng::fork(0xB7, seed);
         let (params_a, params_b) = (any_ship(&mut rng, &world), any_ship(&mut rng, &world));
-        // The closing speed is at most 520, which the substeps cover with room for the spin.
-        let (speed_a, speed_b) = (rng.range(0.0, 260.0), rng.range(0.5, 260.0));
+        // Half of them as fast as a small arena allows, and half as fast as the largest does.
+        let fastest = if rng.chance(0.5) { 260.0 } else { top };
+        let (speed_a, speed_b) = (rng.range(0.0, fastest), rng.range(0.5, fastest));
+        let (cx, cy) = (rng.range(-0.9, 0.9) * reach, rng.range(-0.9, 0.9) * reach);
         let course = rng.range(-3.2, 3.2);
         let (ux, uy) = (f64::cos(course), f64::sin(course));
         // Both hulls hold a disc of a quarter of the hull radius about the center, so centers
@@ -563,8 +573,8 @@ fn two_ships_on_a_collision_course_never_pass_through_each_other() {
             Member::new(
                 params_a,
                 State {
-                    x: -gap * ux,
-                    y: -gap * uy,
+                    x: cx - gap * ux,
+                    y: cy - gap * uy,
                     vx: speed_a * ux,
                     vy: speed_a * uy,
                     theta: rng.range(-3.2, 3.2),
@@ -574,8 +584,8 @@ fn two_ships_on_a_collision_course_never_pass_through_each_other() {
             Member::new(
                 params_b,
                 State {
-                    x: gap * ux - miss * uy,
-                    y: gap * uy + miss * ux,
+                    x: cx + gap * ux - miss * uy,
+                    y: cy + gap * uy + miss * ux,
                     vx: -speed_b * ux,
                     vy: -speed_b * uy,
                     theta: rng.range(-3.2, 3.2),
@@ -606,7 +616,7 @@ fn two_ships_on_a_collision_course_never_pass_through_each_other() {
         );
     }
     assert!(
-        most_substeps > 20,
+        most_substeps > 200,
         "fast blocks were stepped finely: {most_substeps}"
     );
 }
@@ -882,4 +892,121 @@ fn the_control_of_a_tick_is_admissible_and_single_precision() {
             }
         }
     }
+}
+
+#[test]
+fn a_ship_near_the_corner_of_the_largest_arena_moves_as_it_would_near_the_center() {
+    // Rapier holds a block's places as offsets from a point of a grid, so a ship far out moves
+    // exactly as one at the same offset from a point near the center does, to the last bit.
+    // Laid out around the world's origin, a ship this far out slower than about 1.9 units/s
+    // would not move at all.
+    let mut world = Preset::PlanetAndMoon
+        .world()
+        .multiplayer(60, MAX_ARENA_HALF_SIDE, 4)
+        .expect("a valid world");
+    // The bodies keep the ship in Rapier, with nothing pulling on it.
+    world.gravity_constant = 0.0;
+    let dynamics = Dynamics::new(&world);
+    let far = (0.99 * MAX_ARENA_HALF_SIDE / ORIGIN_GRID).floor() * ORIGIN_GRID;
+    let seconds = 10.0;
+    let ticks = (seconds / dynamics.h()).round() as usize;
+    let fly = |x: f64, y: f64, speed: f64| {
+        let start = State {
+            x,
+            y,
+            vx: speed,
+            vy: -0.5 * speed,
+            ..State::default()
+        };
+        let mut ships = vec![Member::new(world.default_ship(), start)];
+        for _ in 0..ticks {
+            dynamics.tick(&mut ships, &[Command::default()]);
+        }
+        ships[0].state
+    };
+    for speed in [0.002, 0.01, 0.05, 1.0] {
+        for (dx, dy) in [(0.3, -0.7), (100.0, -77.0), (127.5, 127.5)] {
+            let near = fly(dx, dy, speed);
+            for (kx, ky) in [(far, far), (-far, far), (far, -far)] {
+                let out = fly(kx + dx, ky + dy, speed);
+                assert_eq!(
+                    (out.x - kx, out.y - ky, out.vx, out.vy),
+                    (near.x, near.y, near.vx, near.vy),
+                    "speed {speed}, offset ({dx}, {dy}), from ({kx}, {ky})"
+                );
+            }
+            if speed >= 1.0 {
+                let moved = near.x - dx;
+                assert!(
+                    (moved - speed * seconds).abs() < 0.01 * speed * seconds,
+                    "speed {speed}, offset ({dx}, {dy}): moved {moved}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_ship_that_touches_no_other_flies_the_same_wherever_the_others_are() {
+    // A block's Rapier world is laid out around a point of a grid near its first ship, so a
+    // client that predicts that ship only nearly still lays it out around the same point, and
+    // a ship that touches it computes the same tick, far out in the largest arena too.
+    let world = Preset::Vacuum
+        .world()
+        .multiplayer(60, MAX_ARENA_HALF_SIDE, 4)
+        .expect("a valid world");
+    let dynamics = Dynamics::new(&world);
+    let cells = (0.9 * MAX_ARENA_HALF_SIDE / ORIGIN_GRID).floor();
+    let mut shared = 0;
+    for seed in 0..500 {
+        let mut rng = Rng::fork(0xC0, seed);
+        // Well inside a cell of the grid, so that a nudge does not cross a line of it.
+        let cell = |rng: &mut Rng| {
+            (rng.range(-cells, cells)).round() * ORIGIN_GRID + rng.range(-100.0, 100.0)
+        };
+        let (cx, cy) = (cell(&mut rng), cell(&mut rng));
+        // Side by side, flying together fast enough to share a block, apart enough not to
+        // touch.
+        let (vx, vy) = (rng.range(-30.0, 30.0), rng.range(-30.0, 30.0));
+        let ship = |rng: &mut Rng, x: f64, y: f64| {
+            Member::new(
+                world.default_ship(),
+                State {
+                    x,
+                    y,
+                    vx,
+                    vy,
+                    theta: rng.range(-3.2, 3.2),
+                    omega: rng.range(-0.5, 0.5),
+                },
+            )
+        };
+        // The other ship first, so that the block is laid out around it.
+        let gap = rng.range(2.5, 3.0);
+        let other = ship(&mut rng, cx, cy);
+        let own = ship(&mut rng, cx + gap, cy);
+        let commands = [Command::default(), Command::default()];
+        let mut nudged = other;
+        nudged.state.x += rng.range(-1e-3, 1e-3);
+        nudged.state.y += rng.range(-1e-3, 1e-3);
+        let mut a = vec![other, own];
+        let mut b = vec![nudged, own];
+        let (ra, rb) = (
+            dynamics.tick(&mut a, &commands),
+            dynamics.tick(&mut b, &commands),
+        );
+        if ra.blocks.len() != 1 || rb.blocks.len() != 1 {
+            continue;
+        }
+        assert!(
+            ra.touches.is_empty() && rb.touches.is_empty(),
+            "seed {seed}"
+        );
+        shared += 1;
+        assert_eq!(a[1].state, b[1].state, "seed {seed}");
+    }
+    assert!(
+        shared > 100,
+        "ships shared a block without touching: {shared}"
+    );
 }

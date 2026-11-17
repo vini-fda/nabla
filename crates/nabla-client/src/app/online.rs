@@ -627,9 +627,7 @@ impl ViewerApp {
         if let Some((pointer, heading)) = self.aiming {
             self.draw_aim(&painter, rect, &own.state, pointer, heading);
         }
-        if let Some(online) = &self.online
-            && online.assisted()
-        {
+        if self.show_target() {
             self.draw_goal_marker(&painter, rect, rect, &own.replay, &own.state);
         }
         self.draw_name_tags(&painter, rect, corner, views);
@@ -643,6 +641,14 @@ impl ViewerApp {
         if self.show_help {
             self.help_window(ui.ctx(), rect);
         }
+    }
+
+    /// Whether the flight's stationary target shows on the canvas: the autopilot is engaged
+    /// on the reach-the-target objective, the one with a target to fly toward. An orbit has
+    /// none, as in a single-player flight.
+    fn show_target(&self) -> bool {
+        self.online.as_ref().is_some_and(Online::assisted)
+            && self.flight_objective() == super::Objective::ReachTarget
     }
 
     /// The marks over the scene: with the 3D view's `depth` map they are one pass of
@@ -685,17 +691,13 @@ impl ViewerApp {
                     &own.state,
                 );
             }
-            if let Some(online) = &self.online
-                && online.assisted()
-            {
+            if self.show_target() {
                 self.goal_strokes(&mut overlays, &own.replay, &own.state);
             }
             if let Some(callback) = overlays.finish() {
                 painter.add(callback);
             }
-            if let Some(online) = &self.online
-                && online.assisted()
-            {
+            if self.show_target() {
                 self.draw_goal_label(painter, rect, &own.replay, &own.state);
             }
         } else {
@@ -711,9 +713,7 @@ impl ViewerApp {
                     &own.state,
                 );
             }
-            if let Some(online) = &self.online
-                && online.assisted()
-            {
+            if self.show_target() {
                 self.draw_goal(painter, rect, &own.replay, &own.state);
             }
         }

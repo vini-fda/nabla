@@ -455,13 +455,36 @@ impl Mesh<'_> {
 
     /// The ribbon (`crate::ribbon`) along `run`, a stretch of a line as its world points and
     /// where they are on screen, `reach` to each side: wide enough for the glow, each vertex
-    /// with its distance across.
+    /// with its distance across. Clip first, so segments through the canvas never become huge
+    /// screen-space triangles when a perspective view comes close to the plane.
     fn ribbon(&mut self, run: &[(Vec3, egui::Pos2)]) {
-        let points = crate::ribbon::distinct(
-            run.iter()
-                .map(|&(world, screen)| (self.pixels(screen), world)),
-            false,
-        );
+        let points: Vec<_> = run
+            .iter()
+            .map(|&(world, screen)| {
+                (
+                    self.pixels(screen),
+                    (self.depth.depth(world, 0.0), self.anchor(world)),
+                )
+            })
+            .collect();
+        let bounds = Rect::from_min_size(
+            egui::pos2(0.0, 0.0),
+            Vec2::new(self.rect.width(), self.rect.height()) * self.pixels_per_point,
+        )
+        .expand(2.0 * self.reach + self.feather);
+        let clipped = crate::ribbon::clip(&points, bounds, false, |(da, aa), (db, ab), t| {
+            (
+                da + (db - da) * t,
+                std::array::from_fn(|i| aa[i] + (ab[i] - aa[i]) * t),
+            )
+        });
+        for points in clipped {
+            self.ribbon_run(&points);
+        }
+    }
+
+    fn ribbon_run(&mut self, points: &[(Vec2, (f32, [f32; 3]))]) {
+        let points = crate::ribbon::distinct(points.iter().copied(), false);
         if points.len() < 2 {
             return;
         }
@@ -471,14 +494,7 @@ impl Mesh<'_> {
         let sides: Vec<(Vec2, Vec2, f32, [f32; 3])> = points
             .iter()
             .zip(offsets)
-            .map(|(&(p, world), offset)| {
-                (
-                    p + offset,
-                    p - offset,
-                    self.depth.depth(world, 0.0),
-                    self.anchor(world),
-                )
-            })
+            .map(|(&(p, (depth, anchor)), offset)| (p + offset, p - offset, depth, anchor))
             .collect();
         let (plus, minus) = ([self.reach, 0.0, 0.0, 0.0], [-self.reach, 0.0, 0.0, 0.0]);
         for pair in sides.windows(2) {
@@ -1184,6 +1200,30 @@ mod tests {
         // The two quads share their vertices at the bend: nothing overlaps, nothing gaps.
         assert_eq!(vertices[2][..2], vertices[7][..2]);
         assert_eq!(vertices[5][..2], vertices[6][..2]);
+    }
+
+    #[test]
+    fn a_ribbon_clips_enormous_projected_segments_to_the_canvas() {
+        let camera = Camera::default();
+        let depth = DepthMap::for_camera(&camera, rect(), 100.0);
+        let mut mesh = mesh(&camera, &depth);
+        let run = [
+            (Vec3::new(-100.0, 0.0, 0.0), egui::pos2(-1e9, 300.0)),
+            (Vec3::new(100.0, 0.0, 0.0), egui::pos2(1e9, 300.0)),
+        ];
+        mesh.ribbon(&run);
+        let vertices = vertices_of(&mesh);
+        assert_eq!(vertices.len(), 6);
+        assert!(
+            vertices
+                .iter()
+                .all(|v| v[..2].iter().all(|x| x.is_finite() && x.abs() < 2000.0))
+        );
+        assert!(
+            vertices
+                .iter()
+                .all(|v| v[7..10].iter().all(|x| x.is_finite()))
+        );
     }
 
     #[test]

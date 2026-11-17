@@ -307,6 +307,12 @@ impl Camera {
         })
     }
 
+    /// In perspective, how far the near clipping plane is from the eye, toward the center:
+    /// nothing nearer the eye is drawn. `None` in orthographic.
+    pub fn near_distance(&self, rect: Rect) -> Option<f32> {
+        self.eye_distance(rect).map(|d| NEAR * d)
+    }
+
     /// World point `p` in view coordinates, from the center: across the screen, up it, and
     /// toward the viewer.
     pub fn view(&self, p: Vec3) -> Vec3 {

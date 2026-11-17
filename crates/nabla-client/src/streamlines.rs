@@ -570,7 +570,9 @@ impl Mesh<'_> {
         // The tolerance in world units: a part of a device pixel, at the zoom where the
         // point is.
         let tolerance = |p: [f64; 2]| {
-            let scale = camera.scale_at(plane(p), rect).unwrap_or(camera.scale);
+            let scale = camera
+                .scale_at(plane(camera, p), rect)
+                .unwrap_or(camera.scale);
             TOLERANCE / (scale * pixels_per_point)
         };
         let mut run: Vec<Vec3> = Vec::new();
@@ -586,9 +588,9 @@ impl Mesh<'_> {
                         self.stretch(&mut run);
                     } else {
                         if run.is_empty() {
-                            run.push(plane(q));
+                            run.push(plane(camera, q));
                         }
-                        run.push(plane(p));
+                        run.push(plane(camera, p));
                     }
                 }
                 previous = Some(p);
@@ -615,7 +617,7 @@ impl Mesh<'_> {
         let (camera, rect) = (self.camera, self.rect);
         let inside =
             |p: [f64; 2]| min[0] <= p[0] && p[0] <= max[0] && min[1] <= p[1] && p[1] <= max[1];
-        let screen = |p: [f64; 2]| camera.project(plane(p), rect);
+        let screen = |p: [f64; 2]| camera.project(plane(camera, p), rect);
         for line in &streamlines.lines {
             for (k, arrow) in line.arrows.iter().enumerate() {
                 if !inside(arrow.position) {
@@ -638,13 +640,13 @@ impl Mesh<'_> {
                     .map(|p| (p - at).length())
                     .fold(f32::INFINITY, f32::min);
                 let beside = camera
-                    .scale_at(plane(arrow.position), rect)
+                    .scale_at(plane(camera, arrow.position), rect)
                     .map_or(f32::INFINITY, |scale| arrow.clearance * scale);
                 let opacity = smoothstep(ROOM_MIN, ROOM_FULL, room)
                     * smoothstep(CLEARANCE_MIN, CLEARANCE_FULL, beside);
                 if opacity > 0.0 {
                     self.arrow(
-                        Vec2::new(arrow.position[0] as f32, arrow.position[1] as f32),
+                        camera.local(arrow.position[0], arrow.position[1]),
                         Vec2::new(arrow.direction[0] as f32, arrow.direction[1] as f32),
                         opacity,
                     );
@@ -654,9 +656,9 @@ impl Mesh<'_> {
     }
 }
 
-/// The point `p` of the plane, as the camera takes it.
-fn plane(p: [f64; 2]) -> Vec3 {
-    Vec3::plane(Vec2::new(p[0] as f32, p[1] as f32))
+/// The point `p` of the world's plane, as `camera` takes it: from its floating origin.
+fn plane(camera: &Camera, p: [f64; 2]) -> Vec3 {
+    Vec3::plane(camera.local(p[0], p[1]))
 }
 
 fn smoothstep(from: f32, to: f32, x: f32) -> f32 {
@@ -691,7 +693,8 @@ pub fn paint(
     Some(egui_wgpu::Callback::new_paint_callback(
         rect,
         Callback {
-            bodies: streamlines.bodies.clone(),
+            // At their places from the floating origin, as the vertices' world points are.
+            bodies: camera.local_bodies(&streamlines.bodies),
             uniforms: to_bytes(&uniforms),
             vertices,
         },
@@ -712,7 +715,12 @@ fn build(
         return None;
     }
     let fade = ((facing - field::MIN_FACING) / (field::FULL_FACING - field::MIN_FACING)).min(1.0);
+    // The part of the plane in view, in the world's coordinates, as the lines are.
     let (min, max) = field::region(camera, rect)?;
+    let (min, max) = (
+        [min[0] + camera.origin[0], min[1] + camera.origin[1]],
+        [max[0] + camera.origin[0], max[1] + camera.origin[1]],
+    );
     let depth_given = depth.is_some();
     // Without a scene to share the depth of, a map of the plane in view, as the bands'.
     let span = (max[0] - min[0]).max(max[1] - min[1]);

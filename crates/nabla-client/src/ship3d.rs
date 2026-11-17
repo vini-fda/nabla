@@ -988,6 +988,7 @@ mod tests {
         let position = egui::vec2(1.5, -0.5);
         for perspective in [false, true] {
             let camera = Camera {
+                origin: [0.0, 0.0],
                 center: Vec3::new(1.0, -1.0, 0.2),
                 scale: 40.0,
                 orbit: Orbit {

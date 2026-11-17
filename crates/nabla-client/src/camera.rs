@@ -8,16 +8,34 @@
 //! toward the default viewer. The default view looks straight down at the plane from +z,
 //! with +y up the screen: the 2D view.
 //! Screen convention: positive y points down (egui).
+//!
+//! Floating origin: what the camera takes and gives is not the world's coordinates but offsets
+//! from its [`Camera::origin`], a point of the world near what is in view, held in double
+//! precision. Single precision spaces the world's places ever more coarsely farther from its
+//! origin, about `0.004` units apart out at `50000`, which a close view would show as shaking;
+//! offsets from a point nearby are spaced finely wherever the view is. A place of the world goes
+//! in through [`Camera::local`], and comes out through [`Camera::absolute`]. When the view has
+//! moved far from the origin, [`Camera::rebase`] moves the origin to a point near it.
 
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 use std::ops::{Add, Mul, Neg, Sub};
 
 use egui::{Pos2, Rect, Vec2};
 
+use crate::world::CelestialBody;
+
 /// The least and greatest zoom, in pixels per world unit: every way of zooming stays within
 /// them.
 const MIN_SCALE: f32 = 0.01;
 const MAX_SCALE: f32 = 1000.0;
+
+/// The spacing of the points the origin may be at, in world units.
+///
+/// It is also how far the center may get from the origin along either axis before the origin
+/// moves. A power of two, so that the points, and the center's offset from the new one, are
+/// exact. The center stays within `1.5` of it of the origin, where single precision spaces
+/// places by at most `1.2e-4`, an eighth of a pixel at the closest zoom.
+pub const ORIGIN_GRID: f64 = 1024.0;
 
 /// A point or direction in the world.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -185,7 +203,10 @@ const NEAR: f32 = 0.02;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Camera {
-    /// World point that maps to the screen rect's center; the camera orbits around it.
+    /// The point of the world that the camera's places are offsets from: the floating origin.
+    pub origin: [f64; 2],
+    /// The point that maps to the screen rect's center, as an offset from the origin; the
+    /// camera orbits around it.
     pub center: Vec3,
     /// Screen pixels per world unit, on the plane through the center that faces the viewer.
     /// Always positive.
@@ -198,6 +219,7 @@ pub struct Camera {
 impl Default for Camera {
     fn default() -> Self {
         Self {
+            origin: [0.0, 0.0],
             center: Vec3::ZERO,
             scale: 4.0,
             orbit: Orbit::TOP,
@@ -207,6 +229,71 @@ impl Default for Camera {
 }
 
 impl Camera {
+    /// The point `(x, y)` of the world, as an offset from the origin: the place the camera
+    /// takes for it.
+    pub fn local(&self, x: f64, y: f64) -> Vec2 {
+        Vec2::new((x - self.origin[0]) as f32, (y - self.origin[1]) as f32)
+    }
+
+    /// The point of the world at the camera's place `p`.
+    pub fn absolute(&self, p: Vec2) -> [f64; 2] {
+        [
+            self.origin[0] + f64::from(p.x),
+            self.origin[1] + f64::from(p.y),
+        ]
+    }
+
+    /// `bodies`, each at its place as an offset from the origin: the bodies as the drawing,
+    /// which works in the camera's places, takes them.
+    pub fn local_bodies(&self, bodies: &[CelestialBody]) -> Vec<CelestialBody> {
+        bodies
+            .iter()
+            .map(|body| {
+                let p = self.local(f64::from(body.position[0]), f64::from(body.position[1]));
+                CelestialBody {
+                    position: [p.x, p.y],
+                    ..body.clone()
+                }
+            })
+            .collect()
+    }
+
+    /// Center the view on the point `(x, y)` of the world, moving the origin first if that
+    /// point is far from it, so that the center is never rounded coarsely on the way.
+    pub fn look_at(&mut self, x: f64, y: f64) {
+        let far = |offset: f64| offset.abs() > 1.5 * ORIGIN_GRID;
+        if far(x - self.origin[0]) || far(y - self.origin[1]) {
+            self.origin = [x, y].map(|c| (c / ORIGIN_GRID).round() * ORIGIN_GRID);
+        }
+        let center = self.local(x, y);
+        self.center = Vec3::new(center.x, center.y, self.center.z);
+    }
+
+    /// Move the origin to the point of its grid nearest the center, if the center has got
+    /// farther than [`ORIGIN_GRID`] from it along an axis, keeping the view as it is. Whatever
+    /// holds places from before must take them again, as offsets from the new origin. Whether
+    /// it moved.
+    pub fn rebase(&mut self) -> bool {
+        let shift = |c: f32| {
+            if f64::from(c).abs() > ORIGIN_GRID {
+                (f64::from(c) / ORIGIN_GRID).round() * ORIGIN_GRID
+            } else {
+                0.0
+            }
+        };
+        let (dx, dy) = (shift(self.center.x), shift(self.center.y));
+        if dx == 0.0 && dy == 0.0 {
+            return false;
+        }
+        self.origin = [self.origin[0] + dx, self.origin[1] + dy];
+        self.center = Vec3::new(
+            self.center.x - dx as f32,
+            self.center.y - dy as f32,
+            self.center.z,
+        );
+        true
+    }
+
     /// In perspective, how far the eye is from the center, toward the viewer: as far as
     /// makes the plane through the center facing the viewer [`Self::scale`] pixels per world
     /// unit in `rect`, as in orthographic, so switching projections keeps it the same size.
@@ -394,6 +481,7 @@ mod tests {
     /// A tilted view, not along any axis.
     fn tilted() -> Camera {
         Camera {
+            origin: [0.0, 0.0],
             center: Vec3::new(1.0, -2.0, 0.5),
             scale: 25.0,
             orbit: Orbit {
@@ -421,6 +509,7 @@ mod tests {
         for orbit in [Orbit::TOP, tilted().orbit] {
             for perspective in [false, true] {
                 let cam = Camera {
+                    origin: [0.0, 0.0],
                     center: Vec3::new(3.0, -2.5, 0.0),
                     scale: 25.0,
                     orbit,
@@ -611,6 +700,81 @@ mod tests {
         // Side views keep +z up the screen.
         for axis in [Vec3::X, -Vec3::X, Vec3::Y, -Vec3::Y] {
             assert_near3(Orbit::facing(axis).basis()[1], Vec3::Z);
+        }
+    }
+
+    #[test]
+    fn a_view_far_out_is_as_fine_as_one_near_the_origin() {
+        // At the closest zoom, 50000 units out, where single precision spaces the world's own
+        // places about 0.004 apart, four pixels here: from the floating origin, points land
+        // exactly where they do at the same offset from the world's origin, and points a
+        // thousandth of a unit apart are a pixel apart.
+        for orbit in [Orbit::TOP, tilted().orbit] {
+            for perspective in [false, true] {
+                let camera = |x: f64, y: f64| {
+                    let mut camera = Camera {
+                        scale: MAX_SCALE,
+                        orbit,
+                        perspective,
+                        ..Camera::default()
+                    };
+                    camera.look_at(x, y);
+                    camera
+                };
+                let (far_x, far_y) = (50_000.25, -49_999.75);
+                let far = camera(far_x, far_y);
+                // The same view at the same offset from the world's origin as the far one's
+                // from its own.
+                let (near_x, near_y) = (far_x - far.origin[0], far_y - far.origin[1]);
+                let near = camera(near_x, near_y);
+                assert_eq!(near.origin, [0.0, 0.0]);
+                for k in 0..20 {
+                    let d = 1e-3 * f64::from(k);
+                    let at = |camera: &Camera, x: f64, y: f64| {
+                        camera
+                            .world_to_screen(camera.local(x + d, y - 0.5 * d), rect())
+                            .expect("in front of the eye")
+                    };
+                    let (p, q) = (at(&near, near_x, near_y), at(&far, far_x, far_y));
+                    assert_eq!(p, q);
+                    if orbit == Orbit::TOP && !perspective {
+                        let moved = q.x - at(&far, far_x - d, far_y).x;
+                        assert!((moved - MAX_SCALE * d as f32).abs() < 1e-2, "{moved}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn moving_the_origin_keeps_the_view() {
+        for perspective in [false, true] {
+            let mut cam = Camera {
+                perspective,
+                ..tilted()
+            };
+            cam.look_at(40_000.5, 1.0);
+            assert!(cam.origin[0] > 39_000.0, "{:?}", cam.origin);
+            // Panned far, so that the center has left the origin's cell.
+            cam.pan_by_screen(Vec2::new(-80_000.0, 30_000.0));
+            let points = [(40_000.0, 1.0), (43_500.25, -1_200.5), (41_000.0, 900.0)];
+            let before: Vec<_> = points
+                .iter()
+                .map(|&(x, y)| cam.world_to_screen(cam.local(x, y), rect()))
+                .collect();
+            let (origin, center) = (cam.origin, cam.center);
+            assert!(cam.rebase(), "the center was {center:?}");
+            assert_ne!(cam.origin, origin);
+            assert!(f64::from(cam.center.x).abs() <= ORIGIN_GRID);
+            assert!(f64::from(cam.center.y).abs() <= ORIGIN_GRID);
+            for (&(x, y), before) in points.iter().zip(before) {
+                let after = cam.world_to_screen(cam.local(x, y), rect());
+                match (before, after) {
+                    (Some(b), Some(a)) => assert_near(b.to_vec2(), a.to_vec2(), 1e-2),
+                    (b, a) => assert_eq!(b.is_some(), a.is_some()),
+                }
+            }
+            assert!(!cam.rebase(), "once is enough");
         }
     }
 

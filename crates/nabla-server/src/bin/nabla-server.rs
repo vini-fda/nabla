@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! nabla-server [--bind 0.0.0.0:4433] [--world vacuum|planet|planet-moon|FILE.toml]
-//!              [--tick-rate 60] [--arena 1000] [--max-pilots 16] [--no-ship-collisions]
+//!              [--tick-rate 60] [--arena 50000] [--max-pilots 16] [--no-ship-collisions]
 //!              [--cert cert.pem --key key.pem] [--name localhost --name 192.168.0.5]
 //!              [--password-file FILE]
 //! ```
@@ -48,7 +48,7 @@ async fn run() -> Result<(), String> {
         "0.0.0.0:4433".parse().map_err(|_bad| "bind")?,
     )?;
     let tick_rate: u32 = parsed(&args, "--tick-rate", 60)?;
-    let arena: f64 = parsed(&args, "--arena", 1000.0)?;
+    let arena: f64 = parsed(&args, "--arena", nabla_sim::world::DEFAULT_ARENA_HALF_SIDE)?;
     let max_pilots: usize = parsed(&args, "--max-pilots", nabla_sim::world::MAX_PILOTS)?;
     let name = flag(&args, "--world").unwrap_or_else(|| "planet-moon".to_owned());
     let mut world = world(&name, tick_rate, arena, nabla_sim::world::MAX_PILOTS)?;

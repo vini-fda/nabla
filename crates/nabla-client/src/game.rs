@@ -946,34 +946,44 @@ mod tests {
     fn saves_current_state_and_reloads_collision_world() {
         let mut world = crate::world::Preset::PlanetAndMoon.world();
         world.gravity_constant = 2.5;
+        // The classic crash, in the world's own units: the ship starts 20/7 planet radii out
+        // to the planet's left, heading straight at it at about nine times the circular speed
+        // at its surface.
+        let planet = world.bodies[0].clone();
+        let (body, radius) = (planet.position.map(f64::from), f64::from(planet.radius));
+        let start = 20.0 / 7.0 * radius;
+        let incoming = 9.0 * (world.gravity_constant * planet.mass / radius).sqrt();
         world.players[0].state = State {
-            x: -20.0,
-            y: -12.0,
-            vx: 100.0,
+            x: body[0] - start,
+            y: body[1],
+            vx: incoming,
             ..State::default()
         };
-        let body = world.bodies[0].position;
         let mut game = Game::in_world(world.case(), world.clone());
         let (lo, hi) = game.view_bounds();
+        let moon = &world.bodies[1];
         assert!(
-            lo[1] <= -19.0 && hi[0] >= 14.5,
+            lo[1] <= body[1] - radius && hi[0] >= f64::from(moon.position[0] + moon.radius),
             "initial view includes planet and moon"
         );
-        // The crash's claims: the hull reaches the planet's surface (a center distance of
-        // ~7.1), and no sample of the flight, crashed and scraping as it tumbles, sinks
-        // into it.
+        // The crash's claims: the hull reaches the planet's surface (a center distance just
+        // above its radius), and no sample of the flight, crashed and scraping as it tumbles,
+        // sinks into it. It flies for four times as long as the straight run to the surface.
+        let dt = 0.017;
+        let flight = 4.0 * (start - radius) / incoming;
         let mut closest = f64::INFINITY;
-        for _ in 0..30 {
-            game.advance(0.017, Input::default(), Steering::Raw);
+        for _ in 0..(flight / dt).ceil() as usize {
+            game.advance(dt, Input::default(), Steering::Raw);
             let s = game.state();
-            closest = closest.min((s.x - f64::from(body[0])).hypot(s.y - f64::from(body[1])));
+            closest = closest.min((s.x - body[0]).hypot(s.y - body[1]));
         }
+        let hull = f64::from(world.players[0].radius);
         assert!(
-            closest < 7.4 && closest > 6.99,
+            closest < radius + 0.4 * hull && closest > radius - 0.01 * hull,
             "the hull scrapes the surface without passing into the planet: {closest}"
         );
         assert!(
-            game.state().vx.hypot(game.state().vy) < 100.0,
+            game.state().vx.hypot(game.state().vy) < incoming,
             "the crash bleeds the incoming speed: {:?}",
             game.state()
         );
@@ -1012,10 +1022,10 @@ mod tests {
                 Steering::Raw,
             );
             let s = resumed.state();
-            closest = closest.min((s.x - f64::from(body[0])).hypot(s.y - f64::from(body[1])));
+            closest = closest.min((s.x - body[0]).hypot(s.y - body[1]));
         }
         assert!(
-            closest > 6.99,
+            closest > radius - 0.01 * hull,
             "rebuilt colliders stop thrust into the planet: {closest}"
         );
         let restarted = Game::in_world(world.case(), world.clone());
@@ -1385,13 +1395,17 @@ mod tests {
     #[test]
     fn the_default_policy_lands_in_the_default_world() {
         let world = crate::world::Preset::PlanetAndMoon.world();
+        let task = world.players[0].task;
         let mut g = Game::in_world(world.case(), world);
         g.engage(Objective::ReachTarget, &nabla_core::solutions::SOLUTIONS[0])
             .expect("engages");
-        for _ in 0..600 {
-            g.advance(0.02, Input::default(), Steering::Raw);
+        for _ in 0..task.max_steps {
+            if g.landed().is_some() {
+                break;
+            }
+            g.advance(task.params.h, Input::default(), Steering::Raw);
         }
-        assert!(g.landed().is_some(), "landed within 12 s");
+        assert!(g.landed().is_some(), "landed within the task's steps");
         assert_eq!(g.take_fault(), None);
     }
 

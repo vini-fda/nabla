@@ -475,13 +475,18 @@ impl DepthMap {
     fn with_reach(camera: &Camera, canvas: egui::Rect, position: egui::Vec2, reach: f32) -> Self {
         let toward_viewer = camera.orbit.toward_viewer();
         let origin = Vec3::plane(position).dot(toward_viewer);
-        let perspective = camera.eye_distance(canvas).map(|d| {
-            let eye = camera.center.dot(toward_viewer) + d;
-            let distance = eye - origin;
-            // Not behind the eye, if the eye is inside the reach.
-            let near = (distance - reach).max(0.01 * reach);
-            (eye, near, (distance + reach).max(2.0 * near))
-        });
+        let perspective = camera
+            .eye_distance(canvas)
+            .zip(camera.near_distance(canvas))
+            .map(|(d, nearest)| {
+                let eye = camera.center.dot(toward_viewer) + d;
+                let distance = eye - origin;
+                // When the eye is inside the reach, as near as the camera draws: a near plane
+                // set by the reach, which the bodies make hundreds of units, would cut through
+                // a ship the eye has come up close to.
+                let near = (distance - reach).max(nearest);
+                (eye, near, (distance + reach).max(2.0 * near))
+            });
         Self {
             toward_viewer,
             origin,
@@ -981,6 +986,45 @@ mod tests {
         }
     }
 
+    /// Up close in perspective, with the bodies of a big world in reach, the whole ship lies
+    /// between the clipping planes: a near plane set by the reach clipped its front.
+    #[test]
+    fn a_ship_seen_up_close_is_not_clipped_by_far_bodies() {
+        let canvas = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 800.0));
+        let renderer = renderer(1.2);
+        let ship = egui::vec2(-750.0, 150.0);
+        let planet = crate::world::CelestialBody {
+            position: [0.0, -600.0],
+            radius: 350.0,
+            name: "planet".to_owned(),
+            mass: 857_500.0,
+        };
+        for scale in [40.0, 300.0, 1000.0] {
+            let camera = Camera {
+                center: Vec3::plane(ship),
+                scale,
+                perspective: true,
+                orbit: crate::camera::Orbit {
+                    azimuth: 0.7,
+                    elevation: 0.4,
+                },
+                ..Camera::default()
+            };
+            let map = DepthMap::for_world(
+                &renderer,
+                &camera,
+                canvas,
+                &[ship],
+                1.0,
+                std::slice::from_ref(&planet),
+            );
+            for nearer in [1.2, -1.2] {
+                let depth = map.depth(Vec3::plane(ship), nearer);
+                assert!(0.0 < depth && depth < 1.0, "scale {scale}: depth {depth}");
+            }
+        }
+    }
+
     #[test]
     fn clip_matrix_agrees_with_the_camera_and_depth_map() {
         use crate::camera::Orbit;
@@ -988,6 +1032,7 @@ mod tests {
         let position = egui::vec2(1.5, -0.5);
         for perspective in [false, true] {
             let camera = Camera {
+                origin: [0.0, 0.0],
                 center: Vec3::new(1.0, -1.0, 0.2),
                 scale: 40.0,
                 orbit: Orbit {

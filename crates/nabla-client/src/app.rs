@@ -1462,7 +1462,10 @@ impl ViewerApp {
                 self.gizmo.orbit(&mut self.camera, response.drag_delta());
                 ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
             } else if !self.follow_ship {
-                self.camera.pan_by_screen(response.drag_delta());
+                let at = response
+                    .interact_pointer_pos()
+                    .unwrap_or_else(|| rect.center());
+                self.camera.pan_by_screen(response.drag_delta(), at, rect);
             }
         }
 
@@ -1533,7 +1536,7 @@ impl ViewerApp {
         touched: bool,
         touch: Option<egui::Pos2>,
     ) -> Option<(egui::Pos2, f64)> {
-        let ship = world(s.x, s.y);
+        let ship = self.camera.local(s.x, s.y);
         let on_screen = self.camera.world_to_screen(ship, rect)?;
         let pointer = if !self.pointing_now() {
             None
@@ -1596,9 +1599,7 @@ impl ViewerApp {
 
         // Follow mode: keep the ship centered. Done after pan/zoom so zoom
         // still adjusts scale around the (now ship-centered) view.
-        if self.follow_ship {
-            self.camera.center = Vec3::plane(world(state.x, state.y));
-        }
+        let bodies = self.place_camera(&state, &self.game.world.bodies.clone());
 
         if self.show_field {
             self.draw_field(ui, painter, rect, debug);
@@ -1610,7 +1611,7 @@ impl ViewerApp {
             crate::field::contours(
                 &self.camera,
                 rect,
-                &self.game.world.bodies,
+                &bodies,
                 self.game.world.gravity_constant,
                 &mut self.field_contours,
             );
@@ -1632,24 +1633,24 @@ impl ViewerApp {
         }
         let (replay, k, offset) = self.shown();
         if debug {
-            crate::planets::draw_debug(painter, &self.camera, rect, &self.game.world.bodies);
+            crate::planets::draw_debug(painter, &self.camera, rect, &bodies);
         }
         match &self.ship3d {
             Some((renderer, plume)) if !debug => {
-                let position = world(state.x, state.y);
+                let position = self.camera.local(state.x, state.y);
                 let depth = DepthMap::for_world(
                     renderer,
                     &self.camera,
                     rect,
                     &[position],
                     self.circumradius,
-                    &self.game.world.bodies,
+                    &bodies,
                 );
                 painter.add(crate::planets::paint(
                     &self.camera,
                     rect,
                     &depth,
-                    &self.game.world.bodies,
+                    &bodies,
                     renderer.gamma_output,
                 ));
                 if let Some(callback) = ship3d::paint_callback(
@@ -1690,9 +1691,25 @@ impl ViewerApp {
                 rect,
                 std::slice::from_ref(&state),
                 self.game.world.players[0].radius,
-                &self.game.world.bodies,
+                &bodies,
             );
         }
+    }
+
+    /// Settle the camera for the frame: on the ship in `state` while following it, and with
+    /// its floating origin near the view. `bodies` as the drawing takes them then, at their
+    /// places from that origin.
+    pub(super) fn place_camera(
+        &mut self,
+        state: &State,
+        bodies: &[crate::world::CelestialBody],
+    ) -> Vec<crate::world::CelestialBody> {
+        if self.follow_ship {
+            self.camera.look_at(state.x, state.y);
+        }
+        // Panning may have taken the view far from the floating origin.
+        self.camera.rebase();
+        self.camera.local_bodies(bodies)
     }
 
     /// The flat view's draws, with no 3D renderer in front: the path flown, the goal, the
@@ -1743,7 +1760,7 @@ impl ViewerApp {
                 painter,
                 &self.camera,
                 rect,
-                world(state.x, state.y),
+                self.camera.local(state.x, state.y),
                 state.theta as f32,
                 hull,
                 stroke,
@@ -1803,12 +1820,17 @@ impl ViewerApp {
         if gravity == 0.0 {
             return;
         }
-        if let Some(callback) = crate::field::paint(&self.camera, rect, &world.bodies, gravity) {
+        let bodies = self.camera.local_bodies(&world.bodies);
+        if let Some(callback) = crate::field::paint(&self.camera, rect, &bodies, gravity) {
             painter.add(callback);
         }
         if debug {
-            // Cloned so the contour cache can be borrowed mutably alongside.
-            let world = self.flight_world().clone();
+            // Cloned so the contour cache can be borrowed mutably alongside, with the bodies
+            // at their places from the floating origin.
+            let world = crate::world::World {
+                bodies,
+                ..self.flight_world().clone()
+            };
             crate::field::draw_contours(
                 painter,
                 &self.camera,
@@ -1831,7 +1853,7 @@ impl ViewerApp {
         k: usize,
         now: &State,
     ) {
-        let point = |s: &State| Vec3::plane(world(s.x, s.y));
+        let point = |s: &State| Vec3::plane(self.camera.local(s.x, s.y));
         let full = screen_path(&self.camera, rect, replay.states().iter().map(point));
         let traveled = screen_path(
             &self.camera,
@@ -1852,7 +1874,10 @@ impl ViewerApp {
         }
 
         let start = replay.case.start;
-        if let Some(start) = self.camera.world_to_screen(world(start.x, start.y), rect) {
+        if let Some(start) = self
+            .camera
+            .world_to_screen(self.camera.local(start.x, start.y), rect)
+        {
             painter.circle_stroke(
                 start,
                 START_RADIUS_PX,
@@ -1870,7 +1895,7 @@ impl ViewerApp {
         // an ellipse once the view is tilted.
         let tolerance = task.tolerance.position as f32;
         if tolerance * self.camera.scale > 1.5 {
-            let center = world(task.goal.x, task.goal.y);
+            let center = self.camera.local(task.goal.x, task.goal.y);
             let circle = (0..=64).map(|i| {
                 let angle = i as f32 / 64.0 * std::f32::consts::TAU;
                 Vec3::plane(center + egui::Vec2::angled(angle) * tolerance)
@@ -1882,7 +1907,7 @@ impl ViewerApp {
 
         let Some(goal) = self
             .camera
-            .world_to_screen(world(task.goal.x, task.goal.y), rect)
+            .world_to_screen(self.camera.local(task.goal.x, task.goal.y), rect)
         else {
             return;
         };
@@ -1918,14 +1943,14 @@ impl ViewerApp {
         let color = GOAL_COLOR.gamma_multiply(if reached { 0.35 } else { 1.0 });
         let tolerance = task.tolerance.position as f32;
         if tolerance * self.camera.scale > 1.5 {
-            let center = world(task.goal.x, task.goal.y);
+            let center = self.camera.local(task.goal.x, task.goal.y);
             let circle = (0..64).map(|i| {
                 let angle = i as f32 / 64.0 * std::f32::consts::TAU;
                 Vec3::plane(center + egui::Vec2::angled(angle) * tolerance)
             });
             overlays.stroke(circle, true, 1.0, color);
         }
-        let goal = world(task.goal.x, task.goal.y);
+        let goal = self.camera.local(task.goal.x, task.goal.y);
         overlays.ring(goal, GOAL_RADIUS_PX, 2.0, color);
         overlays.disc(goal, 2.0, color);
     }
@@ -1987,7 +2012,7 @@ impl ViewerApp {
         let color = GOAL_COLOR.gamma_multiply(if reached { 0.35 } else { 1.0 });
         let Some(goal) = self
             .camera
-            .world_to_screen(world(task.goal.x, task.goal.y), rect)
+            .world_to_screen(self.camera.local(task.goal.x, task.goal.y), rect)
         else {
             return;
         };
@@ -2049,7 +2074,7 @@ impl ViewerApp {
         } else {
             AIM_COLOR
         };
-        let center = world(s.x, s.y);
+        let center = self.camera.local(s.x, s.y);
         let Some(ship) = self.camera.world_to_screen(center, rect) else {
             return;
         };
@@ -2076,7 +2101,7 @@ impl ViewerApp {
         const LENGTH: f32 = 2.5;
         const RING_RADIUS_PX: f32 = 4.0;
         let color = SAS_HEADING_COLOR.gamma_multiply(0.7);
-        let center = world(s.x, s.y);
+        let center = self.camera.local(s.x, s.y);
         let tip = center + egui::Vec2::angled(heading as f32) * LENGTH * self.circumradius;
         let ends = [center, tip].map(|p| self.camera.world_to_screen(p, rect));
         if let [Some(from), Some(to)] = ends {
@@ -2101,7 +2126,7 @@ impl ViewerApp {
         let inner = area.shrink(INSET);
         let Some(goal) = self
             .camera
-            .world_to_screen(world(task.goal.x, task.goal.y), rect)
+            .world_to_screen(self.camera.local(task.goal.x, task.goal.y), rect)
         else {
             return;
         };
@@ -2150,7 +2175,7 @@ impl ViewerApp {
         state: &State,
         circumradius: f32,
     ) {
-        let center = world(state.x, state.y);
+        let center = self.camera.local(state.x, state.y);
         let (sin_theta, cos_theta) = (state.theta as f32).sin_cos();
         let (sin_2alpha, cos_2alpha) = (2.0 * self.alpha).sin_cos();
 
@@ -2191,7 +2216,7 @@ impl ViewerApp {
         k: usize,
         state: &State,
     ) {
-        let position = Vec3::plane(world(state.x, state.y));
+        let position = Vec3::plane(self.camera.local(state.x, state.y));
         let (Some(center), Some(scale)) = (
             self.camera.project(position, rect),
             self.camera.scale_at(position, rect),
@@ -2202,7 +2227,7 @@ impl ViewerApp {
         // World vectors -> screen vectors through the camera's view at the ship. Use fixed
         // pixel scales (decoupled from camera zoom) so arrows behave like HUD indicators.
         let arrow = |v: [f64; 2], px_per_unit: f32, color: egui::Color32| {
-            let v = Vec3::plane(world(v[0], v[1]));
+            let v = Vec3::plane(vector(v[0], v[1]));
             let Some(screen) = self.camera.screen_vector_at(position, v, rect) else {
                 return;
             };
@@ -2806,7 +2831,8 @@ fn toggled(steering: Steering) -> Steering {
     }
 }
 
-fn world(x: f64, y: f64) -> egui::Vec2 {
+/// The world vector `(x, y)`, a direction or a rate, which the floating origin does not move.
+fn vector(x: f64, y: f64) -> egui::Vec2 {
     egui::vec2(x as f32, y as f32)
 }
 
@@ -2873,7 +2899,8 @@ fn path_strokes(
     k: usize,
     now: &State,
 ) {
-    let point = |s: &State| Vec3::plane(world(s.x, s.y));
+    let camera = *overlays.camera();
+    let point = |s: &State| Vec3::plane(camera.local(s.x, s.y));
     overlays.stroke(replay.states().iter().map(point), false, 1.0, PATH_COLOR);
     overlays.stroke(
         replay.states_up_to(k).chain([now]).map(point),
@@ -2883,7 +2910,7 @@ fn path_strokes(
     );
     let start = replay.case.start;
     overlays.ring(
-        world(start.x, start.y),
+        camera.local(start.x, start.y),
         START_RADIUS_PX,
         1.5,
         TRAVELED_COLOR,
@@ -2894,10 +2921,7 @@ fn path_strokes(
 /// from the camera's side, with a margin.
 fn fit_camera(camera: &mut Camera, bounds: ([f64; 2], [f64; 2]), rect: egui::Rect) {
     let (lo, hi) = bounds;
-    camera.center = Vec3::plane(world(
-        f64::midpoint(lo[0], hi[0]),
-        f64::midpoint(lo[1], hi[1]),
-    ));
+    camera.look_at(f64::midpoint(lo[0], hi[0]), f64::midpoint(lo[1], hi[1]));
     // The bounds' extent across and up the screen, in world units.
     let [right, up, _] = camera.orbit.basis();
     let corners = [
@@ -2906,7 +2930,7 @@ fn fit_camera(camera: &mut Camera, bounds: ([f64; 2], [f64; 2]), rect: egui::Rec
         [lo[0], hi[1]],
         [hi[0], hi[1]],
     ]
-    .map(|[x, y]| Vec3::plane(world(x, y)));
+    .map(|[x, y]| Vec3::plane(camera.local(x, y)));
     let extent = |axis: Vec3| {
         let along = corners.map(|c| c.dot(axis));
         along.iter().copied().fold(f32::MIN, f32::max)

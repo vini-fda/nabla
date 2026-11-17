@@ -12,6 +12,15 @@
 //! bodies. A block of several is one Rapier world, built for this tick from the states of its
 //! ships and dropped after it, in which their hulls collide. The arena's wall comes last.
 //!
+//! Rapier computes in single precision, so a block's Rapier world is laid out around an origin
+//! of its own: the point of a grid of [`ORIGIN_GRID`] units nearest its first ship
+//! ([`Dynamics::origin`]). What Rapier holds are offsets from it, of at most about half the grid
+//! and the block's extent, whose spacing is as fine anywhere in the arena as near its center;
+//! the states going in and out are double precision. So the arena's size costs no precision.
+//! The grid is what keeps a ship's flight from following the place of another ship it does not
+//! touch: a client that predicts that ship only nearly lays the block out around the same
+//! point, short of the rare tick when the two places fall on either side of a line of the grid.
+//!
 //! That a block is stepped by itself is what makes the map local by construction: the ships of a
 //! part of the world that is a union of blocks get the same states whether the rest of the world
 //! is there or not.
@@ -29,9 +38,20 @@ use crate::ship::wall;
 use crate::steering::wrap;
 use crate::world::{Arena, CelestialBody, World};
 
-/// The most substeps a block of several ships takes in a tick. Up to it, no two points of two
-/// hulls close by more than [`STEP`] of the hull radius in a substep.
-pub const MAX_SUBSTEPS: usize = 64;
+/// The most substeps a block of several ships takes in a tick.
+///
+/// Up to it, no two points of two hulls close by more than [`STEP`] of the hull radius in a
+/// substep. It covers two ships of the bundled kind closing head-on at the top speed the
+/// largest arena allows them in a vacuum, on any course, with room for their spin.
+pub const MAX_SUBSTEPS: usize = 512;
+
+/// The spacing of the points a block's Rapier world may be laid out around, in world units.
+///
+/// A power of two, so that the points and the offsets from them are exact in either precision.
+/// Offsets are then within half of it of the block's first ship, where single precision spaces
+/// places by at most `1.5e-5` units, as in an arena of half side 128 laid out around the world's
+/// origin.
+pub const ORIGIN_GRID: f64 = 256.0;
 
 /// `delta`, as a fraction of the hull radius: how far two points of two hulls may close in one
 /// substep.
@@ -116,6 +136,11 @@ fn narrow(x: f64) -> f64 {
     } else {
         f64::from(y)
     }
+}
+
+/// The place `(x, y)` of the world as an offset from `origin`, in a block's Rapier world.
+fn local(origin: [f64; 2], x: f64, y: f64) -> Vector {
+    Vector::new((x - origin[0]) as f32, (y - origin[1]) as f32)
 }
 
 fn is_finite(s: &State) -> bool {
@@ -390,14 +415,15 @@ impl Dynamics {
             ..PhysicsWorld::default()
         };
         world.integration_parameters.max_ccd_substeps = 8;
-        self.insert_bodies(&mut world, ships, block);
+        let origin = Self::origin(ships, block);
+        self.insert_bodies(&mut world, ships, block, origin);
         let handles: Vec<(RigidBodyHandle, ColliderHandle)> = block
             .iter()
             .map(|&i| {
                 let (s, p) = (&ships[i].state, &ships[i].params);
                 let (body, collider) = world.insert(
                     RigidBodyBuilder::dynamic()
-                        .translation(Vector::new(s.x as f32, s.y as f32))
+                        .translation(local(origin, s.x, s.y))
                         .rotation(wrap(s.theta) as f32)
                         .linvel(Vector::new(s.vx as f32, s.vy as f32))
                         .angvel(s.omega as f32)
@@ -424,8 +450,16 @@ impl Dynamics {
         // The model's heading is not wrapped, and Rapier's rotation is.
         let mut thetas: Vec<f64> = block.iter().map(|&i| ships[i].state.theta).collect();
         let mut turned = vec![(0.0_f32, 0.0_f32); block.len()];
+        let block_controls: Vec<Control> = block.iter().map(|&i| controls[i]).collect();
         for _ in 0..count {
-            self.substep_forces(&mut world, controls, block, &handles, &mut turned, delta_t);
+            self.substep_forces(
+                &mut world,
+                &block_controls,
+                &handles,
+                &mut turned,
+                delta_t,
+                origin,
+            );
             world.step();
             for (n, theta) in thetas.iter_mut().enumerate() {
                 let body = &world.bodies[handles[n].0];
@@ -439,8 +473,8 @@ impl Dynamics {
         for (n, &i) in block.iter().enumerate() {
             let body = &world.bodies[handles[n].0];
             ships[i].state = State {
-                x: f64::from(body.translation().x),
-                y: f64::from(body.translation().y),
+                x: origin[0] + f64::from(body.translation().x),
+                y: origin[1] + f64::from(body.translation().y),
                 vx: f64::from(body.linvel().x),
                 vy: f64::from(body.linvel().y),
                 theta: thetas[n],
@@ -449,8 +483,28 @@ impl Dynamics {
         }
     }
 
-    /// The bodies a substep of the tick could bring the ships of `block` to, in `world`.
-    fn insert_bodies(&self, world: &mut PhysicsWorld, ships: &[Member], block: &[usize]) {
+    /// The origin of the Rapier world of `block`: the point of the grid of [`ORIGIN_GRID`]
+    /// nearest the place of its first ship whose place is a number, or the world's origin if
+    /// none is.
+    pub fn origin(ships: &[Member], block: &[usize]) -> [f64; 2] {
+        block
+            .iter()
+            .map(|&i| [ships[i].state.x, ships[i].state.y])
+            .find(|p| p.iter().all(|x| x.is_finite()))
+            .map_or([0.0, 0.0], |p| {
+                p.map(|x| (x / ORIGIN_GRID).round() * ORIGIN_GRID)
+            })
+    }
+
+    /// The bodies a substep of the tick could bring the ships of `block` to, in `world`, laid
+    /// out around `origin`.
+    fn insert_bodies(
+        &self,
+        world: &mut PhysicsWorld,
+        ships: &[Member],
+        block: &[usize],
+        origin: [f64; 2],
+    ) {
         let reach = self.reach(ships, block, 1);
         for body in &self.bodies {
             let within = f64::from(body.radius) + self.radius + self.skin() + reach;
@@ -462,27 +516,31 @@ impl Dynamics {
             });
             if in_reach {
                 world.insert(
-                    RigidBodyBuilder::fixed().translation(Vector::from_array(body.position)),
+                    RigidBodyBuilder::fixed().translation(local(
+                        origin,
+                        f64::from(body.position[0]),
+                        f64::from(body.position[1]),
+                    )),
                     ColliderBuilder::ball(body.radius).friction(0.5),
                 );
             }
         }
     }
 
-    /// The force and torque each ship of `block` takes in one substep of `world`: thrust along
-    /// its mid-substep heading, and gravity. It notes the angle and spin each had before, for
-    /// the heading's wrap after the step.
+    /// The force and torque each ship of a block takes in one substep of `world`, under its
+    /// control in `controls`: thrust along its mid-substep heading, and gravity at its place in
+    /// the world, which is its offset in `world` from `origin`. It notes the angle and spin each
+    /// had before, for the heading's wrap after the step.
     fn substep_forces(
         &self,
         world: &mut PhysicsWorld,
         controls: &[Control],
-        block: &[usize],
         handles: &[(RigidBodyHandle, ColliderHandle)],
         turned: &mut [(f32, f32)],
         delta_t: f32,
+        origin: [f64; 2],
     ) {
-        for (n, &i) in block.iter().enumerate() {
-            let u = controls[i];
+        for (n, &u) in controls.iter().enumerate() {
             let body = &mut world.bodies[handles[n].0];
             let old_angle = body.rotation().angle();
             let old_omega = body.angvel();
@@ -491,7 +549,10 @@ impl Dynamics {
             let [ax, ay] = gravity_acceleration(
                 &self.bodies,
                 self.gravity_constant,
-                [f64::from(position.x), f64::from(position.y)],
+                [
+                    origin[0] + f64::from(position.x),
+                    origin[1] + f64::from(position.y),
+                ],
             );
             body.reset_forces(false);
             body.reset_torques(false);

@@ -8,16 +8,34 @@
 //! toward the default viewer. The default view looks straight down at the plane from +z,
 //! with +y up the screen: the 2D view.
 //! Screen convention: positive y points down (egui).
+//!
+//! Floating origin: what the camera takes and gives is not the world's coordinates but offsets
+//! from its [`Camera::origin`], a point of the world near what is in view, held in double
+//! precision. Single precision spaces the world's places ever more coarsely farther from its
+//! origin, about `0.004` units apart out at `50000`, which a close view would show as shaking;
+//! offsets from a point nearby are spaced finely wherever the view is. A place of the world goes
+//! in through [`Camera::local`], and comes out through [`Camera::absolute`]. When the view has
+//! moved far from the origin, [`Camera::rebase`] moves the origin to a point near it.
 
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 use std::ops::{Add, Mul, Neg, Sub};
 
 use egui::{Pos2, Rect, Vec2};
 
+use crate::world::CelestialBody;
+
 /// The least and greatest zoom, in pixels per world unit: every way of zooming stays within
 /// them.
 const MIN_SCALE: f32 = 0.01;
 const MAX_SCALE: f32 = 1000.0;
+
+/// The spacing of the points the origin may be at, in world units.
+///
+/// It is also how far the center may get from the origin along either axis before the origin
+/// moves. A power of two, so that the points, and the center's offset from the new one, are
+/// exact. The center stays within `1.5` of it of the origin, where single precision spaces
+/// places by at most `1.2e-4`, an eighth of a pixel at the closest zoom.
+pub const ORIGIN_GRID: f64 = 1024.0;
 
 /// A point or direction in the world.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -185,7 +203,10 @@ const NEAR: f32 = 0.02;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Camera {
-    /// World point that maps to the screen rect's center; the camera orbits around it.
+    /// The point of the world that the camera's places are offsets from: the floating origin.
+    pub origin: [f64; 2],
+    /// The point that maps to the screen rect's center, as an offset from the origin; the
+    /// camera orbits around it.
     pub center: Vec3,
     /// Screen pixels per world unit, on the plane through the center that faces the viewer.
     /// Always positive.
@@ -198,6 +219,7 @@ pub struct Camera {
 impl Default for Camera {
     fn default() -> Self {
         Self {
+            origin: [0.0, 0.0],
             center: Vec3::ZERO,
             scale: 4.0,
             orbit: Orbit::TOP,
@@ -207,6 +229,74 @@ impl Default for Camera {
 }
 
 impl Camera {
+    /// The point `(x, y)` of the world, as an offset from the origin: the place the camera
+    /// takes for it.
+    pub fn local(&self, x: f64, y: f64) -> Vec2 {
+        Vec2::new((x - self.origin[0]) as f32, (y - self.origin[1]) as f32)
+    }
+
+    /// The point of the world at the camera's place `p`.
+    pub fn absolute(&self, p: Vec2) -> [f64; 2] {
+        [
+            self.origin[0] + f64::from(p.x),
+            self.origin[1] + f64::from(p.y),
+        ]
+    }
+
+    /// `bodies`, each at its place as an offset from the origin: the bodies as the drawing,
+    /// which works in the camera's places, takes them.
+    pub fn local_bodies(&self, bodies: &[CelestialBody]) -> Vec<CelestialBody> {
+        bodies
+            .iter()
+            .map(|body| {
+                let p = self.local(f64::from(body.position[0]), f64::from(body.position[1]));
+                CelestialBody {
+                    position: [p.x, p.y],
+                    ..body.clone()
+                }
+            })
+            .collect()
+    }
+
+    /// Center the view on the point `(x, y)` of the world's plane, moving the origin first if
+    /// that point is far from it, so that the center is never rounded coarsely on the way.
+    ///
+    /// The center goes onto the plane: zooming about a point off the screen's center in a
+    /// tilted view lifts the center off it, and a center left above or below the point would
+    /// put it off the screen's center.
+    pub fn look_at(&mut self, x: f64, y: f64) {
+        let far = |offset: f64| offset.abs() > 1.5 * ORIGIN_GRID;
+        if far(x - self.origin[0]) || far(y - self.origin[1]) {
+            self.origin = [x, y].map(|c| (c / ORIGIN_GRID).round() * ORIGIN_GRID);
+        }
+        self.center = Vec3::plane(self.local(x, y));
+    }
+
+    /// Move the origin to the point of its grid nearest the center, if the center has got
+    /// farther than [`ORIGIN_GRID`] from it along an axis, keeping the view as it is. Whatever
+    /// holds places from before must take them again, as offsets from the new origin. Whether
+    /// it moved.
+    pub fn rebase(&mut self) -> bool {
+        let shift = |c: f32| {
+            if f64::from(c).abs() > ORIGIN_GRID {
+                (f64::from(c) / ORIGIN_GRID).round() * ORIGIN_GRID
+            } else {
+                0.0
+            }
+        };
+        let (dx, dy) = (shift(self.center.x), shift(self.center.y));
+        if dx == 0.0 && dy == 0.0 {
+            return false;
+        }
+        self.origin = [self.origin[0] + dx, self.origin[1] + dy];
+        self.center = Vec3::new(
+            self.center.x - dx as f32,
+            self.center.y - dy as f32,
+            self.center.z,
+        );
+        true
+    }
+
     /// In perspective, how far the eye is from the center, toward the viewer: as far as
     /// makes the plane through the center facing the viewer [`Self::scale`] pixels per world
     /// unit in `rect`, as in orthographic, so switching projections keeps it the same size.
@@ -215,6 +305,12 @@ impl Camera {
         self.perspective.then(|| {
             rect.width().max(rect.height()) / (2.0 * self.scale * (FIELD_OF_VIEW / 2.0).tan())
         })
+    }
+
+    /// In perspective, how far the near clipping plane is from the eye, toward the center:
+    /// nothing nearer the eye is drawn. `None` in orthographic.
+    pub fn near_distance(&self, rect: Rect) -> Option<f32> {
+        self.eye_distance(rect).map(|d| NEAR * d)
     }
 
     /// World point `p` in view coordinates, from the center: across the screen, up it, and
@@ -349,11 +445,29 @@ impl Camera {
         Some(Vec2::new(p.x, p.y))
     }
 
-    /// Translate the view by a screen-space drag delta (egui convention:
-    /// positive y is downward). The scene appears to follow the cursor.
-    pub fn pan_by_screen(&mut self, delta: Vec2) {
-        let [right, up, _] = self.orbit.basis();
-        self.center = self.center - right * (delta.x / self.scale) + up * (delta.y / self.scale);
+    /// How far to move the center along the plane `z = 0` for the point of it seen at `from`
+    /// to be seen at `to`, or `None` when either sees no point of it. Moving the center along
+    /// the plane moves the eye with it, and so moves what every pixel sees of the plane by as
+    /// much.
+    fn plane_shift(&self, from: Pos2, to: Pos2, rect: Rect) -> Option<Vec3> {
+        let seen_from = self.screen_to_world(from, rect)?;
+        let seen_to = self.screen_to_world(to, rect)?;
+        Some(Vec3::plane(seen_from - seen_to))
+    }
+
+    /// Translate the view by a drag of `delta` on the screen (egui convention: positive y is
+    /// downward) that ends at `at`: the point of the plane `z = 0` that was under the cursor
+    /// stays under it, and the center keeps its height, on the plane.
+    ///
+    /// With the cursor where it sees no point of the plane, above the horizon in
+    /// perspective, the point at the screen's center follows the drag instead; edge on to
+    /// the plane, the view slides across the screen only.
+    pub fn pan_by_screen(&mut self, delta: Vec2, at: Pos2, rect: Rect) {
+        let shift = self
+            .plane_shift(at - delta, at, rect)
+            .or_else(|| self.plane_shift(rect.center(), rect.center() + delta, rect))
+            .unwrap_or_else(|| self.orbit.basis()[0] * (-delta.x / self.scale));
+        self.center = self.center + shift;
     }
 
     /// Set the zoom to `scale` pixels per world unit, within its limits.
@@ -361,17 +475,22 @@ impl Camera {
         self.scale = scale.clamp(MIN_SCALE, MAX_SCALE);
     }
 
-    /// Multiply scale by `factor`, keeping the world point under
-    /// `screen_anchor` (on the plane through the center facing the viewer) fixed on screen.
+    /// Multiply scale by `factor`, keeping the point of the plane `z = 0` under
+    /// `screen_anchor` fixed on screen, and the center at its height, on the plane.
+    ///
+    /// Keeping the point of the plane through the center facing the viewer fixed, as it once
+    /// did, moved the center off the plane in a tilted view, a little with each step, until in
+    /// perspective the eye could sink below the plane and see nothing of it. Where the anchor
+    /// sees no point of the plane, above the horizon or edge on, the zoom is about the center.
     pub fn zoom_at(&mut self, factor: f32, screen_anchor: Pos2, rect: Rect) {
         if !factor.is_finite() || factor <= 0.0 {
             return;
         }
-        let world_anchor = self.screen_to_view_plane(screen_anchor, rect);
+        let before = self.screen_to_world(screen_anchor, rect);
         self.scale = (self.scale * factor).clamp(MIN_SCALE, MAX_SCALE);
-        let [right, up, _] = self.orbit.basis();
-        let d = (screen_anchor - rect.center()) / self.scale;
-        self.center = world_anchor - right * d.x + up * d.y;
+        if let (Some(before), Some(after)) = (before, self.screen_to_world(screen_anchor, rect)) {
+            self.center = self.center + Vec3::plane(before - after);
+        }
     }
 }
 
@@ -394,6 +513,7 @@ mod tests {
     /// A tilted view, not along any axis.
     fn tilted() -> Camera {
         Camera {
+            origin: [0.0, 0.0],
             center: Vec3::new(1.0, -2.0, 0.5),
             scale: 25.0,
             orbit: Orbit {
@@ -421,6 +541,7 @@ mod tests {
         for orbit in [Orbit::TOP, tilted().orbit] {
             for perspective in [false, true] {
                 let cam = Camera {
+                    origin: [0.0, 0.0],
                     center: Vec3::new(3.0, -2.5, 0.0),
                     scale: 25.0,
                     orbit,
@@ -543,37 +664,70 @@ mod tests {
         );
     }
 
+    /// The cameras the zoom and pan tests try: from above, tilted, and tilted in
+    /// perspective, each centered on the plane, where every way of moving the view keeps it.
+    fn on_the_plane() -> [Camera; 3] {
+        let tilted = Camera {
+            center: Vec3::new(1.0, -2.0, 0.0),
+            ..tilted()
+        };
+        [Camera::default(), tilted, in_perspective(tilted)]
+    }
+
     #[test]
     fn zoom_anchor_is_fixed_point() {
-        for mut cam in [Camera::default(), tilted(), in_perspective(tilted())] {
+        for mut cam in on_the_plane() {
             let r = rect();
             let anchor = Pos2::new(200.0, 150.0);
-            let world_before = cam.screen_to_view_plane(anchor, r);
+            let world_before = cam.screen_to_world(anchor, r).expect("below the horizon");
             cam.zoom_at(2.5, anchor, r);
             assert_near(
-                project(&cam, world_before).to_vec2(),
+                cam.world_to_screen(world_before, r)
+                    .expect("in front")
+                    .to_vec2(),
                 anchor.to_vec2(),
-                1e-3,
+                1e-2,
             );
+            assert_eq!(cam.center.z, 0.0);
+        }
+    }
+
+    /// Zooming in about one corner and out about another, again and again, keeps the
+    /// center on the plane, and the plane in view: the center left it a little with each
+    /// step, until in perspective the eye sank below it and the screen went black.
+    #[test]
+    fn zooming_about_the_corners_keeps_the_plane_in_view() {
+        let r = rect();
+        for mut cam in on_the_plane() {
+            for _ in 0..20 {
+                cam.zoom_at(1.5, r.left_top() + egui::vec2(60.0, 220.0), r);
+                cam.zoom_at(1.0 / 1.4, r.right_bottom() - egui::vec2(60.0, 40.0), r);
+            }
+            assert_eq!(cam.center.z, 0.0);
+            let seen = cam
+                .screen_to_world(r.center(), r)
+                .expect("the plane at the screen's center");
+            assert_near(seen, Vec2::new(cam.center.x, cam.center.y), 1e-2);
         }
     }
 
     #[test]
     fn pan_is_invertible_and_follows_the_cursor() {
-        for mut cam in [Camera::default(), tilted(), in_perspective(tilted())] {
-            // On the plane through the center facing the viewer, which pans with the cursor
-            // in perspective too.
-            let [right, up, _] = cam.orbit.basis();
-            let point = cam.center + right * 2.0 + up * 3.0;
-            let before = project(&cam, point);
+        let r = rect();
+        let (at, delta) = (Pos2::new(300.0, 400.0), Vec2::new(40.0, -30.0));
+        for mut cam in on_the_plane() {
+            let grabbed = cam
+                .screen_to_world(at - delta, r)
+                .expect("below the horizon");
             let center = cam.center;
-            cam.pan_by_screen(Vec2::new(40.0, -30.0));
+            cam.pan_by_screen(delta, at, r);
             assert_near(
-                project(&cam, point).to_vec2(),
-                (before + Vec2::new(40.0, -30.0)).to_vec2(),
-                1e-3,
+                cam.world_to_screen(grabbed, r).expect("in front").to_vec2(),
+                at.to_vec2(),
+                1e-2,
             );
-            cam.pan_by_screen(Vec2::new(-40.0, 30.0));
+            assert_eq!(cam.center.z, 0.0);
+            cam.pan_by_screen(-delta, at - delta, r);
             assert_near3(cam.center, center);
         }
     }
@@ -611,6 +765,101 @@ mod tests {
         // Side views keep +z up the screen.
         for axis in [Vec3::X, -Vec3::X, Vec3::Y, -Vec3::Y] {
             assert_near3(Orbit::facing(axis).basis()[1], Vec3::Z);
+        }
+    }
+
+    #[test]
+    fn a_view_far_out_is_as_fine_as_one_near_the_origin() {
+        // At the closest zoom, 50000 units out, where single precision spaces the world's own
+        // places about 0.004 apart, four pixels here: from the floating origin, points land
+        // exactly where they do at the same offset from the world's origin, and points a
+        // thousandth of a unit apart are a pixel apart.
+        for orbit in [Orbit::TOP, tilted().orbit] {
+            for perspective in [false, true] {
+                let camera = |x: f64, y: f64| {
+                    let mut camera = Camera {
+                        scale: MAX_SCALE,
+                        orbit,
+                        perspective,
+                        ..Camera::default()
+                    };
+                    camera.look_at(x, y);
+                    camera
+                };
+                let (far_x, far_y) = (50_000.25, -49_999.75);
+                let far = camera(far_x, far_y);
+                // The same view at the same offset from the world's origin as the far one's
+                // from its own.
+                let (near_x, near_y) = (far_x - far.origin[0], far_y - far.origin[1]);
+                let near = camera(near_x, near_y);
+                assert_eq!(near.origin, [0.0, 0.0]);
+                for k in 0..20 {
+                    let d = 1e-3 * f64::from(k);
+                    let at = |camera: &Camera, x: f64, y: f64| {
+                        camera
+                            .world_to_screen(camera.local(x + d, y - 0.5 * d), rect())
+                            .expect("in front of the eye")
+                    };
+                    let (p, q) = (at(&near, near_x, near_y), at(&far, far_x, far_y));
+                    assert_eq!(p, q);
+                    if orbit == Orbit::TOP && !perspective {
+                        let moved = q.x - at(&far, far_x - d, far_y).x;
+                        assert!((moved - MAX_SCALE * d as f32).abs() < 1e-2, "{moved}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn looking_at_a_point_after_zooming_about_another_puts_it_at_the_screen_center() {
+        for perspective in [false, true] {
+            let mut camera = Camera {
+                perspective,
+                ..tilted()
+            };
+            camera.look_at(3.0, 4.0);
+            // Zooming in about a point away from the center lifts the center off the plane.
+            for _ in 0..10 {
+                camera.zoom_at(1.3, rect().min + egui::vec2(100.0, 80.0), rect());
+            }
+            camera.look_at(3.0, 4.0);
+            let on_screen = camera
+                .world_to_screen(Vec2::new(3.0, 4.0), rect())
+                .expect("the point looked at is in front of the eye");
+            assert_near(on_screen.to_vec2(), rect().center().to_vec2(), 1e-3);
+        }
+    }
+
+    #[test]
+    fn moving_the_origin_keeps_the_view() {
+        for perspective in [false, true] {
+            let mut cam = Camera {
+                perspective,
+                ..tilted()
+            };
+            cam.look_at(40_000.5, 1.0);
+            assert!(cam.origin[0] > 39_000.0, "{:?}", cam.origin);
+            // Panned far, so that the center has left the origin's cell.
+            cam.center = cam.center + Vec3::new(2_500.0, -1_700.0, 0.0);
+            let points = [(40_000.0, 1.0), (43_500.25, -1_200.5), (41_000.0, 900.0)];
+            let before: Vec<_> = points
+                .iter()
+                .map(|&(x, y)| cam.world_to_screen(cam.local(x, y), rect()))
+                .collect();
+            let (origin, center) = (cam.origin, cam.center);
+            assert!(cam.rebase(), "the center was {center:?}");
+            assert_ne!(cam.origin, origin);
+            assert!(f64::from(cam.center.x).abs() <= ORIGIN_GRID);
+            assert!(f64::from(cam.center.y).abs() <= ORIGIN_GRID);
+            for (&(x, y), before) in points.iter().zip(before) {
+                let after = cam.world_to_screen(cam.local(x, y), rect());
+                match (before, after) {
+                    (Some(b), Some(a)) => assert_near(b.to_vec2(), a.to_vec2(), 1e-2),
+                    (b, a) => assert_eq!(b.is_some(), a.is_some()),
+                }
+            }
+            assert!(!cam.rebase(), "once is enough");
         }
     }
 

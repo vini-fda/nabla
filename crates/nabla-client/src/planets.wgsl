@@ -9,8 +9,11 @@ struct Vertex {
     @location(0) normal: vec3<f32>,
 };
 
-@vertex fn vs_main(@location(0) position: vec3<f32>, @location(1) normal: vec3<f32>) -> Vertex {
+// `normal`: a point of the unit sphere, which is also its normal. `body`: the body's center
+// in the plane and its radius.
+@vertex fn vs_main(@location(0) normal: vec3<f32>, @location(1) body: vec3<f32>) -> Vertex {
     var out: Vertex;
+    let position = vec3<f32>(body.xy, 0.0) + body.z * normal;
     out.position = uniforms.clip_from_world * vec4<f32>(position, 1.0);
     out.normal = normal;
     return out;

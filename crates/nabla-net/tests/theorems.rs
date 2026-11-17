@@ -34,17 +34,37 @@ fn apart(world: World) -> World {
 }
 
 /// A world whose spawn templates face each other in pairs across `gap`, at rest, so that ships
-/// that thrust meet in the middle.
+/// that thrust meet in the middle. Among bodies they meet near the arena's corner farthest from
+/// the bodies' center of mass, where the pull is weak enough that they collide before they fall
+/// onto a body.
 fn facing(preset: Preset, spawns: usize, gap: f64) -> World {
     let mut world = preset
         .world()
         .multiplayer(60, 1000.0, spawns)
         .expect("a valid world");
+    let half_side = world.arena.as_ref().expect("an arena").half_side;
+    let total: f64 = world.bodies.iter().map(|b| b.mass).sum();
+    let (cx, cy) = if total > 0.0 {
+        let mean = |axis: usize| {
+            world
+                .bodies
+                .iter()
+                .map(|b| b.mass * f64::from(b.position[axis]))
+                .sum::<f64>()
+                / total
+        };
+        // The far corner, a tenth of the arena in from each wall.
+        let corner = |m: f64| -m.signum() * 0.9 * half_side;
+        (corner(mean(0)), corner(mean(1)))
+    } else {
+        // In a vacuum, anywhere well inside the walls.
+        (0.3 * half_side, 0.3 * half_side)
+    };
     for (n, player) in world.players.iter_mut().enumerate() {
         let left = n % 2 == 0;
         player.state = State {
-            x: 300.0 + if left { -gap / 2.0 } else { gap / 2.0 },
-            y: 300.0 + 5.0 * (n / 2) as f64,
+            x: cx + if left { -gap / 2.0 } else { gap / 2.0 },
+            y: cy + 5.0 * (n / 2) as f64,
             theta: if left { 0.0 } else { std::f64::consts::PI },
             ..State::default()
         };

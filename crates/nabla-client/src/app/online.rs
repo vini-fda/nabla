@@ -12,7 +12,7 @@ use nabla_net::wire::{MAX_PASSWORD, MAX_USERNAME, Password, RosterEntry, Usernam
 
 use super::{
     Aim, GridStyle, Input, ViewerApp, canvas_buttons, draw_grid, fit_camera, icons, keys, palette,
-    path_strokes, screen_path, world,
+    path_strokes, screen_path,
 };
 use crate::camera::Vec3;
 use crate::canvas_buttons::Button;
@@ -734,7 +734,7 @@ impl ViewerApp {
             return;
         };
         for view in views.iter().rev() {
-            let center = world(view.state.x, view.state.y);
+            let center = self.camera.local(view.state.x, view.state.y);
             let (Some(pilot), Some(ship)) = (
                 online.pilot(view.ship),
                 self.camera.world_to_screen(center, rect),
@@ -837,7 +837,7 @@ impl ViewerApp {
             return None;
         };
         let world_data = online.world()?;
-        let bodies = world_data.bodies.clone();
+        let world_bodies = world_data.bodies.clone();
         let gravity = world_data.gravity_constant;
         let half_side = world_data.arena.map_or(0.0, |arena| arena.half_side);
         let hull = world_data.hull_radius();
@@ -848,9 +848,7 @@ impl ViewerApp {
             GridStyle::faint(ui.visuals())
         };
         let own = views[0].state;
-        if self.follow_ship {
-            self.camera.center = Vec3::plane(world(own.x, own.y));
-        }
+        let bodies = self.place_camera(&own, &world_bodies);
         if self.show_field {
             self.draw_field(ui, painter, rect, debug);
         }
@@ -869,7 +867,7 @@ impl ViewerApp {
         // The field's lines likewise: traced here, when the world has changed, and drawn at
         // once in the flat view, under the grid, where nothing hides them.
         if self.show_streamlines && gravity > 0.0 {
-            crate::streamlines::streamlines(&bodies, gravity, &mut self.streamlines);
+            crate::streamlines::streamlines(&world_bodies, gravity, &mut self.streamlines);
             if debug {
                 self.draw_streamlines(ui, painter, rect, None);
             }
@@ -878,7 +876,7 @@ impl ViewerApp {
             draw_grid(painter, &self.camera, rect, &style);
         }
         // The arena's wall.
-        let corner = |x: f64, y: f64| Vec3::plane(world(x, y));
+        let corner = |x: f64, y: f64| Vec3::plane(self.camera.local(x, y));
         let wall = [
             (-half_side, -half_side),
             (half_side, -half_side),
@@ -902,7 +900,12 @@ impl ViewerApp {
         };
         let ships: Vec<_> = views
             .iter()
-            .map(|view| (world(view.state.x, view.state.y), view.state.theta as f32))
+            .map(|view| {
+                (
+                    self.camera.local(view.state.x, view.state.y),
+                    view.state.theta as f32,
+                )
+            })
             .collect();
         let positions: Vec<_> = ships.iter().map(|&(position, _)| position).collect();
         let depth = DepthMap::for_world(renderer, &self.camera, rect, &positions, hull, &bodies);

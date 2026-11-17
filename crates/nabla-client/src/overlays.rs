@@ -246,6 +246,11 @@ impl<'a> Overlays<'a> {
         }
     }
 
+    /// The camera the strokes are seen through, whose places they are given in.
+    pub fn camera(&self) -> &'a Camera {
+        self.camera
+    }
+
     /// A stroke `width` points thick in `color` through world `points` on the plane, `closed`
     /// back on its first point or open: the line the flat view draws as an egui stroke of
     /// the same width and color, with the same pixel of anti-aliasing. Each vertex is its

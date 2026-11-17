@@ -90,8 +90,10 @@ pub fn draw_grid(painter: &Painter, camera: &Camera, rect: Rect, style: &GridSty
     let Some((min, max, focus)) = region(camera, rect) else {
         return;
     };
-    let (world_min_x, world_max_x) = (min.x as f64, max.x as f64);
-    let (world_min_y, world_max_y) = (min.y as f64, max.y as f64);
+    // The region in the world's coordinates, which the lines are at round values of.
+    let [ox, oy] = camera.origin;
+    let (world_min_x, world_max_x) = (f64::from(min.x) + ox, f64::from(max.x) + ox);
+    let (world_min_y, world_max_y) = (f64::from(min.y) + oy, f64::from(max.y) + oy);
 
     // A tilted plane is foreshortened on screen by `facing` across the tilt, and not at all
     // along it: the spacing is a compromise between the two. In perspective, it is as at
@@ -136,11 +138,11 @@ pub fn draw_grid(painter: &Painter, camera: &Camera, rect: Rect, style: &GridSty
         }
     };
     let x_line = |x: f64, width: f32, color: Color32, reach: f32| {
-        let [a, b] = [world_min_y, world_max_y].map(|y| Vec2::new(x as f32, y as f32));
+        let [a, b] = [world_min_y, world_max_y].map(|y| camera.local(x, y));
         line(a, b, width, color, reach);
     };
     let y_line = |y: f64, width: f32, color: Color32, reach: f32| {
-        let [a, b] = [world_min_x, world_max_x].map(|x| Vec2::new(x as f32, y as f32));
+        let [a, b] = [world_min_x, world_max_x].map(|x| camera.local(x, y));
         line(a, b, width, color, reach);
     };
 
@@ -151,16 +153,13 @@ pub fn draw_grid(painter: &Painter, camera: &Camera, rect: Rect, style: &GridSty
         (minor_step, minor_color, reach / 2.0),
         (major_step, major_color, reach),
     ] {
-        let near = |range: (f64, f64), at: f32| {
+        let near = |range: (f64, f64), at: f64| {
             let half = f64::from(reach);
-            (
-                range.0.max(f64::from(at) - half),
-                range.1.min(f64::from(at) + half),
-            )
+            (range.0.max(at - half), range.1.min(at + half))
         };
-        let center = focus.map_or(Vec2::ZERO, |(focus, _)| focus);
-        let (x0, x1) = near((world_min_x, world_max_x), center.x);
-        let (y0, y1) = near((world_min_y, world_max_y), center.y);
+        let center = camera.absolute(focus.map_or(Vec2::ZERO, |(focus, _)| focus));
+        let (x0, x1) = near((world_min_x, world_max_x), center[0]);
+        let (y0, y1) = near((world_min_y, world_max_y), center[1]);
         for &x in &major_ticks(x0, x1, step) {
             x_line(x, 1.0, color, reach);
         }
@@ -229,8 +228,9 @@ fn draw_labels(
     major_step: f64,
     (min, max): (Vec2, Vec2),
 ) {
-    let (world_min_x, world_max_x) = (min.x as f64, max.x as f64);
-    let (world_min_y, world_max_y) = (min.y as f64, max.y as f64);
+    let [ox, oy] = camera.origin;
+    let (world_min_x, world_max_x) = (f64::from(min.x) + ox, f64::from(max.x) + ox);
+    let (world_min_y, world_max_y) = (f64::from(min.y) + oy, f64::from(max.y) + oy);
     let pinned = !camera.perspective && camera.orbit.is_near(Orbit::TOP, 1e-4);
     // Where the label of the axis point at `p` goes, if anywhere.
     let place = |p: Option<Pos2>| {
@@ -255,7 +255,7 @@ fn draw_labels(
         if x.abs() < major_step * 0.5 {
             continue; // skip origin label; the y-axis label slot covers it
         }
-        if let Some(p) = place(camera.world_to_screen(Vec2::new(x as f32, 0.0), rect)) {
+        if let Some(p) = place(camera.world_to_screen(camera.local(x, 0.0), rect)) {
             label(p, format_tick(x, major_step));
         }
     }
@@ -263,13 +263,13 @@ fn draw_labels(
         if y.abs() < major_step * 0.5 {
             continue;
         }
-        if let Some(p) = place(camera.world_to_screen(Vec2::new(0.0, y as f32), rect)) {
+        if let Some(p) = place(camera.world_to_screen(camera.local(0.0, y), rect)) {
             label(p, format_tick(y, major_step));
         }
     }
 
     // Origin label.
-    if let Some(p) = place(camera.world_to_screen(Vec2::ZERO, rect)) {
+    if let Some(p) = place(camera.world_to_screen(camera.local(0.0, 0.0), rect)) {
         label(p, "0".to_owned());
     }
 }

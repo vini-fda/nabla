@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use log::Level;
 
-use super::{RightView, Vec3, ViewerApp, input_row, palette, world};
+use super::{RightView, Vec3, ViewerApp, input_row, palette};
 use crate::controller_guide::{self, Icon};
 use crate::formula::{self, Formula};
 use crate::game::Objective;
@@ -550,8 +550,10 @@ impl ViewerApp {
         let draw = |target: Target, color, dashed| {
             let body = &self.flight_world().bodies[target.body];
             let radius = target.radius(self.flight_world()) as f32;
-            let circle =
-                OrbitCircle::for_view(&self.camera, rect, egui::Vec2::from(body.position), radius);
+            let center = self
+                .camera
+                .local(f64::from(body.position[0]), f64::from(body.position[1]));
+            let circle = OrbitCircle::for_view(&self.camera, rect, center, radius);
             for i in 0..ORBIT_SEGMENTS {
                 if dashed && i % 4 >= 2 {
                     continue;
@@ -616,7 +618,7 @@ impl ViewerApp {
         let state = self.flight_state();
         let points = std::iter::once([state.x, state.y])
             .chain(self.prediction.path.iter().skip(first).copied())
-            .map(|p| Vec3::plane(world(p[0], p[1])));
+            .map(|p| Vec3::plane(self.camera.local(p[0], p[1])));
         for run in self.camera.project_polyline(points, rect) {
             painter.add(egui::Shape::line(run, egui::Stroke::new(2.0, palette::RED)));
         }
@@ -644,7 +646,10 @@ impl ViewerApp {
             let circle = OrbitCircle::for_view(
                 &self.camera,
                 rect,
-                egui::Vec2::from(flight.bodies[target.body].position),
+                self.camera.local(
+                    f64::from(flight.bodies[target.body].position[0]),
+                    f64::from(flight.bodies[target.body].position[1]),
+                ),
                 radius,
             );
             let point = |i: usize| circle.point(i);
@@ -682,7 +687,7 @@ impl ViewerApp {
         let state = self.flight_state();
         let points = std::iter::once([state.x, state.y])
             .chain(self.prediction.path.iter().skip(first).copied())
-            .map(|p| Vec3::plane(world(p[0], p[1])));
+            .map(|p| Vec3::plane(self.camera.local(p[0], p[1])));
         overlays.stroke(points, false, 2.0, palette::RED);
     }
 }

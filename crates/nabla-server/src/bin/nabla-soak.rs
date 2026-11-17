@@ -47,7 +47,12 @@ async fn go() -> Result<bool, String> {
     };
     let ceiling: f64 = parsed(&args, "--ceiling", 0.6)?;
     let seed: u64 = parsed(&args, "--seed", 1)?;
-    let world = world(&name, 60, 1000.0, nabla_sim::world::MAX_PILOTS)?;
+    let world = world(
+        &name,
+        60,
+        nabla_sim::world::DEFAULT_ARENA_HALF_SIDE,
+        nabla_sim::world::MAX_PILOTS,
+    )?;
     println!("{bots} bots for {seconds} s in {name}, each way {impairment:?}, seed {seed}");
     let outcomes = run(Soak {
         world,

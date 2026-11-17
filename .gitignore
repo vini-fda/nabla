@@ -6,7 +6,6 @@
 *.p12
 *.p8
 
-nabla-server
 password.txt
 addr.txt
 .claude/worktrees/

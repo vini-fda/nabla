@@ -35,5 +35,5 @@ On Linux, builds link with [mold](https://github.com/rui314/mold) through clang 
 
 ## Documentation
 
-- **[`docs/`](docs/)**: further knowledge for users and developers: [`docs/task.md`](docs/task.md) states the optimization task and the interface a solution implements; [`docs/multiplayer.md`](docs/multiplayer.md) covers running and joining a multiplayer server; [`docs/releasing.md`](docs/releasing.md) covers cutting a release.
+- **[`docs/`](docs/)**: further knowledge for users and developers: [`docs/control_problem.md`](docs/control_problem.md) states the optimization task and the interface a solution implements; [`docs/multiplayer.md`](docs/multiplayer.md) covers running and joining a multiplayer server; [`docs/releasing.md`](docs/releasing.md) covers cutting a release.
 - **[`specs/`](specs/)**: the formal specifications: Typst write-ups of the control problem ([`specs/main.typ`](specs/main.typ)) and of the multiplayer protocol ([`specs/multiplayer.typ`](specs/multiplayer.typ)), the thruster audio worklet and text fields on iOS Safari, and a TLA+ module ([`specs/tla/`](specs/tla/)) checked with SANY and TLC.

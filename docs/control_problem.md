@@ -4,31 +4,31 @@ This is a finite, discretized version of the ship control problem (`specs/main.t
 
 ## The problem
 
-A ship moves in the plane with state `s = (x, y, vx, vy, θ, ω)`:
+A ship moves in the plane with state `s = (x, y, vx, vy, theta, omega)`:
 
 ```text
-ẋ = vx,  ẏ = vy,  v̇x = F/m cos θ,  v̇y = F/m sin θ,  θ̇ = ω,  ω̇ = τ/I
+d(x)/dt = vx,  d(y)/dt = vy,  d(vx)/dt = F/m cos theta,  d(vy)/dt = F/m sin theta,  d(theta)/dt = omega,  d(omega)/dt = tau/I
 ```
 
-Every `h` seconds the controller reads the exact state and chooses a control `u = (F, τ)`, held
+Every `h` seconds the controller reads the exact state and chooses a control `u = (F, tau)`, held
 constant until the next step. The control must satisfy
 
 ```text
-0 ≤ F ≤ F_max,   |τ| ≤ τ_max      (checked exactly: no tolerance, no clamping)
+0 <= F <= F_max,   |tau| <= tau_max      (checked exactly: no tolerance, no clamping)
 ```
 
 The state then advances by the exact sampled-data map `step` in
 `crates/nabla-core/src/model.rs`: closed-form rotation, and translation computed by
-Gauss–Legendre quadrature, accurate to rounding.
+Gauss-Legendre quadrature, accurate to rounding.
 
 A case is solved at the first step `N` where the state lies in the target set around the goal
 `B`:
 
 ```text
-‖p − B‖ ≤ ε_p,   ‖v‖ ≤ ε_v,   |ω| ≤ ε_ω      (θ free)
+||p - B|| <= epsilon_p,   ||v|| <= epsilon_v,   |omega| <= epsilon_omega      (theta free)
 ```
 
-with `N ≤ N_max`. The case fails if the step budget runs out, if a control is inadmissible
+with `N <= N_max`. The case fails if the step budget runs out, if a control is inadmissible
 (including NaN or infinite), or if the controller panics.
 
 ### Where the numbers are
@@ -38,10 +38,10 @@ from its `Task`, so a solution should read them from there rather than hardcode 
 
 | symbol | meaning | in a `Task` | value for every case |
 |---|---|---|---|
-| `m, I, F_max, τ_max` | mass, inertia, thrust and torque limits | `task.params` | varies by case |
+| `m, I, F_max, tau_max` | mass, inertia, thrust and torque limits | `task.params` | varies by case |
 | `h` | sampling period | `task.params.h` | `suite::H` |
 | `B` | goal | `task.goal` | varies by case |
-| `ε_p, ε_v, ε_ω` | target-set size (position, speed, angular speed) | `task.tolerance` | `suite::TOLERANCE` |
+| `epsilon_p, epsilon_v, epsilon_omega` | target-set size (position, speed, angular speed) | `task.tolerance` | `suite::TOLERANCE` |
 | `N_max` | step budget | `task.max_steps` | `suite::MAX_STEPS` |
 
 ## What a solution is
@@ -60,7 +60,7 @@ impl Controller for Solution {
 }
 ```
 
-- One `Solution` is created per case, then `control` is called at `k = 0, 1, 2, …`.
+- One `Solution` is created per case, then `control` is called at `k = 0, 1, 2, ...`.
 - The solution may keep internal state (plans, modes), and may call `step` to predict the motion
   (e.g. for MPC).
 - Cases run in parallel, each on one thread with its own `Solution`. Do not share mutable state
@@ -77,7 +77,7 @@ impl Controller for Solution {
 - **holdout** (`suite::holdout`): random cases with a different seed. They are not scored. They
   exist so that a solution cannot just memorize the standard cases.
 
-Random cases (`suite::random`) vary the ship (`m, I, F_max, τ_max`), the goal, and the start
+Random cases (`suite::random`) vary the ship (`m, I, F_max, tau_max`), the goal, and the start
 position, speed, heading and spin, each uniformly within the ranges set there.
 
 **Score = the sum of `N` over the standard suite. Lower is better.**
@@ -90,8 +90,8 @@ To check robustness beyond the suites, run your controller on
 | name | idea |
 |---|---|
 | `flip_and_burn_tuned` | two-layer feedback: braking-aware velocity setpoint, square-root heading law, constants tuned by coordinate descent |
-| `mpc` | shrinking-horizon MPC on the exact model: seed plans from feedback laws, shortened by projected Gauss–Newton on the 5 terminal residuals, re-solved every step; every plan verified with `step` |
-| `mpc_bounded` | receding-horizon MPC with a hard bound on the planning work of every sample: a feedback law until the goal is within its horizon, then a plan corrected and shortened by projected Gauss–Newton as far as the budget goes; learns an unmodeled acceleration such as gravity from what its predictions miss, so it also lands in worlds with bodies |
+| `mpc` | shrinking-horizon MPC on the exact model: seed plans from feedback laws, shortened by projected Gauss-Newton on the 5 terminal residuals, re-solved every step; every plan verified with `step` |
+| `mpc_bounded` | receding-horizon MPC with a hard bound on the planning work of every sample: a feedback law until the goal is within its horizon, then a plan corrected and shortened by projected Gauss-Newton as far as the budget goes; learns an unmodeled acceleration such as gravity from what its predictions miss, so it also lands in worlds with bodies |
 
 To add one, list it in `SOLUTIONS` (`crates/nabla-core/src/solutions.rs`). `cargo test` checks
 that every solution still solves every case of both suites, and the app picks it up.

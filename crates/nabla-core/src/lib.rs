@@ -1,6 +1,6 @@
 //! The ship and the problem it is controlled to solve: a finite, discretized version of the
 //! ship control problem (come to rest at a point). A control policy is a [`Controller`]; the
-//! task is to find one that solves every test case in the fewest total steps. See `docs/task.md`.
+//! task is to find one that solves every test case in the fewest total steps. See `docs/control_problem.md`.
 //!
 //! * [`model`]: ship dynamics and the exact sampled-data step `Φ_h`.
 //! * [`problem`]: target set, the [`Controller`] interface and the simulation loop.

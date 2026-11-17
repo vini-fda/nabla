@@ -258,15 +258,18 @@ impl Camera {
             .collect()
     }
 
-    /// Center the view on the point `(x, y)` of the world, moving the origin first if that
-    /// point is far from it, so that the center is never rounded coarsely on the way.
+    /// Center the view on the point `(x, y)` of the world's plane, moving the origin first if
+    /// that point is far from it, so that the center is never rounded coarsely on the way.
+    ///
+    /// The center goes onto the plane: zooming about a point off the screen's center in a
+    /// tilted view lifts the center off it, and a center left above or below the point would
+    /// put it off the screen's center.
     pub fn look_at(&mut self, x: f64, y: f64) {
         let far = |offset: f64| offset.abs() > 1.5 * ORIGIN_GRID;
         if far(x - self.origin[0]) || far(y - self.origin[1]) {
             self.origin = [x, y].map(|c| (c / ORIGIN_GRID).round() * ORIGIN_GRID);
         }
-        let center = self.local(x, y);
-        self.center = Vec3::new(center.x, center.y, self.center.z);
+        self.center = Vec3::plane(self.local(x, y));
     }
 
     /// Move the origin to the point of its grid nearest the center, if the center has got
@@ -743,6 +746,26 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn looking_at_a_point_after_zooming_about_another_puts_it_at_the_screen_center() {
+        for perspective in [false, true] {
+            let mut camera = Camera {
+                perspective,
+                ..tilted()
+            };
+            camera.look_at(3.0, 4.0);
+            // Zooming in about a point away from the center lifts the center off the plane.
+            for _ in 0..10 {
+                camera.zoom_at(1.3, rect().min + egui::vec2(100.0, 80.0), rect());
+            }
+            camera.look_at(3.0, 4.0);
+            let on_screen = camera
+                .world_to_screen(Vec2::new(3.0, 4.0), rect())
+                .expect("the point looked at is in front of the eye");
+            assert_near(on_screen.to_vec2(), rect().center().to_vec2(), 1e-3);
         }
     }
 

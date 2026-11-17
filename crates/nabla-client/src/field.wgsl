@@ -46,21 +46,56 @@ fn potential(p: vec2<f32>) -> f32 {
     return phi;
 }
 
+/// The deepest of the bodies' surface potentials, `G M / R`, as a magnitude: the scale the
+/// glow toward the bodies is measured against, so it reads the same at any zoom.
+fn deepest_surface() -> f32 {
+    var deepest = 1e-12;
+    let count = u32(uniforms.params.y);
+    for (var i = 0u; i < count; i = i + 1u) {
+        let body = bodies[i];
+        deepest = max(deepest, uniforms.params.x * body.w / max(body.z, 1e-9));
+    }
+    return deepest;
+}
+
 // ln of the potential ratio between adjacent bands, matching the contour levels in field.rs.
 const LN_BAND: f32 = 0.3465735902799726; // ln(sqrt(2))
-// Band colors, gamma encoded like egui colors; alpha is applied on top.
-const DEEP: vec3<f32> = vec3<f32>(0.035, 0.060, 0.110);
-const LIGHT: vec3<f32> = vec3<f32>(0.090, 0.150, 0.260);
-const ALPHA: f32 = 0.5;
+// Band colors, gamma encoded like egui colors: the floor of a band, its crest along the
+// contour line, and the glow rising toward the bodies, which adds its light to the bands.
+const DEEP: vec3<f32> = vec3<f32>(0.022, 0.040, 0.085);
+const CREST: vec3<f32> = vec3<f32>(0.075, 0.170, 0.350);
+const GLOW: vec3<f32> = vec3<f32>(0.080, 0.270, 0.700);
+const ALPHA: f32 = 0.55;
+// How fast the crest falls away inside its contour line, as a part of a band, and how
+// sharply it rises toward it from outside.
+const FALL: f32 = 0.10;
+const RISE: f32 = 3.0;
+// The crest's average over a band, which it gives way to where a band is finer than the
+// pixels can show: `1 / (RISE + 1)`, and about half of `FALL`.
+const CREST_MEAN: f32 = 0.30;
+// How steeply the glow fades with the potential away from the bodies: as `(phi / phi_s)^k`
+// of the deepest surface potential, so `(R / r)^k` around a lone body.
+const GLOW_FALLOFF: f32 = 1.0;
+
+/// How bright a band's crest is at the band coordinate `x` (bands of the log-potential,
+/// growing toward the bodies), 0 to 1: rising toward each contour line from outside, the
+/// way the field lines fall, and dying away just within it, continuous across the line.
+/// `grain` is how much `x` changes over a pixel: where that is a good part of a band, the
+/// crests are finer than the pixels can show, and give way to their average.
+fn crest_at(x: f32, grain: f32) -> f32 {
+    let w = fract(x);
+    let shaped = max(pow(w, RISE), 1.0 - smoothstep(0.0, FALL, w));
+    return mix(shaped, CREST_MEAN, smoothstep(0.15, 0.45, grain));
+}
 
 fn band(world: vec2<f32>) -> vec4<f32> {
-    let wrapped = fract(log(max(-potential(world), 1e-12)) / LN_BAND);
-    // A smooth periodic ramp, continuous across the band wrap, so per-pixel sampling
-    // leaves no hard edge to alias. It peaks exactly where the contour lines sit (where
-    // the phase wraps: -potential = LEVEL_BASE^n), so the bands crest along with them.
-    let v = 0.5 + 0.5 * cos(6.283185307179586 * wrapped);
+    let depth = max(-potential(world), 1e-12);
+    let x = log(depth) / LN_BAND;
+    let crest = crest_at(x, fwidth(x));
+    let glow = pow(clamp(depth / deepest_surface(), 0.0, 1.0), GLOW_FALLOFF);
     let alpha = ALPHA * uniforms.params.z;
-    return vec4<f32>(mix(DEEP, LIGHT, v) * alpha, alpha);
+    let color = mix(DEEP, CREST, crest * (0.55 + 0.45 * glow)) + GLOW * glow;
+    return vec4<f32>(color * alpha, alpha);
 }
 
 // 0-1 linear from 0-1 sRGB gamma, as in egui's shader.

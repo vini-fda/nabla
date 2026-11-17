@@ -1675,13 +1675,7 @@ impl ViewerApp {
                 }
                 // The marks on the plane, over everything whose depth they are tested
                 // against, as their flat draws have them.
-                self.draw_marks_3d(
-                    painter,
-                    rect,
-                    &depth,
-                    ui.visuals(),
-                    ui.ctx().pixels_per_point(),
-                );
+                self.draw_marks_3d(painter, rect, &depth, ui.ctx().pixels_per_point());
             }
             _ => self.draw_scene_flat(painter, rect, replay, k, &state),
         }
@@ -1838,7 +1832,7 @@ impl ViewerApp {
                 &world,
                 self.field_line_width,
                 &mut self.field_contours,
-                ui.visuals(),
+                ui.ctx().pixels_per_point(),
             );
         }
     }
@@ -1966,7 +1960,6 @@ impl ViewerApp {
         painter: &egui::Painter,
         rect: egui::Rect,
         depth: &DepthMap,
-        visuals: &egui::Visuals,
         pixels_per_point: f32,
     ) {
         let mut overlays =
@@ -1977,7 +1970,6 @@ impl ViewerApp {
                 &self.camera,
                 &self.field_contours,
                 self.field_line_width,
-                visuals,
             );
         }
         let (replay, k, offset) = self.shown();

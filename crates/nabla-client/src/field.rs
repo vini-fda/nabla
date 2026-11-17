@@ -5,10 +5,10 @@
 //! - crisp equipotential contour lines, extracted in world space by marching squares and
 //!   chained into polylines: per-pixel bands alias where the field changes within one
 //!   pixel (near a body, zoomed out), while world-space lines stay sub-cell accurate at any
-//!   zoom. In the flat 2D view they are drawn as plain egui strokes; in the 3D view, as
-//!   the same strokes of the marks' pass (`crate::overlays`), tested against the depth of
-//!   the planets and ships drawn before them, so what stands in front of the plane hides
-//!   them.
+//!   zoom. They are glowing blue strokes of the marks' pass (`crate::overlays`), to match
+//!   the field lines' glowing red (`crate::streamlines`): in the flat 2D view a pass of
+//!   their own; in the 3D view, with the other marks, tested against the depth of the
+//!   planets and ships drawn before them, so what stands in front of the plane hides them.
 //!
 //! Both use the potential whose negative gradient is the simulation's acceleration
 //! (`nabla_sim::physics::gravity_acceleration`): `-G M / r` outside a body, and the uniform
@@ -19,7 +19,7 @@ use std::collections::HashMap;
 
 use eframe::egui_wgpu::{self, CallbackResources, CallbackTrait, ScreenDescriptor};
 use eframe::wgpu::{self, util::DeviceExt as _};
-use egui::{Painter, Rect, Shape, Stroke, Vec2};
+use egui::{Painter, Rect, Stroke, Vec2};
 
 use crate::camera::{Camera, Orbit, Vec3};
 use crate::ship3d::{DepthMap, clip_from_world, to_bytes};
@@ -321,22 +321,26 @@ impl CallbackTrait for Callback {
 }
 
 // -----------------------------------------------------------------------------------------
-// The contour lines in the 3D view: strokes of the marks' pass (`crate::overlays`), drawn
-// after the planets and ships, depth-tested against them through the scene's own depth map,
-// so what stands in front of the plane hides them.
+// The contour lines: glowing blue strokes of the marks' pass (`crate::overlays`), matching the
+// field lines' glowing red (`crate::streamlines`). In the 3D view they are drawn after the
+// planets and ships, depth-tested against them through the scene's own depth map, so what
+// stands in front of the plane hides them; in the flat view, at once, over the bands.
 
-/// The contour lines on the canvas in the 3D view, from `cache` (`contours`, warmed by the
-/// caller) as strokes to add to the `overlays` pass, along with the other marks of the frame.
-/// They are the stroke `draw_contours` gives egui in the flat view, the same color and
-/// `width` points thick, with the same pixel of anti-aliasing.
+/// The contour lines' color at full strength, as egui's colors: sRGB gamma channels.
+const CONTOUR_COLOR: [f32; 3] = [0.32, 0.62, 1.0];
+/// How far the contour lines' glow reaches past their edge, in points.
+const CONTOUR_GLOW: f32 = 6.0;
+
+/// The contour lines on the canvas, from `cache` (`contours`, warmed by the caller) as
+/// glowing strokes `width` points thick to add to the `overlays` pass, along with the other
+/// marks of the frame.
 pub fn contour_strokes(
     overlays: &mut crate::overlays::Overlays<'_>,
     camera: &Camera,
     cache: &Option<Contours>,
     width: f32,
-    visuals: &egui::Visuals,
 ) {
-    let Some(stroke) = stroke(camera, width, visuals) else {
+    let Some(stroke) = stroke(camera, width) else {
         return;
     };
     let Some(contours) = cache.as_ref() else {
@@ -344,10 +348,11 @@ pub fn contour_strokes(
     };
     for chain in &contours.chains {
         let (closed, points) = ring(chain);
-        overlays.stroke(
+        overlays.glowing_stroke(
             points.iter().map(|p| Vec3::plane(Vec2::from(*p))),
             closed,
             stroke.width,
+            CONTOUR_GLOW,
             stroke.color,
         );
     }
@@ -355,15 +360,16 @@ pub fn contour_strokes(
 
 /// The contour lines' stroke in either view, `width` points thick, fading out as the view
 /// turns edge on to the plane; `None` once it has.
-fn stroke(camera: &Camera, width: f32, visuals: &egui::Visuals) -> Option<Stroke> {
+fn stroke(camera: &Camera, width: f32) -> Option<Stroke> {
     let facing = camera.orbit.toward_viewer().z.abs();
     if facing < MIN_FACING {
         return None;
     }
     let fade = ((facing - MIN_FACING) / (FULL_FACING - MIN_FACING)).min(1.0);
+    let [r, g, b] = CONTOUR_COLOR.map(|c| (c * 255.0).round() as u8);
     Some(Stroke::new(
         width,
-        visuals.text_color().gamma_multiply(0.8 * fade),
+        egui::Color32::from_rgb(r, g, b).gamma_multiply(0.85 * fade),
     ))
 }
 
@@ -765,10 +771,9 @@ fn recompute(
     });
 }
 
-/// The contour lines on the canvas, projected from world space (with near-plane clipping in
-/// perspective), stroked `width` points thick as one line per chain: egui feathers the
-/// whole polyline's edges, so the joins between cells come out as smooth as the rest, and
-/// fades them out as the view turns edge on to the plane.
+/// The contour lines on the canvas in the flat view, where nothing hides them: the glowing
+/// strokes of `contour_strokes`, `width` points thick, as a marks' pass of their own over the
+/// plane in view.
 pub fn draw_contours(
     painter: &Painter,
     camera: &Camera,
@@ -776,30 +781,19 @@ pub fn draw_contours(
     world: &World,
     width: f32,
     cache: &mut Option<Contours>,
-    visuals: &egui::Visuals,
+    pixels_per_point: f32,
 ) {
-    let Some(stroke) = stroke(camera, width, visuals) else {
+    contours(camera, rect, &world.bodies, world.gravity_constant, cache);
+    let Some((min, max)) = region(camera, rect) else {
         return;
     };
-    let on_screen = rect.expand(width + 8.0);
-    let chains = contours(camera, rect, &world.bodies, world.gravity_constant, cache);
-    for chain in chains {
-        // A ring the near plane cuts in perspective comes out open, run by run.
-        let (closed, points) = ring(chain);
-        let points: Vec<Vec3> = points.iter().map(|p| Vec3::plane(Vec2::from(*p))).collect();
-        let count = points.len();
-        let runs = camera.project_polyline(points, rect);
-        let close_runs = closed && runs.len() == 1 && runs[0].len() == count;
-        for run in runs {
-            if run.len() < 2 || !run.iter().any(|p| on_screen.contains(*p)) {
-                continue;
-            }
-            if close_runs {
-                painter.add(Shape::closed_line(run, stroke));
-            } else {
-                painter.line(run, stroke);
-            }
-        }
+    // Without a scene to share the depth of, a map of the plane in view, as the bands'.
+    let span = (max[0] - min[0]).max(max[1] - min[1]);
+    let depth = DepthMap::for_camera(camera, rect, (0.75 * span) as f32);
+    let mut overlays = crate::overlays::Overlays::new(camera, rect, &depth, pixels_per_point);
+    contour_strokes(&mut overlays, camera, cache, width);
+    if let Some(callback) = overlays.finish() {
+        painter.add(callback);
     }
 }
 
@@ -971,7 +965,7 @@ mod tests {
     }
 
     #[test]
-    fn the_3d_views_lines_are_the_flat_views_stroke() {
+    fn the_contour_lines_are_glowing_blue_strokes() {
         let bodies = [body(0.0, 0.0, 2.0, 8.0)];
         let rect = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
         let camera = Camera {
@@ -980,26 +974,31 @@ mod tests {
         };
         let mut cache = None;
         contours(&camera, rect, &bodies, 1.0, &mut cache);
-        let visuals = egui::Visuals::dark();
         let depth = DepthMap::for_camera(&camera, rect, 100.0);
-        let stroke = stroke(&camera, 1.5, &visuals).expect("facing the plane");
+        let stroke = stroke(&camera, 1.5).expect("facing the plane");
         let mut overlays = crate::overlays::Overlays::new(&camera, rect, &depth, 2.0);
-        contour_strokes(&mut overlays, &camera, &cache, 1.5, &visuals);
+        contour_strokes(&mut overlays, &camera, &cache, 1.5);
         // The shader's color is egui's: channels from 0 to 1, premultiplied, so the lines
-        // are as translucent as the stroke, not opaque white. Half the stroke's width in
-        // device pixels, and a pixel of feathering: every vertex is the ribbon's reach
-        // across, the half width and half the feather.
-        let vertices: Vec<[f32; 10]> = overlays.vertices().as_chunks::<10>().0.to_vec();
+        // are as translucent as the stroke, not opaque. Half the stroke's width in device
+        // pixels, a pixel of feathering and the glow's reach: every vertex is the ribbon's
+        // reach across, the half width, the feather and the glow.
+        const FLOATS: usize = crate::overlays::VERTEX_FLOATS;
+        let vertices: Vec<[f32; FLOATS]> = overlays.vertices().as_chunks::<FLOATS>().0.to_vec();
+        let glow = CONTOUR_GLOW * 2.0;
         assert!(vertices.len() > 600 && vertices.len().is_multiple_of(6));
-        assert!(vertices.iter().all(|v| v[3].abs() == 2.0));
-        assert!(vertices.iter().all(|v| v[4] == 1.5 && v[5] == 1.0));
+        assert!(vertices.iter().all(|v| v[3].abs() == 2.0 + glow));
+        assert!(
+            vertices
+                .iter()
+                .all(|v| v[4] == 1.5 && v[5] == 1.0 && v[6] == glow)
+        );
         let [r, g, b, a] = stroke.color.to_normalized_gamma_f32();
-        assert!(vertices.iter().all(|v| v[6..] == [r, g, b, a]));
-        assert!(a > 0.5 && a < 1.0 && r <= a && g <= a && b <= a);
+        assert!(vertices.iter().all(|v| v[7..] == [r, g, b, a]));
+        assert!(a > 0.5 && a < 1.0 && r <= a && g <= a && b <= a && b > 2.0 * r);
         // Consecutive segments' quads share their vertices where they join, so no pixel
         // of a line is blended twice: the second triangle's last vertex, and the first
         // triangle's last, are the next quad's first two.
-        let place = |v: &[f32; 10]| [v[0], v[1]];
+        let place = |v: &[f32; FLOATS]| [v[0], v[1]];
         let joined = vertices
             .chunks(6)
             .zip(vertices.chunks(6).skip(1))
@@ -1040,9 +1039,10 @@ mod tests {
         });
         let depth = DepthMap::for_camera(&camera, rect, 100.0);
         let mut overlays = crate::overlays::Overlays::new(&camera, rect, &depth, 1.0);
-        contour_strokes(&mut overlays, &camera, &cache, 2.0, &egui::Visuals::dark());
+        contour_strokes(&mut overlays, &camera, &cache, 2.0);
         // Four sides, four quads, the last back to the first.
-        let vertices: Vec<[f32; 10]> = overlays.vertices().as_chunks::<10>().0.to_vec();
+        const FLOATS: usize = crate::overlays::VERTEX_FLOATS;
+        let vertices: Vec<[f32; FLOATS]> = overlays.vertices().as_chunks::<FLOATS>().0.to_vec();
         assert_eq!(vertices.len(), 24);
         assert_eq!(vertices[23][..2], vertices[0][..2]);
         assert_eq!(vertices[20][..2], vertices[1][..2]);

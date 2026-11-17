@@ -677,7 +677,6 @@ impl ViewerApp {
                     &self.camera,
                     &self.field_contours,
                     self.field_line_width,
-                    ui.visuals(),
                 );
             }
             self.orbit_strokes(&mut overlays, rect);

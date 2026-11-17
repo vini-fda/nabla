@@ -188,6 +188,19 @@ impl Orbit {
     }
 }
 
+/// The plane's fog at `distance` from the eye along the view, for a plane drawn out to
+/// `reach`: 1 up to `FOG_START` of the reach, falling smoothly to 0 at it. The gravity
+/// bands' shader (`field.wgsl`) fades by the same curve of the same distance, its clip w.
+pub(crate) fn fog(distance: f32, reach: f32) -> f32 {
+    let t = ((distance - FOG_START * reach) / ((1.0 - FOG_START) * reach)).clamp(0.0, 1.0);
+    1.0 - t * t * (3.0 - 2.0 * t)
+}
+
+/// The distance along the view from the eye at which the plane's fog begins, as a part of
+/// its reach, which the bands' shader (`field.wgsl`) repeats.
+#[cfg(test)]
+pub(crate) const PLANE_FOG_START: f32 = FOG_START;
+
 /// `angle` wrapped into (-PI, PI].
 fn wrap_angle(angle: f32) -> f32 {
     let wrapped = angle.rem_euclid(TAU);
@@ -200,6 +213,11 @@ const FIELD_OF_VIEW: f32 = 0.691_150_4;
 /// The perspective camera's near clipping plane, as a fraction of the eye's distance to the
 /// center: nothing nearer the eye is drawn.
 const NEAR: f32 = 0.02;
+/// In perspective, how far the plane `z = 0` is drawn (its grid, gravity field and field
+/// lines), in the eye's distances to the center: seen from the side, this far out the plane
+/// lies within a degree or so of the horizon. It fades out from `FOG_START` of that on.
+const PLANE_REACH: f32 = 16.0;
+const FOG_START: f32 = 0.25;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Camera {
@@ -311,6 +329,24 @@ impl Camera {
     /// nothing nearer the eye is drawn. `None` in orthographic.
     pub fn near_distance(&self, rect: Rect) -> Option<f32> {
         self.eye_distance(rect).map(|d| NEAR * d)
+    }
+
+    /// In perspective, how far from the eye the plane is drawn, along the view: past it the
+    /// plane's drawings have faded out (see [`Self::fog`]). `None` in orthographic, which
+    /// draws all of the plane on screen.
+    pub fn plane_reach(&self, rect: Rect) -> Option<f32> {
+        self.eye_distance(rect).map(|d| PLANE_REACH * d)
+    }
+
+    /// How much of the plane's drawings shows at world point `p`, 0 to 1: in perspective,
+    /// fading out smoothly with its distance from the eye along the view, from `FOG_START`
+    /// of the plane's reach to nothing at it, so the plane melts into the horizon instead of
+    /// ending at an edge; all of it in orthographic.
+    pub fn fog(&self, p: Vec3, rect: Rect) -> f32 {
+        match (self.eye_distance(rect), self.plane_reach(rect)) {
+            (Some(d), Some(reach)) => fog(d - self.view(p).z, reach),
+            _ => 1.0,
+        }
     }
 
     /// World point `p` in view coordinates, from the center: across the screen, up it, and
@@ -530,6 +566,41 @@ mod tests {
             perspective: true,
             ..camera
         }
+    }
+
+    #[test]
+    fn the_plane_fades_into_the_horizon_in_perspective_only() {
+        let flat = Camera {
+            scale: 20.0,
+            orbit: Orbit {
+                azimuth: 0.3,
+                elevation: 0.25,
+            },
+            ..Camera::default()
+        };
+        let far = Vec3::plane(Vec2::new(0.0, 1e6));
+        assert_eq!(flat.plane_reach(rect()), None);
+        assert_eq!(flat.fog(far, rect()), 1.0);
+        let camera = in_perspective(flat);
+        let d = camera.eye_distance(rect()).expect("perspective");
+        let reach = camera.plane_reach(rect()).expect("perspective");
+        assert_eq!(reach, PLANE_REACH * d);
+        // At the center, in full; past the reach, not at all; fading smoothly between, the
+        // farther the fainter, along the line of sight.
+        assert_eq!(camera.fog(camera.center, rect()), 1.0);
+        let [_, _, toward_viewer] = camera.orbit.basis();
+        let along = |distance: f32| {
+            let p = camera.center + toward_viewer * (d - distance);
+            camera.fog(p, rect())
+        };
+        assert_eq!(along(FOG_START * reach), 1.0);
+        assert_eq!(along(reach), 0.0);
+        assert_eq!(along(2.0 * reach), 0.0);
+        let samples: Vec<f32> = (0..=20)
+            .map(|i| along(reach * (FOG_START + (1.0 - FOG_START) * i as f32 / 20.0)))
+            .collect();
+        assert!(samples.windows(2).all(|w| w[1] <= w[0]));
+        assert!((along(reach * (1.0 + FOG_START) / 2.0) - 0.5).abs() < 1e-3);
     }
 
     fn project(cam: &Camera, p: Vec3) -> Pos2 {

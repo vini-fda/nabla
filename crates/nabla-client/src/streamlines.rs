@@ -430,6 +430,10 @@ struct Mesh<'a> {
     vertices: Vec<f32>,
 }
 
+/// What a ribbon's point carries besides its place: its depth, its anchor (`Mesh::anchor`)
+/// and the plane's fog there.
+type Carried = (f32, [f32; 3], f32);
+
 impl Mesh<'_> {
     /// `screen`, in points, as device pixels from the canvas rect's corner.
     fn pixels(&self, screen: egui::Pos2) -> Vec2 {
@@ -463,7 +467,11 @@ impl Mesh<'_> {
             .map(|&(world, screen)| {
                 (
                     self.pixels(screen),
-                    (self.depth.depth(world, 0.0), self.anchor(world)),
+                    (
+                        self.depth.depth(world, 0.0),
+                        self.anchor(world),
+                        self.camera.fog(world, self.rect),
+                    ),
                 )
             })
             .collect();
@@ -472,40 +480,51 @@ impl Mesh<'_> {
             Vec2::new(self.rect.width(), self.rect.height()) * self.pixels_per_point,
         )
         .expand(2.0 * self.reach + self.feather);
-        let clipped = crate::ribbon::clip(&points, bounds, false, |(da, aa), (db, ab), t| {
-            (
-                da + (db - da) * t,
-                std::array::from_fn(|i| aa[i] + (ab[i] - aa[i]) * t),
-            )
-        });
+        let clipped =
+            crate::ribbon::clip(&points, bounds, false, |(da, aa, fa), (db, ab, fb), t| {
+                (
+                    da + (db - da) * t,
+                    std::array::from_fn(|i| aa[i] + (ab[i] - aa[i]) * t),
+                    fa + (fb - fa) * t,
+                )
+            });
         for points in clipped {
             self.ribbon_run(&points);
         }
     }
 
-    fn ribbon_run(&mut self, points: &[(Vec2, (f32, [f32; 3]))]) {
+    fn ribbon_run(&mut self, points: &[(Vec2, Carried)]) {
         let points = crate::ribbon::distinct(points.iter().copied(), false);
         if points.len() < 2 {
             return;
         }
         let places: Vec<Vec2> = points.iter().map(|(p, _)| *p).collect();
         let offsets = crate::ribbon::offsets(&places, self.reach, false);
-        // Each point's two vertices: where, and the rest of what they share.
-        let sides: Vec<(Vec2, Vec2, f32, [f32; 3])> = points
+        // Each point's two vertices: where, and the rest of what they share, their opacity
+        // the plane's fog there.
+        let sides: Vec<(Vec2, Vec2, f32, [f32; 3], f32)> = points
             .iter()
             .zip(offsets)
-            .map(|(&(p, (depth, anchor)), offset)| (p + offset, p - offset, depth, anchor))
+            .map(|(&(p, (depth, anchor, fog)), offset)| {
+                (p + offset, p - offset, depth, anchor, fog)
+            })
             .collect();
         let (plus, minus) = ([self.reach, 0.0, 0.0, 0.0], [-self.reach, 0.0, 0.0, 0.0]);
         for pair in sides.windows(2) {
-            let ((a_plus, a_minus, a_depth, a_anchor), (b_plus, b_minus, b_depth, b_anchor)) =
-                (pair[0], pair[1]);
-            self.push(a_plus, a_depth, plus, a_anchor, 1.0);
-            self.push(a_minus, a_depth, minus, a_anchor, 1.0);
-            self.push(b_minus, b_depth, minus, b_anchor, 1.0);
-            self.push(a_plus, a_depth, plus, a_anchor, 1.0);
-            self.push(b_minus, b_depth, minus, b_anchor, 1.0);
-            self.push(b_plus, b_depth, plus, b_anchor, 1.0);
+            let (
+                (a_plus, a_minus, a_depth, a_anchor, a_fog),
+                (b_plus, b_minus, b_depth, b_anchor, b_fog),
+            ) = (pair[0], pair[1]);
+            // Wholly in the fog, nothing to draw.
+            if a_fog <= 0.0 && b_fog <= 0.0 {
+                continue;
+            }
+            self.push(a_plus, a_depth, plus, a_anchor, a_fog);
+            self.push(a_minus, a_depth, minus, a_anchor, a_fog);
+            self.push(b_minus, b_depth, minus, b_anchor, b_fog);
+            self.push(a_plus, a_depth, plus, a_anchor, a_fog);
+            self.push(b_minus, b_depth, minus, b_anchor, b_fog);
+            self.push(b_plus, b_depth, plus, b_anchor, b_fog);
         }
     }
 
@@ -544,6 +563,10 @@ impl Mesh<'_> {
         let grow = (inradius + 0.5 * self.feather) / inradius;
         let depth = self.depth.depth(center, 0.0);
         let anchor = self.anchor(center);
+        let opacity = opacity * self.camera.fog(center, self.rect);
+        if opacity <= 0.0 {
+            return;
+        }
         for (i, corner) in [a, b, c].into_iter().enumerate() {
             let mut shape = [0.0, 0.0, 0.0, 1.0];
             // The grown triangle's height over this corner's opposite edge.

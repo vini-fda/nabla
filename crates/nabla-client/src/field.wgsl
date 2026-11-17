@@ -6,7 +6,9 @@
 
 struct Uniforms {
     clip_from_world: mat4x4<f32>,
-    // x: the world's gravity constant G, y: the body count, z: the facing fade, w: unused.
+    // x: the world's gravity constant G, y: the body count, z: the facing fade, w: in
+    // perspective, how far from the eye the plane is drawn (its fog's reach), 0 in
+    // orthographic.
     params: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -16,13 +18,30 @@ struct Uniforms {
 struct VertexOut {
     @builtin(position) position: vec4<f32>,
     @location(0) world: vec2<f32>,
+    // In perspective, the distance from the eye along the view: the clip w.
+    @location(1) distance: f32,
 };
 
 @vertex fn vs_main(@location(0) world: vec3<f32>) -> VertexOut {
     var out: VertexOut;
     out.position = uniforms.clip_from_world * vec4<f32>(world, 1.0);
     out.world = world.xy;
+    out.distance = out.position.w;
     return out;
+}
+
+// Where the plane's fog begins, as a part of its reach: `PLANE_FOG_START` in camera.rs.
+const FOG_START: f32 = 0.25;
+
+/// How much of the bands shows at `distance` from the eye along the view, as `Camera::fog`
+/// has it for the rest of the plane's drawings: fading out smoothly toward the plane's
+/// reach, so the plane melts into the horizon instead of ending at the edge of the quad.
+fn fog(distance: f32) -> f32 {
+    let reach = uniforms.params.w;
+    if reach <= 0.0 {
+        return 1.0;
+    }
+    return 1.0 - smoothstep(FOG_START * reach, reach, distance);
 }
 
 /// The gravitational potential at `p` on the plane, whose negative gradient is the
@@ -88,12 +107,12 @@ fn crest_at(x: f32, grain: f32) -> f32 {
     return mix(shaped, CREST_MEAN, smoothstep(0.15, 0.45, grain));
 }
 
-fn band(world: vec2<f32>) -> vec4<f32> {
+fn band(world: vec2<f32>, distance: f32) -> vec4<f32> {
     let depth = max(-potential(world), 1e-12);
     let x = log(depth) / LN_BAND;
     let crest = crest_at(x, fwidth(x));
     let glow = pow(clamp(depth / deepest_surface(), 0.0, 1.0), GLOW_FALLOFF);
-    let alpha = ALPHA * uniforms.params.z;
+    let alpha = ALPHA * uniforms.params.z * fog(distance);
     let color = mix(DEEP, CREST, crest * (0.55 + 0.45 * glow)) + GLOW * glow;
     return vec4<f32>(color * alpha, alpha);
 }
@@ -112,11 +131,11 @@ fn linear_from_gamma_rgb(srgb: vec3<f32>) -> vec3<f32> {
 
 @fragment
 fn fs_gamma_framebuffer(in: VertexOut) -> @location(0) vec4<f32> {
-    return band(in.world);
+    return band(in.world, in.distance);
 }
 
 @fragment
 fn fs_linear_framebuffer(in: VertexOut) -> @location(0) vec4<f32> {
-    let out = band(in.world);
+    let out = band(in.world, in.distance);
     return vec4<f32>(linear_from_gamma_rgb(out.rgb), out.a);
 }

@@ -38,9 +38,13 @@ pub(crate) const MIN_FACING: f32 = 0.05;
 pub(crate) const FULL_FACING: f32 = 0.30;
 
 /// How many cells span the view's longer side, roughly, and the bounds on the grid's side.
+/// In perspective, the finest cells are as many to the span of the plane `NEAR_REACH` eye
+/// distances around the focus, and the cells grow with their distance from it beyond one
+/// eye distance, as the view shrinks what is farther away.
 const TARGET_CELLS: f64 = 256.0;
 const MIN_CELLS: usize = 16;
 const MAX_CELLS: usize = 800;
+const NEAR_REACH: f64 = 3.0;
 
 // ---------------------------------------------------------------------------------------------
 // The wgpu pass: soft log-potential bands over the plane.
@@ -243,7 +247,13 @@ pub fn paint(
     let matrix = clip_from_world(camera, rect, &depth);
     let fade = ((facing - MIN_FACING) / (FULL_FACING - MIN_FACING)).min(1.0);
     let mut uniforms = to_bytes(&matrix.into_iter().flatten().collect::<Vec<_>>());
-    uniforms.extend(to_bytes(&[gravity as f32, bodies.len() as f32, fade, 0.0]));
+    let fog_reach = camera.plane_reach(rect).unwrap_or(0.0);
+    uniforms.extend(to_bytes(&[
+        gravity as f32,
+        bodies.len() as f32,
+        fade,
+        fog_reach,
+    ]));
     // Two triangles covering the region square on the plane.
     let (cx, cy) = (
         f64::midpoint(min[0], max[0]) as f32,
@@ -408,9 +418,24 @@ pub(crate) fn potential(gravity: f64, bodies: &[CelestialBody], p: [f64; 2]) -> 
 }
 
 /// The part of the plane `z = 0` to cover, as a square's `(min, max)` corners, padded: in
-/// orthographic, what is on screen; in perspective, a square around the view's focus, as the
-/// plane's far side may be beyond the horizon. `None` when the view is edge on.
+/// orthographic, what is on screen; in perspective, a square around the view's focus out to
+/// the plane's reach (`Camera::plane_reach`), where its fog has hidden it. `None` when the
+/// view is edge on.
 pub(crate) fn region(camera: &Camera, rect: Rect) -> Option<([f64; 2], [f64; 2])> {
+    sampling(camera, rect).map(|s| (s.min, s.max))
+}
+
+/// How the view samples the plane for the contour lines: over `region`, with cells of
+/// `cell_span / TARGET_CELLS` (or finer, for a small body), the same everywhere in
+/// orthographic and, in perspective, growing past `spread`: one eye distance from the focus.
+struct Sampling {
+    min: [f64; 2],
+    max: [f64; 2],
+    cell_span: f64,
+    spread: Option<([f64; 2], f64)>,
+}
+
+fn sampling(camera: &Camera, rect: Rect) -> Option<Sampling> {
     if camera.eye_distance(rect).is_none() {
         let corners = [
             rect.left_top(),
@@ -422,14 +447,27 @@ pub(crate) fn region(camera: &Camera, rect: Rect) -> Option<([f64; 2], [f64; 2])
         let corners: Vec<Vec2> = corners.into_iter().collect::<Option<_>>()?;
         let min = corners.iter().copied().fold(Vec2::INFINITY, Vec2::min);
         let max = corners.iter().copied().fold(-Vec2::INFINITY, Vec2::max);
-        Some(pad(min, max))
+        let (min, max) = pad(min, max);
+        Some(Sampling {
+            min,
+            max,
+            cell_span: (max[0] - min[0]).max(max[1] - min[1]),
+            spread: None,
+        })
     } else {
         let d = camera.eye_distance(rect)?;
+        let reach = camera.plane_reach(rect)?;
         let focus = camera
             .screen_to_world(rect.center(), rect)
             .unwrap_or_else(|| Vec2::new(camera.center.x, camera.center.y));
-        let reach = 3.0 * d;
-        Some(pad(focus - Vec2::splat(reach), focus + Vec2::splat(reach)))
+        let (min, max) = pad(focus - Vec2::splat(reach), focus + Vec2::splat(reach));
+        Some(Sampling {
+            min,
+            max,
+            // As the padded square of `NEAR_REACH` eye distances around the focus.
+            cell_span: 2.6 * NEAR_REACH * f64::from(d),
+            spread: Some(([f64::from(focus.x), f64::from(focus.y)], f64::from(d))),
+        })
     }
 }
 
@@ -443,59 +481,112 @@ fn pad(min: Vec2, max: Vec2) -> ([f64; 2], [f64; 2]) {
     )
 }
 
-/// The potential on a square grid covering `min..max`, with the sampling lattice snapped to
-/// the world.
+/// The potential on a rectilinear grid covering `min..max`, its sample lines snapped to a
+/// world lattice.
 struct ScalarGrid {
-    min: [f64; 2],
+    /// The sample lines' coordinates across and up the plane, increasing.
+    xs: Vec<f64>,
+    ys: Vec<f64>,
+    /// The finest cell's side.
     cell: f64,
-    /// Cells per side; the values are `(n + 1)^2`, row-major.
-    n: usize,
+    /// The values at `(xs[j], ys[i])`, `xs.len()` to a row, row-major.
     values: Vec<f64>,
     /// The least and greatest values on the grid, to skip levels outside them.
     lo: f64,
     hi: f64,
 }
 
+/// The potential on a uniform grid over `min..max`, `TARGET_CELLS` to its longer side.
+#[cfg(test)]
 fn scalar_grid(min: [f64; 2], max: [f64; 2], gravity: f64, bodies: &[CelestialBody]) -> ScalarGrid {
     let span = (max[0] - min[0]).max(max[1] - min[1]);
-    let mut cell = span / TARGET_CELLS;
+    sampled(min, max, span, None, gravity, bodies)
+}
+
+/// The potential over `min..max`, cells of `cell_span / TARGET_CELLS` (finer for a small
+/// body) out to `spread`'s distance from its focus, and beyond it as many times larger as
+/// they are farther, in powers of two.
+fn sampled(
+    min: [f64; 2],
+    max: [f64; 2],
+    cell_span: f64,
+    spread: Option<([f64; 2], f64)>,
+    gravity: f64,
+    bodies: &[CelestialBody],
+) -> ScalarGrid {
+    let mut cell = cell_span / TARGET_CELLS;
     // At least a few cells across the smallest body, so its own contours resolve.
     if let Some(radius) = bodies.iter().map(|b| f64::from(b.radius)).reduce(f64::min) {
         cell = cell.min(radius / 6.0);
     }
-    let n = ((span / cell).ceil() as usize).clamp(MIN_CELLS, MAX_CELLS);
-    let cell = span / n as f64;
-    // Snap the lattice's origin to a multiple of the cell, so the grid always samples the
-    // same world points: a pan re-uses the samples it already had (plus new ones at the
-    // edge it reaches) instead of re-interpolating over a shifted lattice, and the lines
-    // don't wobble between recomputes. One row and column more covers what the snapped
-    // origin leaves of `max` uncovered.
-    let min = [
-        (min[0] / cell).floor() * cell,
-        (min[1] / cell).floor() * cell,
-    ];
-    let n = n + 1;
-    let n1 = n + 1;
-    let mut values = vec![0.0; n1 * n1];
+    // No fewer cells to a side than the least, nor more than the most, coarsening the
+    // cell until there are not.
+    let span = (max[0] - min[0]).max(max[1] - min[1]);
+    cell = cell.min(span / MIN_CELLS as f64);
+    let (xs, ys) = loop {
+        let axis = |a: usize| sample_lines(min[a], max[a], cell, spread.map(|(f, d)| (f[a], d)));
+        let (xs, ys) = (axis(0), axis(1));
+        if xs.len().max(ys.len()) <= MAX_CELLS + 2 {
+            break (xs, ys);
+        }
+        cell *= 2.0;
+    };
+    let mut values = Vec::with_capacity(xs.len() * ys.len());
     let mut lo = f64::INFINITY;
     let mut hi = f64::NEG_INFINITY;
-    for i in 0..n1 {
-        for j in 0..n1 {
-            let p = [min[0] + j as f64 * cell, min[1] + i as f64 * cell];
-            let v = potential(gravity, bodies, p);
-            values[i * n1 + j] = v;
+    for &y in &ys {
+        for &x in &xs {
+            let v = potential(gravity, bodies, [x, y]);
+            values.push(v);
             lo = lo.min(v);
             hi = hi.max(v);
         }
     }
     ScalarGrid {
-        min,
+        xs,
+        ys,
         cell,
-        n,
         values,
         lo,
         hi,
     }
+}
+
+/// The coordinates of the sample lines along one axis, covering `lo..=hi`: multiples of
+/// `cell`, so the grid always samples the same world points and a pan re-uses the samples
+/// it had (the lines don't wobble between recomputes). With a `spread`, `(focus, near)`,
+/// the lines are `cell` apart within `near` of the focus and, beyond, as many times farther
+/// apart as they are farther from it, in powers of two: each line `2^k` cells from the next
+/// sits on a multiple of `2^k` cells, so those too stay on a world lattice.
+fn sample_lines(lo: f64, hi: f64, cell: f64, spread: Option<(f64, f64)>) -> Vec<f64> {
+    let (start, end) = ((lo / cell).floor() as i64, (hi / cell).ceil() as i64);
+    let Some((focus, near)) = spread else {
+        return (start..=end).map(|k| k as f64 * cell).collect();
+    };
+    let center = ((focus / cell).round() as i64).clamp(start, end);
+    // The step outward from line `k`, in cells.
+    let step = |k: i64| -> i64 {
+        let ratio = ((k - center).unsigned_abs() as f64 * cell / near).max(1.0);
+        let power = (ratio.log2().floor() as u32)
+            .min(k.trailing_zeros())
+            .min(40);
+        1 << power
+    };
+    let mut below = Vec::new();
+    let mut k = center;
+    while k > start {
+        k -= step(k);
+        below.push(k);
+    }
+    below.reverse();
+    let mut lines = below;
+    k = center;
+    lines.push(k);
+    while k < end {
+        k += step(k);
+        lines.push(k);
+    }
+    lines.into_iter().map(|k| k as f64 * cell).collect()
 }
 
 /// The iso-levels to contour: the band boundaries `-LEVEL_BASE.powi(n)` (where `field.wgsl`'s
@@ -562,46 +653,47 @@ fn cell_segments(case: u8, center: f64, level: f64) -> &'static [(u8, u8)] {
 /// piece by piece, then chained together where neighbouring cells meet, so each line is one
 /// smooth polyline instead of a stub per cell.
 fn extract(grid: &ScalarGrid, levels: &[f64]) -> Vec<Vec<[f32; 2]>> {
-    let n1 = grid.n + 1;
+    let (xs, ys) = (&grid.xs, &grid.ys);
+    // Cells across and up, and samples to a row.
+    let (nx, ny) = (xs.len() - 1, ys.len() - 1);
+    let n1 = nx + 1;
     let mut out = Vec::new();
     // Where which grid edge is crossed, filled in per level: horizontal edges between
     // samples `(i, j)` and `(i, j + 1)`, vertical ones between `(i, j)` and `(i + 1, j)`.
     // Every edge is written the one time, so the two cells it belongs to agree bit for bit
     // on where their pieces meet: the chain through them has no kink at the join.
-    let mut horizontal = vec![[f32::NAN, f32::NAN]; n1 * grid.n];
-    let mut vertical = vec![[f32::NAN, f32::NAN]; grid.n * n1];
+    let mut horizontal = vec![[f32::NAN, f32::NAN]; (ny + 1) * nx];
+    let mut vertical = vec![[f32::NAN, f32::NAN]; ny * n1];
     for &level in levels {
         if level < grid.lo || level > grid.hi {
             continue;
         }
-        for i in 0..n1 {
+        for i in 0..=ny {
             let row = i * n1;
-            for j in 0..grid.n {
+            for j in 0..nx {
                 let (a, b) = (grid.values[row + j], grid.values[row + j + 1]);
                 if (a > level) != (b > level) {
                     let t = (level - a) / (b - a);
-                    let y = (grid.min[1] + i as f64 * grid.cell) as f32;
-                    horizontal[i * grid.n + j] =
-                        [(grid.min[0] + (j as f64 + t) * grid.cell) as f32, y];
+                    horizontal[i * nx + j] =
+                        [(xs[j] + t * (xs[j + 1] - xs[j])) as f32, ys[i] as f32];
                 }
             }
         }
-        for i in 0..grid.n {
+        for i in 0..ny {
             let (row, next) = (i * n1, (i + 1) * n1);
             for j in 0..n1 {
                 let (a, b) = (grid.values[row + j], grid.values[next + j]);
                 if (a > level) != (b > level) {
                     let t = (level - a) / (b - a);
-                    let x = (grid.min[0] + j as f64 * grid.cell) as f32;
-                    vertical[i * n1 + j] = [x, (grid.min[1] + (i as f64 + t) * grid.cell) as f32];
+                    vertical[i * n1 + j] = [xs[j] as f32, (ys[i] + t * (ys[i + 1] - ys[i])) as f32];
                 }
             }
         }
         // The pieces the saddle-decided cases cut each crossing cell into.
         let mut pieces: Vec<([f32; 2], [f32; 2])> = Vec::new();
-        for i in 0..grid.n {
+        for i in 0..ny {
             let (row, next) = (i * n1, (i + 1) * n1);
-            for j in 0..grid.n {
+            for j in 0..nx {
                 let v = [
                     grid.values[row + j],
                     grid.values[row + j + 1],
@@ -618,9 +710,9 @@ fn extract(grid: &ScalarGrid, levels: &[f64]) -> Vec<Vec<[f32; 2]>> {
                 let center = (v[0] + v[1] + v[2] + v[3]) * 0.25;
                 let crossing = |edge: u8| match edge {
                     // Bottom, right, top, left, of the cell `(i, j)`.
-                    0 => horizontal[i * grid.n + j],
+                    0 => horizontal[i * nx + j],
                     1 => vertical[i * n1 + j + 1],
-                    2 => horizontal[(i + 1) * grid.n + j],
+                    2 => horizontal[(i + 1) * nx + j],
                     _ => vertical[i * n1 + j],
                 };
                 for &(a, b) in cell_segments(case, center, level) {
@@ -752,8 +844,15 @@ fn recompute(
     let mut cell = 1.0;
     let chains = if bodies.is_empty() || gravity == 0.0 {
         Vec::new()
-    } else if let Some((min, max)) = region(camera, rect) {
-        let grid = scalar_grid(min, max, gravity, bodies);
+    } else if let Some(view) = sampling(camera, rect) {
+        let grid = sampled(
+            view.min,
+            view.max,
+            view.cell_span,
+            view.spread,
+            gravity,
+            bodies,
+        );
         cell = grid.cell;
         extract(&grid, &levels(&grid))
     } else {
@@ -1049,6 +1148,89 @@ mod tests {
     }
 
     #[test]
+    fn perspective_sample_lines_spread_out_with_distance_on_a_world_lattice() {
+        let (cell, focus, near) = (0.25, 3.1, 4.0);
+        let lines = sample_lines(-400.0, 400.0, cell, Some((focus, near)));
+        // Covering the range, in order.
+        assert!(lines[0] <= -400.0 && *lines.last().expect("lines") >= 400.0);
+        assert!(lines.windows(2).all(|w| w[0] < w[1]));
+        for w in lines.windows(2) {
+            let gap = w[1] - w[0];
+            let cells = gap / cell;
+            // A power of two of cells, each line on a multiple of the gap after it.
+            assert!(cells.round() == cells && (cells as u64).is_power_of_two());
+            let k = w[0] / gap;
+            assert!(
+                k.round() == k,
+                "{} not on a multiple of its gap {gap}",
+                w[0]
+            );
+            // The cell near the focus, and no more than as many times it as the line is
+            // eye distances from the focus, nor less than half that.
+            let ratio = ((w[0] - focus).abs().max((w[1] - focus).abs()) / near).max(1.0);
+            assert!(cells <= ratio, "gap {cells} cells at {ratio} eye distances");
+            if (w[0] - focus).abs() > 4.0 * near && (w[1] - focus).abs() > 4.0 * near {
+                assert!(
+                    cells >= ratio / 4.0,
+                    "gap {cells} cells at {ratio} eye distances"
+                );
+            }
+        }
+        // Far fewer than a uniform grid's 3200.
+        assert!(lines.len() < 300, "{} lines", lines.len());
+        // A pan keeps the lines it had, near the focus and far from it.
+        let panned = sample_lines(-397.3, 402.7, cell, Some((focus + 2.7, near)));
+        let kept = lines.iter().filter(|x| panned.contains(x)).count();
+        assert!(
+            kept * 10 > lines.len() * 8,
+            "kept {kept} of {}",
+            lines.len()
+        );
+    }
+
+    #[test]
+    fn a_perspective_view_samples_the_plane_out_to_its_reach() {
+        let bodies = [body(0.0, 0.0, 2.0, 8.0)];
+        let rect = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
+        // A low view from the side.
+        let camera = Camera {
+            scale: 20.0,
+            perspective: true,
+            orbit: Orbit {
+                azimuth: 0.3,
+                elevation: 0.25,
+            },
+            ..Camera::default()
+        };
+        let view = sampling(&camera, rect).expect("facing the plane");
+        let reach = f64::from(camera.plane_reach(rect).expect("perspective"));
+        assert!(view.max[0] - view.min[0] >= 2.0 * reach);
+        let grid = sampled(
+            view.min,
+            view.max,
+            view.cell_span,
+            view.spread,
+            1.0,
+            &bodies,
+        );
+        assert!(grid.xs.len() <= MAX_CELLS + 2 && grid.ys.len() <= MAX_CELLS + 2);
+        // As fine near the focus as the old square of three eye distances was.
+        let d = f64::from(camera.eye_distance(rect).expect("perspective"));
+        assert!(grid.cell <= 2.6 * NEAR_REACH * d / TARGET_CELLS);
+        assert!(!extract(&grid, &levels(&grid)).is_empty());
+    }
+
+    #[test]
+    fn the_bands_fog_as_the_camera_does() {
+        let shader = include_str!("field.wgsl");
+        let start = crate::camera::PLANE_FOG_START;
+        assert!(
+            shader.contains(&format!("const FOG_START: f32 = {start};")),
+            "field.wgsl's FOG_START should be {start}"
+        );
+    }
+
+    #[test]
     fn saddle_cells_split_by_the_center() {
         assert_eq!(cell_segments(5, 1.0, 0.0), &[(0, 1), (2, 3)]);
         assert_eq!(cell_segments(5, -1.0, 0.0), &[(3, 0), (1, 2)]);
@@ -1097,25 +1279,25 @@ mod tests {
         let home = scalar_grid([-12.0, -12.0], [12.0, 12.0], 1.0, &bodies);
         // The same view, panned somewhere it hasn't been.
         let panned = scalar_grid([-2.37, 3.11], [21.63, 17.11], 1.0, &bodies);
-        // The cell depends on the span only, and both lattices' origins sit on the same
-        // world grid of cells, so they sample the very same points.
+        // The cell depends on the span only, and both lattices' sample lines sit on the
+        // same world grid of cells, so they sample the very same points.
         assert_eq!(panned.cell, home.cell);
-        assert_eq!(panned.n, home.n);
-        for a in 0..2 {
-            let shift = (panned.min[a] - home.min[a]) / panned.cell;
-            assert!(
-                (shift - shift.round()).abs() < 1e-9,
-                "axis {a}: origins off the world lattice by {shift}"
-            );
+        assert!(panned.xs.len().abs_diff(home.xs.len()) <= 1);
+        for lines in [&home.xs, &home.ys, &panned.xs, &panned.ys] {
+            for &x in lines {
+                let k = x / home.cell;
+                assert!((k - k.round()).abs() < 1e-9, "{x} off the world lattice");
+            }
         }
         // A lattice point both grids cover, from opposite sides: the same sample value.
-        let n1 = home.n + 1;
         let at = |g: &ScalarGrid, x: f64, y: f64| {
-            let (col, row) = (
-                ((x - g.min[0]) / g.cell).round() as usize,
-                ((y - g.min[1]) / g.cell).round() as usize,
-            );
-            g.values[row * n1 + col]
+            let find = |lines: &[f64], v: f64| {
+                lines
+                    .iter()
+                    .position(|&l| (l - v).abs() < 1e-9)
+                    .expect("on a sample line")
+            };
+            g.values[find(&g.ys, y) * g.xs.len() + find(&g.xs, x)]
         };
         assert_eq!(at(&home, 0.0, 3.09375), at(&panned, 0.0, 3.09375));
         // The levels are the shader's band boundaries, whatever the view: -LEVEL_BASE^n.

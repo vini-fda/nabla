@@ -89,11 +89,15 @@ const CURSOR_COLOR: egui::Color32 = palette::OVERLAY1;
 
 const DEFAULT_ALPHA: f32 = 0.3;
 
-// HUD-style vector arrows: fixed pixel-per-magnitude scales so arrow length
-// stays readable regardless of camera zoom.
-const VELOCITY_ARROW_PX_PER_UPS: f32 = 20.0;
-const ACCELERATION_ARROW_PX_PER_UPS2: f32 = 20.0;
+/// The velocity and acceleration arrows are drawn in the world, from the ship: the velocity
+/// arrow's length is the velocity times this time `dt`, and the acceleration arrow's is the
+/// acceleration times `dt^2`, both in world units.
+const ARROW_SECONDS: f64 = 1.0;
 const ARROW_STROKE_WIDTH: f32 = 2.0;
+/// The length of a solid arrowhead along the arrow, and its width across it, in pixels; at
+/// most half the arrow's length, for a short arrow.
+const ARROWHEAD_LENGTH: f32 = 12.0;
+const ARROWHEAD_WIDTH: f32 = 9.0;
 const ARROW_MIN_PIXELS: f32 = 4.0;
 
 const VELOCITY_COLOR: egui::Color32 = palette::GREEN;
@@ -2210,32 +2214,28 @@ impl ViewerApp {
         k: usize,
         state: &State,
     ) {
-        let position = Vec3::plane(self.camera.local(state.x, state.y));
-        let (Some(center), Some(scale)) = (
-            self.camera.project(position, rect),
-            self.camera.scale_at(position, rect),
-        ) else {
+        let Some(center) = self
+            .camera
+            .project(Vec3::plane(self.camera.local(state.x, state.y)), rect)
+        else {
             return;
         };
 
-        // World vectors -> screen vectors through the camera's view at the ship. Use fixed
-        // pixel scales (decoupled from camera zoom) so arrows behave like HUD indicators.
-        let arrow = |v: [f64; 2], px_per_unit: f32, color: egui::Color32| {
-            let v = Vec3::plane(vector(v[0], v[1]));
-            let Some(screen) = self.camera.screen_vector_at(position, v, rect) else {
+        // A world vector drawn as the world segment from the ship to the ship plus `d`, so it
+        // zooms with the world like any other length in it.
+        let arrow = |d: [f64; 2], color: egui::Color32| {
+            let tip = Vec3::plane(self.camera.local(state.x + d[0], state.y + d[1]));
+            let Some(tip) = self.camera.project(tip, rect) else {
                 return;
             };
-            let screen = screen / scale * px_per_unit;
+            let screen = tip - center;
             if screen.length() > ARROW_MIN_PIXELS {
-                painter.arrow(center, screen, egui::Stroke::new(ARROW_STROKE_WIDTH, color));
+                solid_arrow(painter, center, screen, color);
             }
         };
+        let dt = ARROW_SECONDS;
         if self.show_velocity {
-            arrow(
-                [state.vx, state.vy],
-                VELOCITY_ARROW_PX_PER_UPS,
-                VELOCITY_COLOR,
-            );
+            arrow([state.vx * dt, state.vy * dt], VELOCITY_COLOR);
         }
         if self.show_acceleration {
             let thrust = replay.acceleration(k, state);
@@ -2245,13 +2245,41 @@ impl ViewerApp {
                 world.gravity_constant,
                 [state.x, state.y],
             );
-            arrow(
-                [thrust[0] + gravity[0], thrust[1] + gravity[1]],
-                ACCELERATION_ARROW_PX_PER_UPS2,
-                ACCELERATION_COLOR,
-            );
+            let a = [thrust[0] + gravity[0], thrust[1] + gravity[1]];
+            arrow([a[0] * dt * dt, a[1] * dt * dt], ACCELERATION_COLOR);
         }
     }
+}
+
+/// An arrow from `origin` along `vector`, on screen, with a filled triangular head of a fixed
+/// size in pixels.
+fn solid_arrow(
+    painter: &egui::Painter,
+    origin: egui::Pos2,
+    vector: egui::Vec2,
+    color: egui::Color32,
+) {
+    let length = vector.length();
+    let along = vector / length;
+    let across = along.rot90();
+    let head = ARROWHEAD_LENGTH.min(0.5 * length);
+    let width = ARROWHEAD_WIDTH * head / ARROWHEAD_LENGTH;
+    let tip = origin + vector;
+    let base = tip - along * head;
+    // The shaft stops inside the head, so its square end does not poke past the tip's sides.
+    painter.line_segment(
+        [origin, base + along * (0.5 * head)],
+        egui::Stroke::new(ARROW_STROKE_WIDTH, color),
+    );
+    painter.add(egui::Shape::convex_polygon(
+        vec![
+            tip,
+            base + across * (0.5 * width),
+            base - across * (0.5 * width),
+        ],
+        color,
+        egui::Stroke::NONE,
+    ));
 }
 
 impl ViewerApp {
@@ -2823,11 +2851,6 @@ fn toggled(steering: Steering) -> Steering {
         Steering::Raw => Steering::Sas,
         Steering::Sas => Steering::Raw,
     }
-}
-
-/// The world vector `(x, y)`, a direction or a rate, which the floating origin does not move.
-fn vector(x: f64, y: f64) -> egui::Vec2 {
-    egui::vec2(x as f32, y as f32)
 }
 
 /// The ship's own collision mesh, over the canvas among the display options' collision

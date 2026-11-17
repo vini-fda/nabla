@@ -3,7 +3,13 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "README.md"
   pull_request:
+    paths-ignore:
+      - "docs/**"
+      - "README.md"
   workflow_dispatch:
   # Also run as the first stage of a release (release.yml).
   workflow_call:

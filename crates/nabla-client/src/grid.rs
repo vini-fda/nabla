@@ -9,6 +9,9 @@
 use egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Stroke, Vec2};
 
 use crate::camera::{Camera, Orbit, Vec3};
+// How squarely the plane must face the viewer for the grid to be drawn at all, and at full
+// strength, as for the rest of the plane's drawings.
+use crate::field::{FULL_FACING, MIN_FACING};
 
 pub struct GridStyle {
     pub minor_color: Color32,
@@ -61,12 +64,6 @@ impl ClampOrLow for f32 {
         self.min(high).max(low)
     }
 }
-
-/// How squarely the plane must face the viewer (the cosine of the angle between its normal
-/// and the view) for the grid to be drawn at all, and for it to be drawn at full strength.
-/// The grid fades out in between, as the view turns edge on to the plane.
-const MIN_FACING: f32 = 0.05;
-const FULL_FACING: f32 = 0.3;
 
 /// In perspective, the plane stretches to the horizon: the grid covers a square around the
 /// point seen at the canvas's center, its lines fading out with their distance from it, the

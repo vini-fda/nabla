@@ -32,10 +32,12 @@ use crate::world::{CelestialBody, World};
 /// view pans, zooms or recomputes.
 pub const LEVEL_BASE: f64 = std::f64::consts::SQRT_2;
 
-/// How squarely the plane must face the viewer for the field to be drawn at all, and at full
-/// strength, as for the grid. Below it the plane is edge on and the field unreadable.
-pub(crate) const MIN_FACING: f32 = 0.05;
-pub(crate) const FULL_FACING: f32 = 0.30;
+/// How squarely the plane must face the viewer (the sine of the view's angle to it) for the
+/// plane's drawings (the grid, the gravity field and its field lines) to be drawn at all, and
+/// at full strength: about 0.6 and 2.9 degrees. Only a view within a few degrees of edge on
+/// fades them, where the plane is a sliver and its drawings unreadable.
+pub(crate) const MIN_FACING: f32 = 0.01;
+pub(crate) const FULL_FACING: f32 = 0.05;
 
 /// How many cells span the view's longer side, roughly, and the bounds on the grid's side.
 /// In perspective, the finest cells are as many to the span of the plane `NEAR_REACH` eye

@@ -22,7 +22,7 @@ use crate::camera::{Camera, Vec3};
 use crate::ship3d::{DepthMap, to_bytes};
 
 /// Floats per vertex of the pass: `pos`, `across`, `shape` and `color` of `overlays.wgsl`.
-const VERTEX_FLOATS: usize = 10;
+pub(crate) const VERTEX_FLOATS: usize = 11;
 const VERTEX_BYTES: u64 = 4 * VERTEX_FLOATS as u64;
 
 /// The pass's pipeline and buffers, created once, shared by every frame.
@@ -124,7 +124,7 @@ fn pipeline(
                 array_stride: VERTEX_BYTES,
                 step_mode: wgpu::VertexStepMode::Vertex,
                 attributes: &wgpu::vertex_attr_array![
-                    0 => Float32x3, 1 => Float32, 2 => Float32x2, 3 => Float32x4
+                    0 => Float32x3, 1 => Float32, 2 => Float32x3, 3 => Float32x4
                 ],
             })],
         },
@@ -263,14 +263,42 @@ impl<'a> Overlays<'a> {
         width: f32,
         color: Color32,
     ) {
+        self.ribbon(points, closed, width, 0.0, false, color);
+    }
+
+    /// A line of the plane's own drawing, as the field lines are: a `stroke` with a soft
+    /// glow of its own color around it, reaching `glow` points past its edge, and fading
+    /// with the plane's fog toward the horizon in perspective (`Camera::fog`).
+    pub fn glowing_stroke(
+        &mut self,
+        points: impl IntoIterator<Item = Vec3>,
+        closed: bool,
+        width: f32,
+        glow: f32,
+        color: Color32,
+    ) {
+        self.ribbon(points, closed, width, glow, true, color);
+    }
+
+    /// The ribbon of a stroke, glowing `glow` points past its edge, `fogged` or not.
+    fn ribbon(
+        &mut self,
+        points: impl IntoIterator<Item = Vec3>,
+        closed: bool,
+        width: f32,
+        glow: f32,
+        fogged: bool,
+        color: Color32,
+    ) {
         let points: Vec<Vec3> = points.into_iter().collect();
         let count = points.len();
         // In device pixels: half the stroke, and one pixel of feathering centered on its
-        // edge, as egui feathers its own strokes. The ribbon covers both.
+        // edge, as egui feathers its own strokes, and the glow past it. The ribbon covers all.
         let half = 0.5 * width * self.pixels_per_point;
         let feather = 1.0;
-        let reach = half + 0.5 * feather;
-        let on_screen = self.rect.expand(width + 8.0);
+        let glow = glow * self.pixels_per_point;
+        let reach = half + 0.5 * feather + glow;
+        let on_screen = self.rect.expand(width + glow + 8.0);
         let bounds = Rect::from_min_max(
             ((on_screen.min - self.rect.min) * self.pixels_per_point).to_pos2(),
             ((on_screen.max - self.rect.min) * self.pixels_per_point).to_pos2(),
@@ -285,13 +313,20 @@ impl<'a> Overlays<'a> {
             let points: Vec<_> = run
                 .iter()
                 .map(|&(world, screen)| {
+                    let fog = if fogged {
+                        self.camera.fog(world, self.rect)
+                    } else {
+                        1.0
+                    };
                     (
                         (screen - self.rect.min) * self.pixels_per_point,
-                        self.depth.depth(world, 0.0),
+                        (self.depth.depth(world, 0.0), fog),
                     )
                 })
                 .collect();
-            let clipped = crate::ribbon::clip(&points, bounds, closed, |a, b, t| a + (b - a) * t);
+            let clipped = crate::ribbon::clip(&points, bounds, closed, |a, b, t| {
+                (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t)
+            });
             let whole_ring = closed && clipped.len() == 1 && clipped[0].len() == count;
             for points in clipped {
                 let closed = whole_ring;
@@ -299,18 +334,22 @@ impl<'a> Overlays<'a> {
                 let places: Vec<Vec2> = points.iter().map(|(p, _)| *p).collect();
                 let offsets = crate::ribbon::offsets(&places, reach, closed);
                 for (i, j) in crate::ribbon::segments(points.len(), closed) {
-                    let ((a, depth_a), (b, depth_b)) = (points[i], points[j]);
+                    let ((a, (depth_a, fog_a)), (b, (depth_b, fog_b))) = (points[i], points[j]);
+                    // Wholly in the fog, nothing to draw.
+                    if fog_a <= 0.0 && fog_b <= 0.0 {
+                        continue;
+                    }
                     let (a_plus, a_minus) = (a + offsets[i], a - offsets[i]);
                     let (b_plus, b_minus) = (b + offsets[j], b - offsets[j]);
-                    for (at, depth, across) in [
-                        (a_plus, depth_a, reach),
-                        (a_minus, depth_a, -reach),
-                        (b_minus, depth_b, -reach),
-                        (a_plus, depth_a, reach),
-                        (b_minus, depth_b, -reach),
-                        (b_plus, depth_b, reach),
+                    for (at, depth, across, fog) in [
+                        (a_plus, depth_a, reach, fog_a),
+                        (a_minus, depth_a, -reach, fog_a),
+                        (b_minus, depth_b, -reach, fog_b),
+                        (a_plus, depth_a, reach, fog_a),
+                        (b_minus, depth_b, -reach, fog_b),
+                        (b_plus, depth_b, reach, fog_b),
                     ] {
-                        self.push(at, depth, across, half, feather, color);
+                        self.push(at, depth, across, [half, feather, glow], color, fog);
                     }
                 }
             }
@@ -348,7 +387,7 @@ impl<'a> Overlays<'a> {
                 (b_minus, -reach),
                 (b_plus, reach),
             ] {
-                self.push(at, depth, across, half, feather, color);
+                self.push(at, depth, across, [half, feather, 0.0], color, 1.0);
             }
         }
     }
@@ -376,17 +415,27 @@ impl<'a> Overlays<'a> {
         };
         for i in 0..12 {
             for (at, across) in [(center, 0.0), (corner(i), 0.0), (corner(i + 1), 0.0)] {
-                self.push(at, depth, across, half, feather, color);
+                self.push(at, depth, across, [half, feather, 0.0], color, 1.0);
             }
         }
     }
 
     /// One vertex: its place in the canvas's device pixels, the depth the mark lies at
-    /// there, its distance across the ribbon, and the stroke's shape and color.
-    fn push(&mut self, at: Vec2, depth: f32, across: f32, half: f32, feather: f32, color: Color32) {
-        let [r, g, b, a] = color.to_normalized_gamma_f32();
+    /// there, its distance across the ribbon, the stroke's shape (half its width, the
+    /// feather and the glow's reach) and its color, as much of it as `opacity` lets show.
+    fn push(
+        &mut self,
+        at: Vec2,
+        depth: f32,
+        across: f32,
+        shape: [f32; 3],
+        color: Color32,
+        opacity: f32,
+    ) {
+        let [r, g, b, a] = color.to_normalized_gamma_f32().map(|c| c * opacity);
+        let [half, feather, glow] = shape;
         self.vertices
-            .extend([at.x, at.y, depth, across, half, feather, r, g, b, a]);
+            .extend([at.x, at.y, depth, across, half, feather, glow, r, g, b, a]);
     }
 
     /// The vertices added so far, for tests of what the marks became.
@@ -426,7 +475,7 @@ mod tests {
         }
     }
 
-    /// The vertices of the marks as ten-float vertices.
+    /// The vertices of the marks as eleven-float vertices.
     fn vertices<'b>(overlays: &'b Overlays<'_>) -> &'b [[f32; VERTEX_FLOATS]] {
         overlays.vertices.as_chunks::<VERTEX_FLOATS>().0
     }
@@ -452,12 +501,16 @@ mod tests {
         assert_eq!(vertices.len(), 6, "one segment, one quad");
         // Half the stroke in device pixels, and one pixel of feathering: every vertex is
         // the ribbon's reach across, both sides.
-        assert!(vertices.iter().all(|v| v[4] == 1.5 && v[5] == 1.0));
+        assert!(
+            vertices
+                .iter()
+                .all(|v| v[4] == 1.5 && v[5] == 1.0 && v[6] == 0.0)
+        );
         assert!(vertices.iter().all(|v| v[3].abs() == 2.0));
         // The color as egui's: channels from 0 to 1, premultiplied by their alpha, so the
         // mark is as translucent as the stroke, not opaque.
         let [r, g, b, a] = color.to_normalized_gamma_f32();
-        assert!(vertices.iter().all(|v| v[6..] == [r, g, b, a]));
+        assert!(vertices.iter().all(|v| v[7..] == [r, g, b, a]));
         assert!(a > 0.5 && a < 1.0 && r <= a && g <= a && b <= a);
         // Nothing else to draw: no callback.
         assert!(overlays.finish().is_some());

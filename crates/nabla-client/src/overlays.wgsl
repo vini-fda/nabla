@@ -8,7 +8,9 @@
 // each vertex also carries its signed distance across the ribbon, in device pixels, and
 // each fragment's alpha is a fence on that distance: how much of the pixel the stroke
 // covers. So the lines are anti-aliased at any width, with or without multisampling, and
-// look as egui's own strokes of the same width and color do.
+// look as egui's own strokes of the same width and color do. A stroke may also glow: a soft
+// halo of its own color past its edge, falling off to nothing at the glow's reach, as the
+// field lines' glow does (`streamlines.wgsl`), which adds its light more than it covers.
 
 struct Uniforms {
     // The canvas's size in device pixels.
@@ -22,8 +24,9 @@ struct VertexIn {
     // The signed distance across the ribbon, from the line along its middle, in device
     // pixels.
     @location(1) across: f32,
-    // x: half the stroke's width, y: the anti-aliasing feather, in device pixels.
-    @location(2) shape: vec2<f32>,
+    // x: half the stroke's width, y: the anti-aliasing feather, z: how far its glow reaches
+    // past its edge (0 for none), in device pixels.
+    @location(2) shape: vec3<f32>,
     // The mark's color as egui's colors: sRGB gamma channels from 0 to 1, premultiplied by
     // their alpha.
     @location(3) color: vec4<f32>,
@@ -32,7 +35,7 @@ struct VertexIn {
 struct VertexOut {
     @builtin(position) position: vec4<f32>,
     @location(0) across: f32,
-    @location(1) shape: vec2<f32>,
+    @location(1) shape: vec3<f32>,
     @location(2) color: vec4<f32>,
 };
 
@@ -71,14 +74,31 @@ fn linear_from_gamma_rgb(srgb: vec3<f32>) -> vec3<f32> {
     return select(higher, lower, cutoff);
 }
 
+// How bright a glow is right at its stroke's edge, next to the stroke's own color.
+const GLOW_STRENGTH: f32 = 0.45;
+
+/// The fragment's color, premultiplied by its alpha: the stroke over its glow, if it has one.
+/// `color` is the stroke's, gamma encoded or linear as the framebuffer wants.
+fn shade(in: VertexOut, color: vec4<f32>) -> vec4<f32> {
+    let d = abs(in.across);
+    let covered = coverage(d, in.shape.x, in.shape.y);
+    let reach = in.shape.z;
+    if reach <= 0.0 {
+        return color * covered;
+    }
+    // Falling off from the stroke's edge to nothing at its reach, as the field lines' glow.
+    let g = clamp(max(d - in.shape.x, 0.0) / reach, 0.0, 1.0);
+    let halo = GLOW_STRENGTH * exp(-3.5 * g) * (1.0 - g) * (1.0 - g);
+    let under = (1.0 - covered) * halo;
+    return color * covered + vec4<f32>(color.rgb * under, 0.4 * color.a * under);
+}
+
 @fragment
 fn fs_gamma_framebuffer(in: VertexOut) -> @location(0) vec4<f32> {
-    let covered = coverage(abs(in.across), in.shape.x, in.shape.y);
-    return in.color * covered;
+    return shade(in, in.color);
 }
 
 @fragment
 fn fs_linear_framebuffer(in: VertexOut) -> @location(0) vec4<f32> {
-    let covered = coverage(abs(in.across), in.shape.x, in.shape.y);
-    return vec4<f32>(linear_from_gamma_rgb(in.color.rgb), in.color.a) * covered;
+    return shade(in, vec4<f32>(linear_from_gamma_rgb(in.color.rgb), in.color.a));
 }

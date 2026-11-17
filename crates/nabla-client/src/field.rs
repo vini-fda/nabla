@@ -5,10 +5,10 @@
 //! - crisp equipotential contour lines, extracted in world space by marching squares and
 //!   chained into polylines: per-pixel bands alias where the field changes within one
 //!   pixel (near a body, zoomed out), while world-space lines stay sub-cell accurate at any
-//!   zoom. In the flat 2D view they are drawn as plain egui strokes; in the 3D view, as
-//!   the same strokes of the marks' pass (`crate::overlays`), tested against the depth of
-//!   the planets and ships drawn before them, so what stands in front of the plane hides
-//!   them.
+//!   zoom. They are glowing blue strokes of the marks' pass (`crate::overlays`), to match
+//!   the field lines' glowing red (`crate::streamlines`): in the flat 2D view a pass of
+//!   their own; in the 3D view, with the other marks, tested against the depth of the
+//!   planets and ships drawn before them, so what stands in front of the plane hides them.
 //!
 //! Both use the potential whose negative gradient is the simulation's acceleration
 //! (`nabla_sim::physics::gravity_acceleration`): `-G M / r` outside a body, and the uniform
@@ -19,7 +19,7 @@ use std::collections::HashMap;
 
 use eframe::egui_wgpu::{self, CallbackResources, CallbackTrait, ScreenDescriptor};
 use eframe::wgpu::{self, util::DeviceExt as _};
-use egui::{Painter, Rect, Shape, Stroke, Vec2};
+use egui::{Painter, Rect, Stroke, Vec2};
 
 use crate::camera::{Camera, Orbit, Vec3};
 use crate::ship3d::{DepthMap, clip_from_world, to_bytes};
@@ -32,15 +32,21 @@ use crate::world::{CelestialBody, World};
 /// view pans, zooms or recomputes.
 pub const LEVEL_BASE: f64 = std::f64::consts::SQRT_2;
 
-/// How squarely the plane must face the viewer for the field to be drawn at all, and at full
-/// strength, as for the grid. Below it the plane is edge on and the field unreadable.
-pub(crate) const MIN_FACING: f32 = 0.05;
-pub(crate) const FULL_FACING: f32 = 0.30;
+/// How squarely the plane must face the viewer (the sine of the view's angle to it) for the
+/// plane's drawings (the grid, the gravity field and its field lines) to be drawn at all, and
+/// at full strength: about 0.6 and 2.9 degrees. Only a view within a few degrees of edge on
+/// fades them, where the plane is a sliver and its drawings unreadable.
+pub(crate) const MIN_FACING: f32 = 0.01;
+pub(crate) const FULL_FACING: f32 = 0.05;
 
 /// How many cells span the view's longer side, roughly, and the bounds on the grid's side.
+/// In perspective, the finest cells are as many to the span of the plane `NEAR_REACH` eye
+/// distances around the focus, and the cells grow with their distance from it beyond one
+/// eye distance, as the view shrinks what is farther away.
 const TARGET_CELLS: f64 = 256.0;
 const MIN_CELLS: usize = 16;
 const MAX_CELLS: usize = 800;
+const NEAR_REACH: f64 = 3.0;
 
 // ---------------------------------------------------------------------------------------------
 // The wgpu pass: soft log-potential bands over the plane.
@@ -243,7 +249,13 @@ pub fn paint(
     let matrix = clip_from_world(camera, rect, &depth);
     let fade = ((facing - MIN_FACING) / (FULL_FACING - MIN_FACING)).min(1.0);
     let mut uniforms = to_bytes(&matrix.into_iter().flatten().collect::<Vec<_>>());
-    uniforms.extend(to_bytes(&[gravity as f32, bodies.len() as f32, fade, 0.0]));
+    let fog_reach = camera.plane_reach(rect).unwrap_or(0.0);
+    uniforms.extend(to_bytes(&[
+        gravity as f32,
+        bodies.len() as f32,
+        fade,
+        fog_reach,
+    ]));
     // Two triangles covering the region square on the plane.
     let (cx, cy) = (
         f64::midpoint(min[0], max[0]) as f32,
@@ -321,22 +333,26 @@ impl CallbackTrait for Callback {
 }
 
 // -----------------------------------------------------------------------------------------
-// The contour lines in the 3D view: strokes of the marks' pass (`crate::overlays`), drawn
-// after the planets and ships, depth-tested against them through the scene's own depth map,
-// so what stands in front of the plane hides them.
+// The contour lines: glowing blue strokes of the marks' pass (`crate::overlays`), matching the
+// field lines' glowing red (`crate::streamlines`). In the 3D view they are drawn after the
+// planets and ships, depth-tested against them through the scene's own depth map, so what
+// stands in front of the plane hides them; in the flat view, at once, over the bands.
 
-/// The contour lines on the canvas in the 3D view, from `cache` (`contours`, warmed by the
-/// caller) as strokes to add to the `overlays` pass, along with the other marks of the frame.
-/// They are the stroke `draw_contours` gives egui in the flat view, the same color and
-/// `width` points thick, with the same pixel of anti-aliasing.
+/// The contour lines' color at full strength, as egui's colors: sRGB gamma channels.
+const CONTOUR_COLOR: [f32; 3] = [0.32, 0.62, 1.0];
+/// How far the contour lines' glow reaches past their edge, in points.
+const CONTOUR_GLOW: f32 = 6.0;
+
+/// The contour lines on the canvas, from `cache` (`contours`, warmed by the caller) as
+/// glowing strokes `width` points thick to add to the `overlays` pass, along with the other
+/// marks of the frame.
 pub fn contour_strokes(
     overlays: &mut crate::overlays::Overlays<'_>,
     camera: &Camera,
     cache: &Option<Contours>,
     width: f32,
-    visuals: &egui::Visuals,
 ) {
-    let Some(stroke) = stroke(camera, width, visuals) else {
+    let Some(stroke) = stroke(camera, width) else {
         return;
     };
     let Some(contours) = cache.as_ref() else {
@@ -344,10 +360,11 @@ pub fn contour_strokes(
     };
     for chain in &contours.chains {
         let (closed, points) = ring(chain);
-        overlays.stroke(
+        overlays.glowing_stroke(
             points.iter().map(|p| Vec3::plane(Vec2::from(*p))),
             closed,
             stroke.width,
+            CONTOUR_GLOW,
             stroke.color,
         );
     }
@@ -355,15 +372,16 @@ pub fn contour_strokes(
 
 /// The contour lines' stroke in either view, `width` points thick, fading out as the view
 /// turns edge on to the plane; `None` once it has.
-fn stroke(camera: &Camera, width: f32, visuals: &egui::Visuals) -> Option<Stroke> {
+fn stroke(camera: &Camera, width: f32) -> Option<Stroke> {
     let facing = camera.orbit.toward_viewer().z.abs();
     if facing < MIN_FACING {
         return None;
     }
     let fade = ((facing - MIN_FACING) / (FULL_FACING - MIN_FACING)).min(1.0);
+    let [r, g, b] = CONTOUR_COLOR.map(|c| (c * 255.0).round() as u8);
     Some(Stroke::new(
         width,
-        visuals.text_color().gamma_multiply(0.8 * fade),
+        egui::Color32::from_rgb(r, g, b).gamma_multiply(0.85 * fade),
     ))
 }
 
@@ -402,9 +420,24 @@ pub(crate) fn potential(gravity: f64, bodies: &[CelestialBody], p: [f64; 2]) -> 
 }
 
 /// The part of the plane `z = 0` to cover, as a square's `(min, max)` corners, padded: in
-/// orthographic, what is on screen; in perspective, a square around the view's focus, as the
-/// plane's far side may be beyond the horizon. `None` when the view is edge on.
+/// orthographic, what is on screen; in perspective, a square around the view's focus out to
+/// the plane's reach (`Camera::plane_reach`), where its fog has hidden it. `None` when the
+/// view is edge on.
 pub(crate) fn region(camera: &Camera, rect: Rect) -> Option<([f64; 2], [f64; 2])> {
+    sampling(camera, rect).map(|s| (s.min, s.max))
+}
+
+/// How the view samples the plane for the contour lines: over `region`, with cells of
+/// `cell_span / TARGET_CELLS` (or finer, for a small body), the same everywhere in
+/// orthographic and, in perspective, growing past `spread`: one eye distance from the focus.
+struct Sampling {
+    min: [f64; 2],
+    max: [f64; 2],
+    cell_span: f64,
+    spread: Option<([f64; 2], f64)>,
+}
+
+fn sampling(camera: &Camera, rect: Rect) -> Option<Sampling> {
     if camera.eye_distance(rect).is_none() {
         let corners = [
             rect.left_top(),
@@ -416,14 +449,27 @@ pub(crate) fn region(camera: &Camera, rect: Rect) -> Option<([f64; 2], [f64; 2])
         let corners: Vec<Vec2> = corners.into_iter().collect::<Option<_>>()?;
         let min = corners.iter().copied().fold(Vec2::INFINITY, Vec2::min);
         let max = corners.iter().copied().fold(-Vec2::INFINITY, Vec2::max);
-        Some(pad(min, max))
+        let (min, max) = pad(min, max);
+        Some(Sampling {
+            min,
+            max,
+            cell_span: (max[0] - min[0]).max(max[1] - min[1]),
+            spread: None,
+        })
     } else {
         let d = camera.eye_distance(rect)?;
+        let reach = camera.plane_reach(rect)?;
         let focus = camera
             .screen_to_world(rect.center(), rect)
             .unwrap_or_else(|| Vec2::new(camera.center.x, camera.center.y));
-        let reach = 3.0 * d;
-        Some(pad(focus - Vec2::splat(reach), focus + Vec2::splat(reach)))
+        let (min, max) = pad(focus - Vec2::splat(reach), focus + Vec2::splat(reach));
+        Some(Sampling {
+            min,
+            max,
+            // As the padded square of `NEAR_REACH` eye distances around the focus.
+            cell_span: 2.6 * NEAR_REACH * f64::from(d),
+            spread: Some(([f64::from(focus.x), f64::from(focus.y)], f64::from(d))),
+        })
     }
 }
 
@@ -437,59 +483,118 @@ fn pad(min: Vec2, max: Vec2) -> ([f64; 2], [f64; 2]) {
     )
 }
 
-/// The potential on a square grid covering `min..max`, with the sampling lattice snapped to
-/// the world.
+/// The potential on a rectilinear grid covering `min..max`, its sample lines snapped to a
+/// world lattice.
 struct ScalarGrid {
-    min: [f64; 2],
+    /// The sample lines' coordinates across and up the plane, increasing.
+    xs: Vec<f64>,
+    ys: Vec<f64>,
+    /// The finest cell's side.
     cell: f64,
-    /// Cells per side; the values are `(n + 1)^2`, row-major.
-    n: usize,
+    /// The values at `(xs[j], ys[i])`, `xs.len()` to a row, row-major.
     values: Vec<f64>,
     /// The least and greatest values on the grid, to skip levels outside them.
     lo: f64,
     hi: f64,
 }
 
+/// The potential on a uniform grid over `min..max`, `TARGET_CELLS` to its longer side.
+#[cfg(test)]
 fn scalar_grid(min: [f64; 2], max: [f64; 2], gravity: f64, bodies: &[CelestialBody]) -> ScalarGrid {
     let span = (max[0] - min[0]).max(max[1] - min[1]);
-    let mut cell = span / TARGET_CELLS;
+    sampled(min, max, span, None, gravity, bodies)
+}
+
+/// The potential over `min..max`, cells of `cell_span / TARGET_CELLS` (finer for a small
+/// body) out to `spread`'s distance from its focus, and beyond it as many times larger as
+/// they are farther, in powers of two.
+fn sampled(
+    min: [f64; 2],
+    max: [f64; 2],
+    cell_span: f64,
+    spread: Option<([f64; 2], f64)>,
+    gravity: f64,
+    bodies: &[CelestialBody],
+) -> ScalarGrid {
+    let mut cell = cell_span / TARGET_CELLS;
     // At least a few cells across the smallest body, so its own contours resolve.
     if let Some(radius) = bodies.iter().map(|b| f64::from(b.radius)).reduce(f64::min) {
         cell = cell.min(radius / 6.0);
     }
-    let n = ((span / cell).ceil() as usize).clamp(MIN_CELLS, MAX_CELLS);
-    let cell = span / n as f64;
-    // Snap the lattice's origin to a multiple of the cell, so the grid always samples the
-    // same world points: a pan re-uses the samples it already had (plus new ones at the
-    // edge it reaches) instead of re-interpolating over a shifted lattice, and the lines
-    // don't wobble between recomputes. One row and column more covers what the snapped
-    // origin leaves of `max` uncovered.
-    let min = [
-        (min[0] / cell).floor() * cell,
-        (min[1] / cell).floor() * cell,
-    ];
-    let n = n + 1;
-    let n1 = n + 1;
-    let mut values = vec![0.0; n1 * n1];
+    // No fewer cells to a side than the least, nor more than the most, coarsening the
+    // cell until there are not.
+    let span = (max[0] - min[0]).max(max[1] - min[1]);
+    cell = cell.min(span / MIN_CELLS as f64);
+    let (xs, ys) = loop {
+        let axis = |a: usize| sample_lines(min[a], max[a], cell, spread.map(|(f, d)| (f[a], d)));
+        let (xs, ys) = (axis(0), axis(1));
+        if xs.len().max(ys.len()) <= MAX_CELLS + 2 {
+            break (xs, ys);
+        }
+        cell *= 2.0;
+    };
+    let mut values = Vec::with_capacity(xs.len() * ys.len());
     let mut lo = f64::INFINITY;
     let mut hi = f64::NEG_INFINITY;
-    for i in 0..n1 {
-        for j in 0..n1 {
-            let p = [min[0] + j as f64 * cell, min[1] + i as f64 * cell];
-            let v = potential(gravity, bodies, p);
-            values[i * n1 + j] = v;
+    for &y in &ys {
+        for &x in &xs {
+            let v = potential(gravity, bodies, [x, y]);
+            values.push(v);
             lo = lo.min(v);
             hi = hi.max(v);
         }
     }
     ScalarGrid {
-        min,
+        xs,
+        ys,
         cell,
-        n,
         values,
         lo,
         hi,
     }
+}
+
+/// The coordinates of the sample lines along one axis, covering `lo..=hi`: multiples of
+/// `cell`, so the grid always samples the same world points and a pan re-uses the samples
+/// it had (the lines don't wobble between recomputes). With a `spread`, `(focus, near)`,
+/// the lines are `cell` apart within `near` of the focus and, beyond, as many times farther
+/// apart as twice their distance from it, in powers of two: each line `2^k` cells from the next
+/// sits on a multiple of `2^k` cells, so those too stay on a world lattice.
+fn sample_lines(lo: f64, hi: f64, cell: f64, spread: Option<(f64, f64)>) -> Vec<f64> {
+    let (start, end) = ((lo / cell).floor() as i64, (hi / cell).ceil() as i64);
+    let Some((focus, near)) = spread else {
+        return (start..=end).map(|k| k as f64 * cell).collect();
+    };
+    let center = ((focus / cell).round() as i64).clamp(start, end);
+    // The step outward from line `k`, in cells.
+    // Beyond `near`, twice as far apart as the distance alone would make them: the far
+    // field is under the fog, or small, and this halves the lines it takes.
+    let step = |k: i64| -> i64 {
+        let ratio = (k - center).unsigned_abs() as f64 * cell / near;
+        let power = if ratio < 1.0 {
+            0
+        } else {
+            ((2.0 * ratio).log2().floor() as u32)
+                .min(k.trailing_zeros())
+                .min(40)
+        };
+        1 << power
+    };
+    let mut below = Vec::new();
+    let mut k = center;
+    while k > start {
+        k -= step(k);
+        below.push(k);
+    }
+    below.reverse();
+    let mut lines = below;
+    k = center;
+    lines.push(k);
+    while k < end {
+        k += step(k);
+        lines.push(k);
+    }
+    lines.into_iter().map(|k| k as f64 * cell).collect()
 }
 
 /// The iso-levels to contour: the band boundaries `-LEVEL_BASE.powi(n)` (where `field.wgsl`'s
@@ -556,46 +661,47 @@ fn cell_segments(case: u8, center: f64, level: f64) -> &'static [(u8, u8)] {
 /// piece by piece, then chained together where neighbouring cells meet, so each line is one
 /// smooth polyline instead of a stub per cell.
 fn extract(grid: &ScalarGrid, levels: &[f64]) -> Vec<Vec<[f32; 2]>> {
-    let n1 = grid.n + 1;
+    let (xs, ys) = (&grid.xs, &grid.ys);
+    // Cells across and up, and samples to a row.
+    let (nx, ny) = (xs.len() - 1, ys.len() - 1);
+    let n1 = nx + 1;
     let mut out = Vec::new();
     // Where which grid edge is crossed, filled in per level: horizontal edges between
     // samples `(i, j)` and `(i, j + 1)`, vertical ones between `(i, j)` and `(i + 1, j)`.
     // Every edge is written the one time, so the two cells it belongs to agree bit for bit
     // on where their pieces meet: the chain through them has no kink at the join.
-    let mut horizontal = vec![[f32::NAN, f32::NAN]; n1 * grid.n];
-    let mut vertical = vec![[f32::NAN, f32::NAN]; grid.n * n1];
+    let mut horizontal = vec![[f32::NAN, f32::NAN]; (ny + 1) * nx];
+    let mut vertical = vec![[f32::NAN, f32::NAN]; ny * n1];
     for &level in levels {
         if level < grid.lo || level > grid.hi {
             continue;
         }
-        for i in 0..n1 {
+        for i in 0..=ny {
             let row = i * n1;
-            for j in 0..grid.n {
+            for j in 0..nx {
                 let (a, b) = (grid.values[row + j], grid.values[row + j + 1]);
                 if (a > level) != (b > level) {
                     let t = (level - a) / (b - a);
-                    let y = (grid.min[1] + i as f64 * grid.cell) as f32;
-                    horizontal[i * grid.n + j] =
-                        [(grid.min[0] + (j as f64 + t) * grid.cell) as f32, y];
+                    horizontal[i * nx + j] =
+                        [(xs[j] + t * (xs[j + 1] - xs[j])) as f32, ys[i] as f32];
                 }
             }
         }
-        for i in 0..grid.n {
+        for i in 0..ny {
             let (row, next) = (i * n1, (i + 1) * n1);
             for j in 0..n1 {
                 let (a, b) = (grid.values[row + j], grid.values[next + j]);
                 if (a > level) != (b > level) {
                     let t = (level - a) / (b - a);
-                    let x = (grid.min[0] + j as f64 * grid.cell) as f32;
-                    vertical[i * n1 + j] = [x, (grid.min[1] + (i as f64 + t) * grid.cell) as f32];
+                    vertical[i * n1 + j] = [xs[j] as f32, (ys[i] + t * (ys[i + 1] - ys[i])) as f32];
                 }
             }
         }
         // The pieces the saddle-decided cases cut each crossing cell into.
         let mut pieces: Vec<([f32; 2], [f32; 2])> = Vec::new();
-        for i in 0..grid.n {
+        for i in 0..ny {
             let (row, next) = (i * n1, (i + 1) * n1);
-            for j in 0..grid.n {
+            for j in 0..nx {
                 let v = [
                     grid.values[row + j],
                     grid.values[row + j + 1],
@@ -612,9 +718,9 @@ fn extract(grid: &ScalarGrid, levels: &[f64]) -> Vec<Vec<[f32; 2]>> {
                 let center = (v[0] + v[1] + v[2] + v[3]) * 0.25;
                 let crossing = |edge: u8| match edge {
                     // Bottom, right, top, left, of the cell `(i, j)`.
-                    0 => horizontal[i * grid.n + j],
+                    0 => horizontal[i * nx + j],
                     1 => vertical[i * n1 + j + 1],
-                    2 => horizontal[(i + 1) * grid.n + j],
+                    2 => horizontal[(i + 1) * nx + j],
                     _ => vertical[i * n1 + j],
                 };
                 for &(a, b) in cell_segments(case, center, level) {
@@ -746,8 +852,15 @@ fn recompute(
     let mut cell = 1.0;
     let chains = if bodies.is_empty() || gravity == 0.0 {
         Vec::new()
-    } else if let Some((min, max)) = region(camera, rect) {
-        let grid = scalar_grid(min, max, gravity, bodies);
+    } else if let Some(view) = sampling(camera, rect) {
+        let grid = sampled(
+            view.min,
+            view.max,
+            view.cell_span,
+            view.spread,
+            gravity,
+            bodies,
+        );
         cell = grid.cell;
         extract(&grid, &levels(&grid))
     } else {
@@ -765,10 +878,9 @@ fn recompute(
     });
 }
 
-/// The contour lines on the canvas, projected from world space (with near-plane clipping in
-/// perspective), stroked `width` points thick as one line per chain: egui feathers the
-/// whole polyline's edges, so the joins between cells come out as smooth as the rest, and
-/// fades them out as the view turns edge on to the plane.
+/// The contour lines on the canvas in the flat view, where nothing hides them: the glowing
+/// strokes of `contour_strokes`, `width` points thick, as a marks' pass of their own over the
+/// plane in view.
 pub fn draw_contours(
     painter: &Painter,
     camera: &Camera,
@@ -776,30 +888,19 @@ pub fn draw_contours(
     world: &World,
     width: f32,
     cache: &mut Option<Contours>,
-    visuals: &egui::Visuals,
+    pixels_per_point: f32,
 ) {
-    let Some(stroke) = stroke(camera, width, visuals) else {
+    contours(camera, rect, &world.bodies, world.gravity_constant, cache);
+    let Some((min, max)) = region(camera, rect) else {
         return;
     };
-    let on_screen = rect.expand(width + 8.0);
-    let chains = contours(camera, rect, &world.bodies, world.gravity_constant, cache);
-    for chain in chains {
-        // A ring the near plane cuts in perspective comes out open, run by run.
-        let (closed, points) = ring(chain);
-        let points: Vec<Vec3> = points.iter().map(|p| Vec3::plane(Vec2::from(*p))).collect();
-        let count = points.len();
-        let runs = camera.project_polyline(points, rect);
-        let close_runs = closed && runs.len() == 1 && runs[0].len() == count;
-        for run in runs {
-            if run.len() < 2 || !run.iter().any(|p| on_screen.contains(*p)) {
-                continue;
-            }
-            if close_runs {
-                painter.add(Shape::closed_line(run, stroke));
-            } else {
-                painter.line(run, stroke);
-            }
-        }
+    // Without a scene to share the depth of, a map of the plane in view, as the bands'.
+    let span = (max[0] - min[0]).max(max[1] - min[1]);
+    let depth = DepthMap::for_camera(camera, rect, (0.75 * span) as f32);
+    let mut overlays = crate::overlays::Overlays::new(camera, rect, &depth, pixels_per_point);
+    contour_strokes(&mut overlays, camera, cache, width);
+    if let Some(callback) = overlays.finish() {
+        painter.add(callback);
     }
 }
 
@@ -971,7 +1072,7 @@ mod tests {
     }
 
     #[test]
-    fn the_3d_views_lines_are_the_flat_views_stroke() {
+    fn the_contour_lines_are_glowing_blue_strokes() {
         let bodies = [body(0.0, 0.0, 2.0, 8.0)];
         let rect = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
         let camera = Camera {
@@ -980,26 +1081,31 @@ mod tests {
         };
         let mut cache = None;
         contours(&camera, rect, &bodies, 1.0, &mut cache);
-        let visuals = egui::Visuals::dark();
         let depth = DepthMap::for_camera(&camera, rect, 100.0);
-        let stroke = stroke(&camera, 1.5, &visuals).expect("facing the plane");
+        let stroke = stroke(&camera, 1.5).expect("facing the plane");
         let mut overlays = crate::overlays::Overlays::new(&camera, rect, &depth, 2.0);
-        contour_strokes(&mut overlays, &camera, &cache, 1.5, &visuals);
+        contour_strokes(&mut overlays, &camera, &cache, 1.5);
         // The shader's color is egui's: channels from 0 to 1, premultiplied, so the lines
-        // are as translucent as the stroke, not opaque white. Half the stroke's width in
-        // device pixels, and a pixel of feathering: every vertex is the ribbon's reach
-        // across, the half width and half the feather.
-        let vertices: Vec<[f32; 10]> = overlays.vertices().as_chunks::<10>().0.to_vec();
+        // are as translucent as the stroke, not opaque. Half the stroke's width in device
+        // pixels, a pixel of feathering and the glow's reach: every vertex is the ribbon's
+        // reach across, the half width, the feather and the glow.
+        const FLOATS: usize = crate::overlays::VERTEX_FLOATS;
+        let vertices: Vec<[f32; FLOATS]> = overlays.vertices().as_chunks::<FLOATS>().0.to_vec();
+        let glow = CONTOUR_GLOW * 2.0;
         assert!(vertices.len() > 600 && vertices.len().is_multiple_of(6));
-        assert!(vertices.iter().all(|v| v[3].abs() == 2.0));
-        assert!(vertices.iter().all(|v| v[4] == 1.5 && v[5] == 1.0));
+        assert!(vertices.iter().all(|v| v[3].abs() == 2.0 + glow));
+        assert!(
+            vertices
+                .iter()
+                .all(|v| v[4] == 1.5 && v[5] == 1.0 && v[6] == glow)
+        );
         let [r, g, b, a] = stroke.color.to_normalized_gamma_f32();
-        assert!(vertices.iter().all(|v| v[6..] == [r, g, b, a]));
-        assert!(a > 0.5 && a < 1.0 && r <= a && g <= a && b <= a);
+        assert!(vertices.iter().all(|v| v[7..] == [r, g, b, a]));
+        assert!(a > 0.5 && a < 1.0 && r <= a && g <= a && b <= a && b > 2.0 * r);
         // Consecutive segments' quads share their vertices where they join, so no pixel
         // of a line is blended twice: the second triangle's last vertex, and the first
         // triangle's last, are the next quad's first two.
-        let place = |v: &[f32; 10]| [v[0], v[1]];
+        let place = |v: &[f32; FLOATS]| [v[0], v[1]];
         let joined = vertices
             .chunks(6)
             .zip(vertices.chunks(6).skip(1))
@@ -1040,12 +1146,102 @@ mod tests {
         });
         let depth = DepthMap::for_camera(&camera, rect, 100.0);
         let mut overlays = crate::overlays::Overlays::new(&camera, rect, &depth, 1.0);
-        contour_strokes(&mut overlays, &camera, &cache, 2.0, &egui::Visuals::dark());
+        contour_strokes(&mut overlays, &camera, &cache, 2.0);
         // Four sides, four quads, the last back to the first.
-        let vertices: Vec<[f32; 10]> = overlays.vertices().as_chunks::<10>().0.to_vec();
+        const FLOATS: usize = crate::overlays::VERTEX_FLOATS;
+        let vertices: Vec<[f32; FLOATS]> = overlays.vertices().as_chunks::<FLOATS>().0.to_vec();
         assert_eq!(vertices.len(), 24);
         assert_eq!(vertices[23][..2], vertices[0][..2]);
         assert_eq!(vertices[20][..2], vertices[1][..2]);
+    }
+
+    #[test]
+    fn perspective_sample_lines_spread_out_with_distance_on_a_world_lattice() {
+        let (cell, focus, near) = (0.25, 3.1, 4.0);
+        let lines = sample_lines(-400.0, 400.0, cell, Some((focus, near)));
+        // Covering the range, in order.
+        assert!(lines[0] <= -400.0 && *lines.last().expect("lines") >= 400.0);
+        assert!(lines.windows(2).all(|w| w[0] < w[1]));
+        for w in lines.windows(2) {
+            let gap = w[1] - w[0];
+            let cells = gap / cell;
+            // A power of two of cells, each line on a multiple of the gap after it.
+            assert!(cells.round() == cells && (cells as u64).is_power_of_two());
+            let k = w[0] / gap;
+            assert!(
+                k.round() == k,
+                "{} not on a multiple of its gap {gap}",
+                w[0]
+            );
+            // The cell near the focus, and beyond, no more than twice as many times it as
+            // the line is eye distances from the focus, nor less than a quarter of that.
+            let ratio = (w[0] - focus).abs().max((w[1] - focus).abs()) / near;
+            if ratio < 1.0 {
+                assert_eq!(cells, 1.0, "gap {cells} cells within an eye distance");
+            }
+            assert!(
+                cells <= 2.0 * ratio.max(1.0),
+                "gap {cells} cells at {ratio}"
+            );
+            if (w[0] - focus).abs() > 4.0 * near && (w[1] - focus).abs() > 4.0 * near {
+                assert!(
+                    cells >= ratio / 4.0,
+                    "gap {cells} cells at {ratio} eye distances"
+                );
+            }
+        }
+        // Far fewer than a uniform grid's 3200.
+        assert!(lines.len() < 200, "{} lines", lines.len());
+        // A pan keeps the lines it had, near the focus and far from it.
+        let panned = sample_lines(-397.3, 402.7, cell, Some((focus + 2.7, near)));
+        let kept = lines.iter().filter(|x| panned.contains(x)).count();
+        assert!(
+            kept * 10 > lines.len() * 8,
+            "kept {kept} of {}",
+            lines.len()
+        );
+    }
+
+    #[test]
+    fn a_perspective_view_samples_the_plane_out_to_its_reach() {
+        let bodies = [body(0.0, 0.0, 2.0, 8.0)];
+        let rect = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
+        // A low view from the side.
+        let camera = Camera {
+            scale: 20.0,
+            perspective: true,
+            orbit: Orbit {
+                azimuth: 0.3,
+                elevation: 0.25,
+            },
+            ..Camera::default()
+        };
+        let view = sampling(&camera, rect).expect("facing the plane");
+        let reach = f64::from(camera.plane_reach(rect).expect("perspective"));
+        assert!(view.max[0] - view.min[0] >= 2.0 * reach);
+        let grid = sampled(
+            view.min,
+            view.max,
+            view.cell_span,
+            view.spread,
+            1.0,
+            &bodies,
+        );
+        assert!(grid.xs.len() <= MAX_CELLS + 2 && grid.ys.len() <= MAX_CELLS + 2);
+        // As fine near the focus as the old square of three eye distances was.
+        let d = f64::from(camera.eye_distance(rect).expect("perspective"));
+        assert!(grid.cell <= 2.6 * NEAR_REACH * d / TARGET_CELLS);
+        assert!(!extract(&grid, &levels(&grid)).is_empty());
+    }
+
+    #[test]
+    fn the_bands_fog_as_the_camera_does() {
+        let shader = include_str!("field.wgsl");
+        let start = crate::camera::PLANE_FOG_START;
+        assert!(
+            shader.contains(&format!("const FOG_START: f32 = {start};")),
+            "field.wgsl's FOG_START should be {start}"
+        );
     }
 
     #[test]
@@ -1097,25 +1293,25 @@ mod tests {
         let home = scalar_grid([-12.0, -12.0], [12.0, 12.0], 1.0, &bodies);
         // The same view, panned somewhere it hasn't been.
         let panned = scalar_grid([-2.37, 3.11], [21.63, 17.11], 1.0, &bodies);
-        // The cell depends on the span only, and both lattices' origins sit on the same
-        // world grid of cells, so they sample the very same points.
+        // The cell depends on the span only, and both lattices' sample lines sit on the
+        // same world grid of cells, so they sample the very same points.
         assert_eq!(panned.cell, home.cell);
-        assert_eq!(panned.n, home.n);
-        for a in 0..2 {
-            let shift = (panned.min[a] - home.min[a]) / panned.cell;
-            assert!(
-                (shift - shift.round()).abs() < 1e-9,
-                "axis {a}: origins off the world lattice by {shift}"
-            );
+        assert!(panned.xs.len().abs_diff(home.xs.len()) <= 1);
+        for lines in [&home.xs, &home.ys, &panned.xs, &panned.ys] {
+            for &x in lines {
+                let k = x / home.cell;
+                assert!((k - k.round()).abs() < 1e-9, "{x} off the world lattice");
+            }
         }
         // A lattice point both grids cover, from opposite sides: the same sample value.
-        let n1 = home.n + 1;
         let at = |g: &ScalarGrid, x: f64, y: f64| {
-            let (col, row) = (
-                ((x - g.min[0]) / g.cell).round() as usize,
-                ((y - g.min[1]) / g.cell).round() as usize,
-            );
-            g.values[row * n1 + col]
+            let find = |lines: &[f64], v: f64| {
+                lines
+                    .iter()
+                    .position(|&l| (l - v).abs() < 1e-9)
+                    .expect("on a sample line")
+            };
+            g.values[find(&g.ys, y) * g.xs.len() + find(&g.xs, x)]
         };
         assert_eq!(at(&home, 0.0, 3.09375), at(&panned, 0.0, 3.09375));
         // The levels are the shader's band boundaries, whatever the view: -LEVEL_BASE^n.

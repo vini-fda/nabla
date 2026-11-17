@@ -9,6 +9,9 @@
 use egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Stroke, Vec2};
 
 use crate::camera::{Camera, Orbit, Vec3};
+// How squarely the plane must face the viewer for the grid to be drawn at all, and at full
+// strength, as for the rest of the plane's drawings.
+use crate::field::{FULL_FACING, MIN_FACING};
 
 pub struct GridStyle {
     pub minor_color: Color32,
@@ -62,17 +65,17 @@ impl ClampOrLow for f32 {
     }
 }
 
-/// How squarely the plane must face the viewer (the cosine of the angle between its normal
-/// and the view) for the grid to be drawn at all, and for it to be drawn at full strength.
-/// The grid fades out in between, as the view turns edge on to the plane.
-const MIN_FACING: f32 = 0.05;
-const FULL_FACING: f32 = 0.3;
-
 /// In perspective, the plane stretches to the horizon: the grid covers a square around the
-/// point seen at the canvas's center, out to this many times the eye's distance, fading out
-/// toward its edge (the minor lines halfway), drawn in this many pieces per line to fade.
+/// point seen at the canvas's center, its lines fading out with their distance from it, the
+/// minor lines out to half this many times the eye's distance and the major ones out to
+/// this many times it, each line drawn in this many pieces to fade. Farther out, where those
+/// would crowd together on screen, the major lines thin out: a line on an odd multiple of
+/// `2^k` major steps reaches `2^k` times as far, out to the plane's reach
+/// (`Camera::plane_reach`), so their spacing on screen stays about the same into the
+/// distance. Every line also fades
+/// with the plane's fog there (`Camera::fog`).
 const PERSPECTIVE_REACH: f32 = 3.0;
-const PERSPECTIVE_PIECES: usize = 6;
+const PERSPECTIVE_PIECES: usize = 8;
 
 /// The grid of the plane `z = 0`, seen through `camera` in `rect`.
 pub fn draw_grid(painter: &Painter, camera: &Camera, rect: Rect, style: &GridStyle) {
@@ -99,81 +102,95 @@ pub fn draw_grid(painter: &Painter, camera: &Camera, rect: Rect, style: &GridSty
     // along it: the spacing is a compromise between the two. In perspective, it is as at
     // the focus.
     let scale = focus
-        .and_then(|(focus, _)| camera.scale_at(Vec3::plane(focus), rect))
+        .and_then(|(focus, _, _)| camera.scale_at(Vec3::plane(focus), rect))
         .unwrap_or(camera.scale);
     let target_world = (style.target_major_spacing_px / (scale * facing.sqrt())) as f64;
     let major_step = nice_step(target_world);
     let minor_step = major_step / 5.0;
 
-    // The line from `a` to `b`, in perspective cut into pieces that fade with their
-    // distance from the focus, out to `reach`.
-    let line = |a: Vec2, b: Vec2, width: f32, color: Color32, reach: f32| match focus {
-        None => {
-            if let (Some(a), Some(b)) = (
-                camera.world_to_screen(a, rect),
-                camera.world_to_screen(b, rect),
-            ) {
-                painter.line_segment([a, b], Stroke::new(width, color));
-            }
-        }
-        Some((focus, _)) => {
-            for i in 0..PERSPECTIVE_PIECES {
-                let [s, t] = [i, i + 1].map(|j| j as f32 / PERSPECTIVE_PIECES as f32);
-                let (from, to) = (a + (b - a) * s, a + (b - a) * t);
-                let distance = ((from + to) / 2.0 - focus).length() / reach;
-                let strength = 1.0 - distance * distance;
-                if strength <= 0.0 {
-                    continue;
-                }
-                let piece = [Vec3::plane(from), Vec3::plane(to)];
-                for run in camera.project_polyline(piece, rect) {
-                    if let [a, b] = run[..] {
-                        painter.line_segment(
-                            [a, b],
-                            Stroke::new(width, color.gamma_multiply(strength)),
-                        );
-                    }
-                }
-            }
-        }
+    let center = camera.absolute(focus.map_or(Vec2::ZERO, |(focus, _, _)| focus));
+    let line = |a: Vec2, b: Vec2, width: f32, color: Color32, reach: f32| {
+        let stroke = Stroke::new(width, color);
+        draw_line(
+            painter,
+            camera,
+            rect,
+            focus.map(|(f, _, _)| (f, reach)),
+            (a, b),
+            stroke,
+        );
     };
     let x_line = |x: f64, width: f32, color: Color32, reach: f32| {
-        let [a, b] = [world_min_y, world_max_y].map(|y| camera.local(x, y));
-        line(a, b, width, color, reach);
+        let range = (world_min_y, world_max_y);
+        if let Some((y0, y1)) = chord(range, center[1], x - center[0], focus.map(|_| reach)) {
+            line(
+                camera.local(x, y0),
+                camera.local(x, y1),
+                width,
+                color,
+                reach,
+            );
+        }
     };
     let y_line = |y: f64, width: f32, color: Color32, reach: f32| {
-        let [a, b] = [world_min_x, world_max_x].map(|x| camera.local(x, y));
-        line(a, b, width, color, reach);
+        let range = (world_min_x, world_max_x);
+        if let Some((x0, x1)) = chord(range, center[0], y - center[1], focus.map(|_| reach)) {
+            line(
+                camera.local(x0, y),
+                camera.local(x1, y),
+                width,
+                color,
+                reach,
+            );
+        }
     };
 
     // Minors drawn first; majors overlay them at the same x/y, so we don't need
-    // to skip-overlap. In perspective, the minor lines only reach halfway.
-    let reach = focus.map_or(f32::INFINITY, |(_, reach)| reach);
-    for (step, color, reach) in [
-        (minor_step, minor_color, reach / 2.0),
-        (major_step, major_color, reach),
-    ] {
-        let near = |range: (f64, f64), at: f64| {
-            let half = f64::from(reach);
-            (range.0.max(at - half), range.1.min(at + half))
-        };
-        let center = camera.absolute(focus.map_or(Vec2::ZERO, |(focus, _)| focus));
+    // to skip-overlap. In perspective, the minor lines only reach halfway, and the major
+    // lines thin out level by level beyond their reach: each level's lines are twice as far
+    // apart and reach twice as far, a line drawn at the coarsest level it belongs to, out
+    // to the plane's reach (which every line left at the last level reaches, the axes too).
+    let (reach, farthest) = focus.map_or((f32::INFINITY, f32::INFINITY), |(_, reach, far)| {
+        (reach, far)
+    });
+    let lines = |step: f64, color: Color32, reach: f32, every: bool| {
+        let half = f64::from(reach);
+        let near = |range: (f64, f64), at: f64| (range.0.max(at - half), range.1.min(at + half));
         let (x0, x1) = near((world_min_x, world_max_x), center[0]);
         let (y0, y1) = near((world_min_y, world_max_y), center[1]);
-        for &x in &major_ticks(x0, x1, step) {
-            x_line(x, 1.0, color, reach);
+        for (ticks, draw) in [
+            (
+                major_ticks(x0, x1, step),
+                &x_line as &dyn Fn(f64, f32, Color32, f32),
+            ),
+            (major_ticks(y0, y1, step), &y_line),
+        ] {
+            for &at in &ticks {
+                // The even ones are the next level's, unless this is the last.
+                if every || (at / step).round().rem_euclid(2.0) == 1.0 {
+                    draw(at, 1.0, color, reach);
+                }
+            }
         }
-        for &y in &major_ticks(y0, y1, step) {
-            y_line(y, 1.0, color, reach);
+    };
+    lines(minor_step, minor_color, reach / 2.0, true);
+    let (mut step, mut level_reach) = (major_step, reach);
+    loop {
+        let last = level_reach >= farthest;
+        lines(step, major_color, level_reach.min(farthest), last);
+        if last {
+            break;
         }
+        step *= 2.0;
+        level_reach *= 2.0;
     }
 
     // Axes on top.
     if (world_min_x..=world_max_x).contains(&0.0) {
-        x_line(0.0, 1.5, axis_color, reach);
+        x_line(0.0, 1.5, axis_color, farthest);
     }
     if (world_min_y..=world_max_y).contains(&0.0) {
-        y_line(0.0, 1.5, axis_color, reach);
+        y_line(0.0, 1.5, axis_color, farthest);
     }
 
     if style.labels {
@@ -181,9 +198,61 @@ pub fn draw_grid(painter: &Painter, camera: &Camera, rect: Rect, style: &GridSty
     }
 }
 
-/// A part of the plane `z = 0`: its corners `(min, max)`, and, in perspective, its focus and
-/// how far it reaches from it.
-type Region = (Vec2, Vec2, Option<(Vec2, f32)>);
+/// The line on the plane from `a` to `b`: in perspective, with the `focus` and the line's
+/// reach from it, cut into pieces that fade with their distance from the focus out to that
+/// reach, and with the plane's fog.
+fn draw_line(
+    painter: &Painter,
+    camera: &Camera,
+    rect: Rect,
+    focus: Option<(Vec2, f32)>,
+    (a, b): (Vec2, Vec2),
+    stroke: Stroke,
+) {
+    let Some((focus, reach)) = focus else {
+        if let (Some(a), Some(b)) = (
+            camera.world_to_screen(a, rect),
+            camera.world_to_screen(b, rect),
+        ) {
+            painter.line_segment([a, b], stroke);
+        }
+        return;
+    };
+    for i in 0..PERSPECTIVE_PIECES {
+        let [s, t] = [i, i + 1].map(|j| j as f32 / PERSPECTIVE_PIECES as f32);
+        let (from, to) = (a + (b - a) * s, a + (b - a) * t);
+        let middle = (from + to) / 2.0;
+        let distance = (middle - focus).length() / reach;
+        let strength = (1.0 - distance * distance) * camera.fog(Vec3::plane(middle), rect);
+        if strength <= 0.0 {
+            continue;
+        }
+        let piece = [Vec3::plane(from), Vec3::plane(to)];
+        for run in camera.project_polyline(piece, rect) {
+            if let [a, b] = run[..] {
+                let color = stroke.color.gamma_multiply(strength);
+                painter.line_segment([a, b], Stroke::new(stroke.width, color));
+            }
+        }
+    }
+}
+
+/// The stretch of `range` that a line `across` from the focus's coordinate covers within
+/// `reach` of the focus, around `along`, the focus's coordinate along the line: all of it
+/// with no reach (in orthographic), and `None` where the line passes too far away.
+fn chord(range: (f64, f64), along: f64, across: f64, reach: Option<f32>) -> Option<(f64, f64)> {
+    let Some(reach) = reach else {
+        return Some(range);
+    };
+    let reach = f64::from(reach);
+    let half = (reach * reach - across * across).sqrt();
+    let (from, to) = (range.0.max(along - half), range.1.min(along + half));
+    (half.is_finite() && from < to).then_some((from, to))
+}
+
+/// A part of the plane `z = 0`: its corners `(min, max)`, and, in perspective, its focus,
+/// how far the major lines reach from it before they thin out, and how far any reach.
+type Region = (Vec2, Vec2, Option<(Vec2, f32, f32)>);
 
 /// The part of the plane the grid covers, seen through `camera` in `rect`: in orthographic,
 /// what is on screen (a parallelogram's bounding box), or `None` when the view is edge on;
@@ -208,10 +277,11 @@ fn region(camera: &Camera, rect: Rect) -> Option<Region> {
                 .screen_to_world(rect.center(), rect)
                 .unwrap_or_else(|| Vec2::new(camera.center.x, camera.center.y));
             let reach = PERSPECTIVE_REACH * d;
+            let farthest = camera.plane_reach(rect)?.max(reach);
             Some((
-                focus - Vec2::splat(reach),
-                focus + Vec2::splat(reach),
-                Some((focus, reach)),
+                focus - Vec2::splat(farthest),
+                focus + Vec2::splat(farthest),
+                Some((focus, reach, farthest)),
             ))
         }
     }

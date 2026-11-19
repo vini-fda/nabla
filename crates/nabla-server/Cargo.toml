@@ -21,7 +21,6 @@ test = false
 [dependencies]
 env_logger = { version = "0.11.11", default-features = false, features = ["auto-color"] }
 log = "0.4.35"
-nabla-core.workspace = true
 nabla-net = { workspace = true, features = ["native"] }
 nabla-sim.workspace = true
 tokio = { version = "1", default-features = false, features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }

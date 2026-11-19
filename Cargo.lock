@@ -2122,7 +2122,6 @@ version = "0.38.0"
 dependencies = [
  "env_logger",
  "log",
- "nabla-core",
  "nabla-net",
  "nabla-sim",
  "tokio",

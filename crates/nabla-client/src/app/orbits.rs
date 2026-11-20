@@ -4,7 +4,9 @@ use std::time::Duration;
 
 use log::Level;
 
-use super::{RightView, Vec3, ViewerApp, input_row, palette};
+use super::help::input_row;
+use super::{RightView, ViewerApp};
+use crate::camera::Vec3;
 use crate::controller_guide::{self, Icon};
 use crate::formula::{self, Formula};
 use crate::game::Objective;
@@ -12,6 +14,7 @@ use crate::gamepad::{Button, State};
 use crate::keys;
 use crate::orbit::{self, Check, Phase, Pilot, Prediction, Target};
 use crate::theme::icons::outline;
+use crate::theme::palette;
 use nabla_core::State as State2;
 use nabla_sim::span;
 

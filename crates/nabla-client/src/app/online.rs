@@ -10,16 +10,21 @@ use nabla_net::client::Stage;
 use nabla_net::link::Address;
 use nabla_net::wire::{MAX_PASSWORD, MAX_USERNAME, Password, RosterEntry, Username};
 
-use super::{
-    Aim, GridStyle, Input, ViewerApp, canvas_buttons, draw_grid, fit_camera, icons, keys, palette,
-    path_strokes, screen_path,
-};
+use super::ViewerApp;
+use super::canvas::fit_camera;
+use super::game_bar::{controller_status_ui, outline_button};
+use super::scene::{path_strokes, screen_path};
+use super::side_panel::canvas_inset;
 use crate::camera::Vec3;
-use crate::canvas_buttons::Button;
+use crate::canvas_buttons::{self, Button};
+use crate::game::{Aim, Input};
 use crate::gamepad;
+use crate::grid::{GridStyle, draw_grid};
+use crate::keys;
 use crate::net;
 use crate::online::{Hands, Online, View};
 use crate::ship3d::{self, DepthMap};
+use crate::theme::{icons, palette};
 
 /// The server the address field starts with.
 pub(super) const DEFAULT_SERVER: &str = "https://localhost:4433";
@@ -485,7 +490,7 @@ impl ViewerApp {
         self.right_view = super::RightView::ALL[view];
         self.show_plots = show_plots;
         egui::CentralPanel::default().show(ui, |ui| {
-            self.online_canvas_ui(ui, super::canvas_inset(reveal), &views);
+            self.online_canvas_ui(ui, canvas_inset(reveal), &views);
         });
     }
 
@@ -517,7 +522,7 @@ impl ViewerApp {
     fn online_bar_ui(&mut self, ui: &mut egui::Ui) {
         let (mut home, mut leave, mut sas, mut autopilot) = (false, false, false, false);
         ui.horizontal(|ui| {
-            home = super::outline_button(ui, icons::outline::HOUSE)
+            home = outline_button(ui, icons::outline::HOUSE)
                 .on_hover_text("Disconnect, and back to the title screen")
                 .clicked();
             leave = ui
@@ -571,7 +576,7 @@ impl ViewerApp {
                 ));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                super::controller_status_ui(ui, &self.gamepads);
+                controller_status_ui(ui, &self.gamepads);
             });
         });
         if home {

@@ -6,10 +6,9 @@ use std::ops::RangeInclusive;
 
 use nabla_core::suite;
 
-use super::{
-    CONTROLLER_STATUS_SIZE, HelpTab, ViewerApp, controller_status_ui, input_group, input_row,
-    toggled,
-};
+use super::game_bar::{CONTROLLER_STATUS_SIZE, controller_status_ui};
+use super::help::{HelpTab, input_group, input_row};
+use super::{ViewerApp, toggled};
 use crate::controller_guide;
 use crate::formula::{self, Formula};
 use crate::game::Steering;
